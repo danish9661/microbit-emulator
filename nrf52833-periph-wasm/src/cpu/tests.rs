@@ -225,6 +225,26 @@ fn nrf_air_usb_radio_ppi() {
 
 
 #[test]
+fn nrf_c_irq_timer_uart() {
+    // P8a firmware (c_irq_nrf.c, GCC -O2): C vector table, TIMER0 IRQ via
+    // NVIC delivery (stacking + EXC_RETURN), UARTE prints from thread and
+    // handler mode. deliver_irqs=true, driver-style ticks.
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/c_irq_nrf.bin"));
+    let sys = crate::sys();
+    cpu.deliver_irqs = true;
+    run_with_ticks(&mut cpu, &mut mem, sys, 800_000);
+    assert!(cpu.fault.is_none(), "c-irq faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("BOOT"), "missing BOOT, got {out:?}");
+    assert!(out.contains("TICK:1"), "missing TICK:1, got {out:?}");
+    assert!(out.contains("TICK:3"), "missing TICK:3, got {out:?}");
+    assert!(out.contains("DONE"), "missing DONE, got {out:?}");
+}
+
+#[test]
 fn nrf_boot_flash_at_zero() {
     // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.
     // Boot marker + functional marker + 2nd run (no state leak).
