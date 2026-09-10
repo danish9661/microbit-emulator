@@ -28,9 +28,9 @@ fn boot(bin: &[u8]) -> (Cpu, FlatMemory) {
     let sys = WasmSystem::new();
     crate::init_for_test(sys);
     let mut cpu = Cpu::new(sp, pc | 1);
-    let mut mem = FlatMemory::new(0x100000, 0x20000);
-    mem.load(bin, 0x08000000);
-    assert_eq!(mem.read32(0x08000000), sp, "flash load failed");
+    let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+    mem.load(bin, 0x00000000);
+    assert_eq!(mem.read32(0x00000000), sp, "flash load failed");
     // drain stale UART
     let _ = crate::system::get_uart_output().lock().unwrap().clone();
     crate::system::get_uart_output().lock().unwrap().clear();
@@ -61,12 +61,41 @@ fn synth_vector_boot() {
     let _g = lock_boot();
     let mut img = vec![0u8; 8];
     img[0..4].copy_from_slice(&0x20002000u32.to_le_bytes());
-    img[4..8].copy_from_slice(&0x08000101u32.to_le_bytes());
+    img[4..8].copy_from_slice(&0x00000101u32.to_le_bytes());
     let (cpu, mem) = boot(&img);
     assert_eq!(cpu.regs.r[13], 0x20002000, "SP from vector table");
-    assert_eq!(cpu.regs.r[15] & !1, 0x08000100, "PC from vector table");
+    assert_eq!(cpu.regs.r[15] & !1, 0x00000100, "PC from vector table");
     assert_eq!(cpu.ipsr, 0, "thread mode");
     no_fault(&cpu, &mem);
+}
+
+#[test]
+fn nrf_boot_flash_at_zero() {
+    // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.
+    // Boot marker + functional marker + 2nd run (no state leak).
+    let _g = lock_boot();
+    let mut img = vec![0u8; 8];
+    img[0..4].copy_from_slice(&0x20002000u32.to_le_bytes());
+    img[4..8].copy_from_slice(&0x00000101u32.to_le_bytes());
+    let (_cpu, mem) = boot(&img);
+    let sys = crate::sys();
+    // flash alias check: vector SP visible at both 0x0 and legacy alias
+    assert_eq!(mem.read32(0x00000000), 0x20002000);
+    // FICR PART = nRF52833
+    assert_eq!(sys.p.read(sys, 0x10000100, 4), 0x0005_2833, "FICR PART");
+    // CLOCK: start HFCLK -> EVENTS_HFCLKSTARTED + HFCLKRUN
+    sys.p.write(sys, 0x40000000, 4, 1);
+    assert_eq!(sys.p.read(sys, 0x40000100, 4), 1, "HFCLKSTARTED");
+    // P0: DIR output + OUTSET -> readable back (matrix row/col pattern)
+    sys.p.write(sys, 0x50000514, 4, 0x1);
+    sys.p.write(sys, 0x50000508, 4, 0x1);
+    assert_eq!(sys.p.read(sys, 0x50000504, 4) & 1, 1, "P0 OUT");
+    // 2nd run: fresh system, events cleared, no leak
+    let (_cpu2, mem2) = boot(&img);
+    let sys2 = crate::sys();
+    assert_eq!(mem2.read32(0x00000000), 0x20002000);
+    assert_eq!(sys2.p.read(sys2, 0x40000100, 4), 0, "no event leak");
+    assert_eq!(sys2.p.read(sys2, 0x50000504, 4) & 1, 0, "no gpio leak");
 }
 
 #[test]
@@ -76,13 +105,13 @@ fn exception_svc_roundtrip() {
     // SVC handler (vector 11) bumps a counter and returns via EXC_RETURN.
     // Layout: vector table at 0x20000000 is NOT used (CPU vectors come from
     // flash VTOR); instead point VTOR at RAM by writing the model SCB? The
-    // model SCB defaults VTOR=0x08000000, so install vectors in flash image.
+    // model SCB defaults VTOR=0x00000000, so install vectors in flash image.
     let mut img = vec![0u8; 0x200];
-    // SP=0x20002000, reset PC=0x08000100
+    // SP=0x20002000, reset PC=0x00000100
     img[0..4].copy_from_slice(&0x20002000u32.to_le_bytes());
-    img[4..8].copy_from_slice(&0x08000100u32.to_le_bytes());
-    // SVC vector (11) -> handler at 0x08000110
-    img[11 * 4..11 * 4 + 4].copy_from_slice(&0x08000111u32.to_le_bytes());
+    img[4..8].copy_from_slice(&0x00000100u32.to_le_bytes());
+    // SVC vector (11) -> handler at 0x00000110
+    img[11 * 4..11 * 4 + 4].copy_from_slice(&0x00000111u32.to_le_bytes());
     // main at 0x100: svc #0 (0xDF00), then b.n loop (0xE7FE)
     img[0x100] = 0x00;
     img[0x101] = 0xDF;
@@ -98,10 +127,10 @@ fn exception_svc_roundtrip() {
     // patch handler literal to point there:
     img[0x11C..0x120].copy_from_slice(&0x20001000u32.to_le_bytes());
     let (mut cpu, mut mem) = boot(&img);
-    // VTOR is 0x08000000 by default: vectors above are in flash image ✓.
+    // VTOR is 0x00000000 by default: vectors above are in flash image ✓.
     // SP/PC already at reset vector from boot():
     assert_eq!(cpu.regs.r[13], 0x20002000);
-    assert_eq!(cpu.regs.r[15] & !1, 0x08000100);
+    assert_eq!(cpu.regs.r[15] & !1, 0x00000100);
     cpu.deliver_irqs = true;
     let sys = crate::sys();
     cpu.run(sys, &mut mem, 10);
@@ -109,7 +138,7 @@ fn exception_svc_roundtrip() {
     // SVC handler should have run exactly once (counter==1) and main resumed
     // into its branch-to-self loop at 0x102.
     assert_eq!(mem.read32(0x20001000), 1, "SVC handler did not run");
-    assert_eq!(cpu.regs.r[15] & !1, 0x08000102, "did not resume after SVC");
+    assert_eq!(cpu.regs.r[15] & !1, 0x00000102, "did not resume after SVC");
     assert_eq!(cpu.ipsr, 0, "still in handler mode");
 }
 
@@ -2268,9 +2297,10 @@ fn usersetmpend_gates_unprivileged_pends() {
 
 #[test]
 fn busfault_unmapped_data_access() {
-    // Wild data read (0x0, null deref) takes BusFault with PRECISERR +
-    // BFARVALID + BFAR when BUSFAULTENA is set (vector A), else escalates
-    // to HardFault (vector B). ldr r0,[r1,#0] is 0x6808 (GAS).
+    // Wild data read takes BusFault with PRECISERR + BFARVALID + BFAR when
+    // BUSFAULTENA is set (vector A), else escalates to HardFault (vector B).
+    // ldr r0,[r1,#0] is 0x6808 (GAS). nRF flash lives at 0x0, so 0x0 is NOT
+    // wild here — use 0x30000000 (unmapped on both STM32 and nRF maps).
     let _g = lock_boot();
     let (mut cpu, mut mem) = boot(&irq_test_image(false));
     let sys = crate::sys();
@@ -2278,21 +2308,21 @@ fn busfault_unmapped_data_access() {
     mem.write32(0xE000ED24, 1 << 17); // SHCSR.BUSFAULTENA
     mem.write16(0x20002000, 0x6808); // ldr r0,[r1,#0]
     mem.write16(0x20002002, 0xE7FE);
-    cpu.regs.r[1] = 0;
+    cpu.regs.r[1] = 0x30000000;
     cpu.regs.r[15] = 0x20002001;
     cpu.run(sys, &mut mem, 12);
     assert!(cpu.fault.is_none(), "cpu faulted: {:?}", cpu.fault);
     assert_eq!(cpu.ipsr, 0, "BusFault handler returned");
     assert_eq!(mem.read32(0x20001000), 1, "BusFault vector (A) ran");
     assert_eq!(mem.read32(0xE000ED28) & 0x8200, 0x8200, "PRECISERR+BFARVALID");
-    assert_eq!(mem.read32(0xE000ED38), 0, "BFAR is the wild address");
+    assert_eq!(mem.read32(0xE000ED38), 0x30000000, "BFAR is the wild address");
 
     let (mut cpu, mut mem) = boot(&irq_test_image(false));
     let sys = crate::sys();
     cpu.deliver_irqs = true;
     mem.write16(0x20002000, 0x6808);
     mem.write16(0x20002002, 0xE7FE);
-    cpu.regs.r[1] = 0;
+    cpu.regs.r[1] = 0x30000000;
     cpu.regs.r[15] = 0x20002001;
     cpu.run(sys, &mut mem, 12);
     assert!(cpu.fault.is_none(), "cpu faulted: {:?}", cpu.fault);

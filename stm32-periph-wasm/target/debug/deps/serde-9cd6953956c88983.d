@@ -1,0 +1,14 @@
+/home/danish1075/Documents/microbit-v2/stm32-periph-wasm/target/debug/deps/serde-9cd6953956c88983.d: /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/danish1075/Documents/microbit-v2/stm32-periph-wasm/target/debug/build/serde-c6d3080859c3d3a7/out/private.rs
+
+/home/danish1075/Documents/microbit-v2/stm32-periph-wasm/target/debug/deps/libserde-9cd6953956c88983.rlib: /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/danish1075/Documents/microbit-v2/stm32-periph-wasm/target/debug/build/serde-c6d3080859c3d3a7/out/private.rs
+
+/home/danish1075/Documents/microbit-v2/stm32-periph-wasm/target/debug/deps/libserde-9cd6953956c88983.rmeta: /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs /home/danish1075/Documents/microbit-v2/stm32-periph-wasm/target/debug/build/serde-c6d3080859c3d3a7/out/private.rs
+
+/home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/lib.rs:
+/home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/integer128.rs:
+/home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/mod.rs:
+/home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/de.rs:
+/home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228/src/private/ser.rs:
+/home/danish1075/Documents/microbit-v2/stm32-periph-wasm/target/debug/build/serde-c6d3080859c3d3a7/out/private.rs:
+
+# env-dep:OUT_DIR=/home/danish1075/Documents/microbit-v2/stm32-periph-wasm/target/debug/build/serde-c6d3080859c3d3a7/out

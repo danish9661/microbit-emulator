@@ -161,6 +161,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
+name = "nrf52833-periph-wasm"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "console_error_panic_hook",
+ "des",
+ "log",
+ "md-5",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "svd-parser",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -291,24 +309,6 @@ dependencies = [
  "cfg-if",
  "cpufeatures",
  "digest",
-]
-
-[[package]]
-name = "stm32-periph-wasm"
-version = "0.1.0"
-dependencies = [
- "aes",
- "console_error_panic_hook",
- "des",
- "log",
- "md-5",
- "regex",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "svd-parser",
- "wasm-bindgen",
 ]
 
 [[package]]

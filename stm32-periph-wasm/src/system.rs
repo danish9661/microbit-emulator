@@ -2,7 +2,7 @@ use std::sync::atomic::{AtomicU64, AtomicBool, AtomicI32, AtomicU8, AtomicU32, O
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Mutex;
-use crate::peripherals::{Peripherals, gpio::GpioPorts};
+use crate::peripherals::{Peripherals, gpio_nrf::GpioPorts};
 use crate::ext_devices::ExtDevices;
 
 // UART output buffer: USART write_dr pushes chars here, JS reads via get_uart_output()
@@ -574,8 +574,8 @@ pub fn test_system_with(ext: &crate::ext_devices::ExtDevices) -> ::std::rc::Rc<c
 }
 
 #[cfg(test)]
-pub fn dummy_gpio() -> crate::peripherals::gpio::GpioPorts {
-    crate::peripherals::gpio::GpioPorts::default()
+pub fn dummy_gpio() -> crate::peripherals::gpio_nrf::GpioPorts {
+    crate::peripherals::gpio_nrf::GpioPorts::default()
 }
 
 impl WasmSystem {
@@ -597,20 +597,9 @@ impl WasmSystem {
         WasmSystem { p, pending_dma: RefCell::new(Vec::new()) }
     }
 
-    fn register_software_spis(p: &Peripherals) {
-        use crate::peripherals::sw_spi::{SoftwareSpi, SoftwareSpiConfig};
-        let configs = get_software_spi_configs().lock().unwrap();
-        let ext_devices = get_ext_devices().lock().unwrap();
-        for (name, cs, clk, miso, mosi) in configs.iter() {
-            let config = SoftwareSpiConfig {
-                name: name.clone(),
-                cs: cs.clone(),
-                clk: clk.clone(),
-                miso: miso.clone(),
-                mosi: mosi.clone(),
-            };
-            SoftwareSpi::register(config, &mut p.gpio.borrow_mut(), &ext_devices);
-        }
+    fn register_software_spis(_p: &Peripherals) {
+        // nRF build: no STM32 software-SPI bridge. Kept as no-op so the
+        // queued-config global stays API-compatible with the JS driver.
     }
 
     pub fn queue_dma_transfer(&self, t: DmaTransfer) {
@@ -676,7 +665,6 @@ impl WasmSystem {
         for slot in &p.peripherals {
             slot.peripheral.borrow_mut().tick(self);
         }
-        crate::peripherals::can::arbitrate_bus(self);
         p.nvic.borrow_mut().maybe_set_systick_intr_pending();
     }
 

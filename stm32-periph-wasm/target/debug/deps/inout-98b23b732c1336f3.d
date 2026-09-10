@@ -1,0 +1,11 @@
+/home/danish1075/Documents/microbit-v2/stm32-periph-wasm/target/debug/deps/inout-98b23b732c1336f3.d: /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/lib.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/errors.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout_buf.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/reserved.rs
+
+/home/danish1075/Documents/microbit-v2/stm32-periph-wasm/target/debug/deps/libinout-98b23b732c1336f3.rlib: /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/lib.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/errors.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout_buf.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/reserved.rs
+
+/home/danish1075/Documents/microbit-v2/stm32-periph-wasm/target/debug/deps/libinout-98b23b732c1336f3.rmeta: /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/lib.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/errors.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout_buf.rs /home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/reserved.rs
+
+/home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/lib.rs:
+/home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/errors.rs:
+/home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout.rs:
+/home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/inout_buf.rs:
+/home/danish1075/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/inout-0.1.4/src/reserved.rs:

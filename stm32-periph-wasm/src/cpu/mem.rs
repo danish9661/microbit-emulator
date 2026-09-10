@@ -26,6 +26,10 @@ pub struct MemRegion {
 
 fn is_periph(addr: u32) -> bool {
     (addr >= 0x40000000 && addr < 0x51000000)
+        // nRF52833: FICR/UICR factory+customer regs (boot reads these early)
+        || (addr >= 0x10000000 && addr < 0x10002000)
+        // nRF52833: GPIO P0/P1 live above the classic 0x40000000 window
+        || (addr >= 0x50000000 && addr < 0x50001000)
         // Full FSMC window (banks 1-4 every 0x10000000 up to 0xA0000000):
         // untapped banks must reach the model (inert 0), not the bus-fault
         // arms — the fsmc_test BANK4 probe depends on it.
@@ -61,14 +65,27 @@ impl FlatMemory {
             flash: vec![0; flash_size],
             ram: vec![0; ram_size],
             extra: Vec::new(),
-            flash_base: 0x08000000,
+            flash_base: 0x00000000,
             ram_base: 0x20000000,
             bad: Cell::new(None),
         }
     }
 
     fn in_flash(&self, addr: u32) -> bool {
-        addr >= self.flash_base && (addr - self.flash_base) < self.flash.len() as u32
+        self.flash_offset(addr).is_some()
+    }
+    /// Flash backing offset for an address. Primary base is 0x00000000 (nRF);
+    /// 0x08000000 is kept as a transition alias so legacy STM32 test images
+    /// (blinky.bin vectors/code at 0x0800xxxx) still fetch during the port.
+    /// TODO(P2): drop the alias once no test loads an 0x08000000 image.
+    fn flash_offset(&self, addr: u32) -> Option<usize> {
+        if addr.wrapping_sub(self.flash_base) < self.flash.len() as u32 {
+            Some((addr.wrapping_sub(self.flash_base)) as usize)
+        } else if addr.wrapping_sub(0x0800_0000) < self.flash.len() as u32 {
+            Some((addr.wrapping_sub(0x0800_0000)) as usize)
+        } else {
+            None
+        }
     }
     fn in_ram(&self, addr: u32) -> bool {
         addr >= self.ram_base && (addr - self.ram_base) < self.ram.len() as u32
@@ -93,8 +110,8 @@ impl FlatMemory {
     pub fn load(&mut self, data: &[u8], base: u32) {
         for (i, &b) in data.iter().enumerate() {
             let a = base.wrapping_add(i as u32);
-            if self.in_flash(a) {
-                self.flash[(a - self.flash_base) as usize] = b;
+            if let Some(off) = self.flash_offset(a) {
+                self.flash[off] = b;
             } else if self.in_ram(a) {
                 self.ram[(a - self.ram_base) as usize] = b;
             } else if is_periph(a) {
@@ -172,8 +189,8 @@ impl FlatMemory {
     /// Fetch one byte without any MPU check (execute permission belongs to
     /// the loop-top XN check). Unmapped bytes pend an execute-class bus
     /// fault (first-wins keeps the lowest faulting address).
-    fn fetch_byte(&self, addr: u32) -> Option<u8> {        if self.in_flash(addr) {
-            Some(self.flash[(addr - self.flash_base) as usize])
+    fn fetch_byte(&self, addr: u32) -> Option<u8> {        if let Some(off) = self.flash_offset(addr) {
+            Some(self.flash[off])
         } else if self.in_ram(addr) {
             Some(self.ram[(addr - self.ram_base) as usize])
         } else if let Some(idx) = self.extra_idx(addr) {
@@ -249,11 +266,11 @@ impl Memory for FlatMemory {
         }
         // Unmapped addresses keep the legacy behavior (bad-address latch
         // + 0) and never raise MPU faults; only mapped memory is checked.
-        if self.in_flash(addr) {
+        if let Some(off) = self.flash_offset(addr) {
             if self.mpu_deny(addr, 1, false) {
                 return 0;
             }
-            self.flash[(addr - self.flash_base) as usize]
+            self.flash[off]
         } else if self.in_ram(addr) {
             if self.mpu_deny(addr, 1, false) {
                 return 0;
