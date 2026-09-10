@@ -144,6 +144,87 @@ fn nrf_stubs_spim_pdm_qspi_usbd_radio() {
 }
 
 #[test]
+fn nrf_dma_driver_roundtrip() {
+    // P6a firmware (dma_nrf.s, GCC): UARTE TX DMA + TWIM RX DMA + SAADC
+    // RESULT DMA, each completed driver-side in phases (take -> RAM move ->
+    // complete), exactly like the JS driver will.
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/dma_nrf.bin"));
+    let sys = crate::sys();
+    // Phase 1: firmware stages UARTE TX DMA, spins on ENDTX.
+    cpu.run(sys, &mut mem, 20_000);
+    let (ptr, len) = crate::peripherals::uarte_nrf::take_txdma(sys).expect("uarte staged");
+    let bytes: Vec<u8> = (0..len).map(|i| mem.read8(ptr.wrapping_add(i))).collect();
+    crate::peripherals::uarte_nrf::complete_txdma(sys, &bytes);
+    // Phase 2: firmware stages TWIM RX DMA, spins on ENDRX.
+    cpu.run(sys, &mut mem, 20_000);
+    let (addr, ptr, len) = crate::peripherals::twim_nrf::take_rxdma(sys, "TWIM0").expect("twim staged");
+    assert_eq!(addr, 0x19, "accel address");
+    for (i, b) in [0x28u8, 0x00, 0x01].iter().enumerate().take(len as usize) {
+        mem.write8(ptr.wrapping_add(i as u32), *b);
+    }
+    crate::peripherals::twim_nrf::complete_rxdma(sys, "TWIM0", len);
+    // Phase 3: firmware stages SAADC RESULT, spins on END.
+    cpu.run(sys, &mut mem, 20_000);
+    let (ptr, len) = crate::peripherals::saadc_nrf::take_result(sys).expect("saadc staged");
+    mem.write8(ptr, 0xAB);
+    mem.write8(ptr.wrapping_add(1), 0x02);
+    crate::peripherals::saadc_nrf::complete_result(sys, len);
+    // Phase 4: drain to done loop.
+    cpu.run(sys, &mut mem, 2_000_000);
+    assert!(cpu.fault.is_none(), "dma faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("DMA:OK"), "missing DMA marker, got {out:?}");
+    assert!(out.contains("I2C:OK"), "missing I2C marker, got {out:?}");
+    assert!(out.contains("ADC:OK"), "missing ADC marker, got {out:?}");
+}
+
+/// Driver-style stepping: run small budgets with peripheral ticks between
+/// (mirrors the JS driver's step -> tick_peripherals loop; cpu.run alone
+/// only advances INSTRUCTION_COUNT, which is enough for polled counters
+/// but PPI dispatch lives in tick()).
+fn run_with_ticks(cpu: &mut Cpu, mem: &mut FlatMemory, sys: &crate::system::System, total: u32) {
+    let mut done = 0;
+    while done < total {
+        let n = cpu.run(sys, mem, 500);
+        sys.tick();
+        if n == 0 {
+            break;
+        }
+        done += n;
+    }
+}
+
+#[test]
+fn nrf_air_usb_radio_ppi() {
+    // P6b/c firmware (air_nrf.s, GCC): USBRESET (pre-signaled) + RADIO TX
+    // looped back through air + PPI TIMER->GPIOTE LED. Ticks interleaved.
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/air_nrf.bin"));
+    let sys = crate::sys();
+    crate::peripherals::usbd_nrf::signal_usbreset(sys);
+    crate::peripherals::radio_nrf::inject_rx(sys, vec![0x01, 0x02, 0x03]);
+    // Phase 1: USB + RADIO TX stage + RX END (no ticks needed yet).
+    cpu.run(sys, &mut mem, 60_000);
+    // Driver moves the TX packet through air (loopback).
+    if let Some(_t) = crate::peripherals::radio_nrf::take_tx(sys) {
+        crate::peripherals::radio_nrf::inject_rx(sys, vec![0xAA]);
+    }
+    // Phase 2: PPI/TIMER part with ticks.
+    run_with_ticks(&mut cpu, &mut mem, sys, 400_000);
+    assert!(cpu.fault.is_none(), "air faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("USB:OK"), "missing USB marker, got {out:?}");
+    assert!(out.contains("RADIO:OK"), "missing RADIO marker, got {out:?}");
+    assert!(out.contains("PPI:OK"), "missing PPI marker, got {out:?}");
+}
+
+
+#[test]
 fn nrf_boot_flash_at_zero() {
     // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.
     // Boot marker + functional marker + 2nd run (no state leak).
@@ -278,6 +359,25 @@ fn sdiv_plain_and_it() {
     cpu.run(sys, &mut mem, 3);
     // sdivne skipped -> r1 stays 11
     assert_eq!(cpu.regs.r[1], 11);
+}
+
+#[test]
+fn tst_sets_flags_without_writeback() {
+    // GAS: tst r0,r1 = 0x4208 (sop 8), cmp r0,r1 = 0x4288 (sop 10).
+    // Regression 2026-09-11: sop 8 ran CMP (sub_flags). TST must AND.
+    // Flag read-out is via beq (D000 skips the movs when Z=1): the snippet
+    // harness always executes a trailing zero halfword (flag-setting lsls),
+    // so XPSR cannot be asserted directly.
+    // Z=0 case: 0x200000 & 0x200000 != 0 (CMP would set Z here).
+    let (cpu, _) = run_snippet(&[0x4208, 0xD000, 0x2201], &[(0, 0x200000), (1, 0x200000), (2, 0)]);
+    assert_eq!(cpu.regs.r[0], 0x200000, "TST must not write Rd");
+    assert_eq!(cpu.regs.r[2], 1, "beq not taken: Z clear");
+    // Z=1 case: disjoint bits AND to zero.
+    let (cpu, _) = run_snippet(&[0x4208, 0xD000, 0x2201], &[(0, 0xF0), (1, 0x0F), (2, 0)]);
+    assert_eq!(cpu.regs.r[2], 0, "beq taken: Z set");
+    // CMP control: equal operands set Z (beq taken).
+    let (cpu, _) = run_snippet(&[0x4288, 0xD000, 0x2201], &[(0, 5), (1, 5), (2, 0)]);
+    assert_eq!(cpu.regs.r[2], 0, "CMP equal: Z set");
 }
 
 #[test]

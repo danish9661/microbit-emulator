@@ -1161,7 +1161,11 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut dyn Memory, op: u16, pc
                 cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
             }
             8 => {
-                sub_flags(cpu, a, b, 1);
+                // TST (GAS: tst r0,r1 = 0x4208): flags = a & b, no writeback.
+                // Was CMP (sub_flags) — caught by nRF PPI firmware 2026-09-11:
+                // tst r0,r1 with r0==r1!=0 must clear Z; CMP set Z and took
+                // the wrong beq branch.
+                nz(cpu, a & b);
             }
             9 => {
                 // RSB (negate): Rd = 0 - Rs, with flags
