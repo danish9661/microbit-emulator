@@ -104,6 +104,24 @@ fn nrf_sensors_buttons_twim_gpiote() {
 }
 
 #[test]
+fn nrf_extras_saadc_temp_rng_pwm() {
+    // P4 firmware (extras_nrf.s, GCC): SAADC/TEMP/RNG/PWM0 handshake.
+    // Toolchain note: micro:bit firmware is built with ARM GCC directly
+    // (xpack 14.2.1 via arduino packages); arduino-cli itself is proven
+    // working by compiling an (M33, out-of-scope) UNO R4 sketch.
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/extras_nrf.bin"));
+    let sys = crate::sys();
+    cpu.run(sys, &mut mem, 8_000_000);
+    assert!(cpu.fault.is_none(), "extras faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("SAADC:OK"), "missing SAADC marker, got {out:?}");
+    assert!(out.contains("TEMP:OK"), "missing TEMP marker, got {out:?}");
+    assert!(out.contains("RNG:OK"), "missing RNG marker, got {out:?}");
+    assert!(out.contains("PWM:OK"), "missing PWM marker, got {out:?}");
+}
+
+#[test]
 fn nrf_boot_flash_at_zero() {
     // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.
     // Boot marker + functional marker + 2nd run (no state leak).

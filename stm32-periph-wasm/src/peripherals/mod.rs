@@ -17,6 +17,10 @@ pub mod rtc_nrf;
 pub mod twim_nrf;
 pub mod gpiote_nrf;
 pub mod ppi_nrf;
+pub mod saadc_nrf;
+pub mod temp_nrf;
+pub mod rng_nrf;
+pub mod pwm_nrf;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -209,6 +213,10 @@ fn make_nrf_peripheral(name: &str, _ext: &ExtDevices) -> Option<Box<dyn Peripher
         .or_else(|| twim_nrf::Twim::new(name))
         .or_else(|| gpiote_nrf::Gpiote::new(name))
         .or_else(|| ppi_nrf::Ppi::new(name))
+        .or_else(|| saadc_nrf::Saadc::new(name))
+        .or_else(|| temp_nrf::TempNrf::new(name))
+        .or_else(|| rng_nrf::RngNrf::new(name))
+        .or_else(|| pwm_nrf::PwmNrf::new(name))
         .or_else(|| Mpu::new(name))
         .or_else(|| Fpu::new(name))
         .or_else(|| Dwt::new(name))
@@ -314,12 +322,16 @@ impl Peripherals {
             (0x4000_3000, 0x4000_4000, "TWIM0"),
             (0x4000_4000, 0x4000_5000, "TWIM1"),
             (0x4000_6000, 0x4000_7000, "GPIOTE"),
+            (0x4000_7000, 0x4000_8000, "SAADC"),
             (0x4000_8000, 0x4000_9000, "TIMER0"),
             (0x4000_9000, 0x4000_A000, "TIMER1"),
             (0x4000_A000, 0x4000_B000, "TIMER2"),
             (0x4000_B000, 0x4000_C000, "RTC0"),
+            (0x4000_C000, 0x4000_D000, "TEMP"),
+            (0x4000_D000, 0x4000_E000, "RNG"),
             (0x4001_1000, 0x4001_2000, "RTC1"),
             (0x4001_F000, 0x4002_0000, "PPI"),
+            (0x4002_1000, 0x4002_2000, "PWM0"),
             (0x4001_E000, 0x4001_F000, "NVMC"),
             (0x1000_0000, 0x1000_1000, "FICR"),
             (0x1000_1000, 0x1000_2000, "UICR"),
