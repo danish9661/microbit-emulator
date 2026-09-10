@@ -72,17 +72,12 @@ impl FlatMemory {
     }
 
     fn in_flash(&self, addr: u32) -> bool {
-        self.flash_offset(addr).is_some()
+        addr.wrapping_sub(self.flash_base) < self.flash.len() as u32
     }
-    /// Flash backing offset for an address. Primary base is 0x00000000 (nRF);
-    /// 0x08000000 is kept as a transition alias so legacy STM32 test images
-    /// (blinky.bin vectors/code at 0x0800xxxx) still fetch during the port.
-    /// TODO(P2): drop the alias once no test loads an 0x08000000 image.
+    /// Flash backing offset (flash_base = 0x00000000 on nRF52833).
     fn flash_offset(&self, addr: u32) -> Option<usize> {
         if addr.wrapping_sub(self.flash_base) < self.flash.len() as u32 {
-            Some((addr.wrapping_sub(self.flash_base)) as usize)
-        } else if addr.wrapping_sub(0x0800_0000) < self.flash.len() as u32 {
-            Some((addr.wrapping_sub(0x0800_0000)) as usize)
+            Some(addr.wrapping_sub(self.flash_base) as usize)
         } else {
             None
         }

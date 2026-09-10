@@ -323,7 +323,7 @@ fn tbb_index_by_value() {
     // tbb [pc,r3] indexes by r3's VALUE with an unmasked pc+4 base.
     // Table at (pc+4): [0x04 -> case0][0x10 -> case1]; r3=1 -> case1.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     mem.write16(0x20002000, 0xE8DF);
     mem.write16(0x20002002, 0xF003);
     mem.write8(0x20002004, 0x04);
@@ -342,7 +342,7 @@ fn sdiv_plain_and_it() {
     assert_eq!(cpu.regs.r[1], 168);
     // cmp r1,#11 (NE, r1=1680) ; ite gt (BFCC) ; sdivne (taken: 168)
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     for (i, w) in [0x290Bu16, 0xBFCC, 0xFB91, 0xF1F3].iter().enumerate() {
         mem.write16(0x20002000 + i as u32 * 2, *w);
@@ -656,7 +656,7 @@ fn shift_reg_flag_setting() {
 fn ldrex_strex_sizes() {
     // Byte/halfword/word exclusives; single-threaded: STREX always 0.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     mem.write8(0x20003000, 0xAB);
     mem.write16(0x20003010, 0xCDEF);
     mem.write32(0x20003020, 0x12345678);
@@ -745,7 +745,7 @@ fn it_pred_mov_preserves() {
     // D_PageTicker: cmp sets N=1; itt lt; movlt (taken) must preserve N
     // so strlt (LT) also takes. Unpredicated movs still sets N/Z.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     // cmp r3,#0 (r3=-20) ; itt lt (BFBC) ; movlt r3,#1 ; strlt r3,[r2]
     for (i, w) in [0x2B03u16, 0xBFBC, 0x2301, 0x6013].iter().enumerate() {
@@ -764,7 +764,7 @@ fn it_pred_mov_preserves() {
 fn bare_movs_sets_nz_preserves_c() {
     // cmp r2,#1 (r2=-6: C=1) ; movs r0,#0 -> N=0,Z=1,C stays 1
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     for (i, w) in [0x2A01u16, 0x2000].iter().enumerate() {
         mem.write16(0x20002000 + i as u32 * 2, *w);
@@ -784,7 +784,7 @@ fn it_pred_add_preserves() {
     // cmp r3,#0 (r3=-5, N=1) ; itt mi (BF? mask C cond MI=4: 0xBFC4) ;
     // addmi r6,r6,r3 (taken, r6=0+5, N stays 1)
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     for (i, w) in [0x2B00u16, 0xBF44, 0x18F6].iter().enumerate() {
         mem.write16(0x20002000 + i as u32 * 2, *w);
@@ -803,7 +803,7 @@ fn bare_subreg_sets_flags() {
     // Run EXACTLY 1 step: run_snippet's trailing NOPs (movs r0,r0) would
     // clobber Z and mask the assertion.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write16(0x20002000, 0x1A1B);
     cpu.regs.r[3] = 0x64;
@@ -818,7 +818,7 @@ fn bare_subreg_sets_flags() {
 fn ldrsh_reg_sx() {
     // ldrsh.w r2,[r0,r3,lsl#2] (F930 2023): signed halfword, no writeback.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write16(0x20002000, 0xF930);
     mem.write16(0x20002002, 0x2023);
@@ -836,7 +836,7 @@ fn ldrsh_reg_sx() {
 fn cmp13_n_flag() {
     // cmp r3,#3 with r3=1 -> N=1,Z=0,C=0,V=0 (S_Start's LE depends on N).
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write16(0x20002000, 0x2B03);
     cpu.regs.r[3] = 1;
@@ -855,7 +855,7 @@ fn lsr_reg_zero_noop() {
     // immediate-#0-means-32 rule must NOT apply. DOOM's `(v >> (i*8))`
     // nibble/byte extracts with i==0 returned 0 (patch id 0x120).
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     // lsrs r2, r3, r1 (FA T2 LSR-reg: check exact encoding via GAS? use
     // 16-bit T1 LSRS-reg: 000100_xxxx? T1 LSR-reg = 010000_0010_Rm_Rd
@@ -873,7 +873,7 @@ fn fpu_mvfr_and_cpacr_reset() {
     // FPU bring-up: guests probe MVFR0-2 at 0xE000EF40-48 and enable CP10/11
     // via CPACR before the first VFP insn.
     let _g = lock_boot();
-    let (cpu, mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (cpu, mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     assert_eq!(mem.read32(0xE000EF40), 0x1011_0021, "MVFR0");
     assert_eq!(mem.read32(0xE000EF44), 0x1100_0011, "MVFR1");
     assert_eq!(mem.read32(0xE000EF48), 0x0000_0040, "MVFR2");
@@ -890,7 +890,7 @@ fn fpu_nocp_faults_and_latches_ufsr() {
     // faults regardless of CPACR. One locked boot: the latch lives in the
     // process-global model, so no fresh boot may intervene before the read.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     mem.write32(0xE000ED88, 0); // do not rely on reset: parallel tests share SYS
     mem.write16(0x20002000, 0xEEB7);
     mem.write16(0x20002002, 0x0A00);
@@ -915,7 +915,7 @@ fn fpu_nocp_faults_and_latches_ufsr() {
 /// RAM results are stable.
 fn run_fpu_snippet(code: &[u16], regs: &[(usize, u32)], sregs: &[(usize, u32)], fpscr: u32, n: u32) -> (Cpu, FlatMemory) {
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     mem.write32(0xE000ED88, 0x00F0_0000); // CP10+CP11 full access
     for (i, w) in code.iter().enumerate() {
         mem.write16(0x20002000 + (i as u32) * 2, *w);
@@ -1050,7 +1050,7 @@ fn fpu_rejects() {
         [0xEE10, 0xFA10],       // vmov pc,s0
     ] {
         let _g = lock_boot();
-        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
         mem.write32(0xE000ED88, 0x00F0_0000);
         for (i, w) in code.iter().enumerate() {
             mem.write16(0x20002000 + (i as u32) * 2, *w);
@@ -1362,7 +1362,7 @@ fn fpu_lazy_reserve_and_return() {
     // extended frame: FPSCR stacked at +96, S0-S15 untouched (lazy),
     // LSPACT=1, FPCAR=sp+32, LR=0xFFFFFFE9. Return restores FPSCR + SP.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write32(0xE000ED88, 0x00F0_0000);
     cpu.regs.s[0] = 0xAAAAAAAA;
@@ -1394,7 +1394,7 @@ fn fpu_lazy_first_use_stacks() {
     // First handler FPU use stacks the LIVE S regs into FPCAR, clears
     // LSPACT; return then restores the thread's values (over handler mods).
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write32(0xE000ED88, 0x00F0_0000);
     cpu.regs.s[0] = 0xAAAAAAAA;
@@ -1424,7 +1424,7 @@ fn fpu_lazy_first_use_stacks() {
 fn fpu_eager_stacks_at_entry() {
     // LSPEN=0: S0-S15 + FPSCR land in the frame at entry; LSPACT stays 0.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write32(0xE000ED88, 0x00F0_0000);
     mem.write32(0xE000EF34, 0x8000_0000); // ASPEN only (no LSPEN)
@@ -1446,7 +1446,7 @@ fn fpu_eager_stacks_at_entry() {
 fn fpu_no_fpca_unchanged() {
     // No FPU use: classic 8-word frame, classic LR, model FP regs untouched.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write32(0xE000ED88, 0x00F0_0000);
     let sp0 = cpu.regs.r[13];
@@ -1468,7 +1468,7 @@ fn fpu_nested_frames() {
     // Thread 0x11111111 -> outer use stacks it, sets 1.0 -> inner use
     // stacks 1.0, sets -0.5 -> returns unwind exactly.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write32(0xE000ED88, 0x00F0_0000);
     // Thread uses the FPU: vmov s0,r0 (EE00 0A10) with r0=0x11111111.
@@ -1614,7 +1614,7 @@ fn fpu_vmrs_id_regs() {
     // MVFR with Rt=13/15 faults (no APSR form for ID regs).
     for code in [[0xEEF7, 0xFA10u16], [0xEEF6, 0xDA10u16]] {
         let _g = lock_boot();
-        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
         mem.write32(0xE000ED88, 0x00F0_0000);
         for (i, w) in code.iter().enumerate() {
             mem.write16(0x20002000 + (i as u32) * 2, *w);
@@ -1640,7 +1640,7 @@ fn fpu_mvfr2_and_fpexc() {
     // manual section (shadowed `let _g` does NOT drop the guard early —
     // re-locking deadlocks).
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     mem.write16(0x20002000, 0xEEF8);
     mem.write16(0x20002002, 0x0A10);
     cpu.regs.r[15] = 0x20002001;
@@ -1650,7 +1650,7 @@ fn fpu_mvfr2_and_fpexc() {
     // Clearing EN via VMSR bricks FPU access (silicon behavior): the next
     // VFP insn faults, including a re-enabling VMSR. (Same lock scope —
     // the boot() below installs a fresh system, no re-lock needed.)
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write32(0xE000ED88, 0x00F0_0000);
     // vmsr fpexc, r0 (EEE8 0A10) with r0 bit30 clear.
@@ -1676,7 +1676,7 @@ fn fpu_fpexc_ex_tracks_lazy() {
     // FIRST (like silicon) and then observes EX=0. To see EX=1, read the
     // model FPCCR directly (no FPU insn involved).
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write32(0xE000ED88, 0x00F0_0000);
     cpu.regs.s[0] = 0xAAAAAAAA;
@@ -1754,12 +1754,12 @@ fn irq_test_image(spinning: bool) -> Vec<u8> {
         img[off..off + 2].copy_from_slice(&v.to_le_bytes());
     }
     w32(&mut img, 0x00, 0x20002000); // SP
-    w32(&mut img, 0x04, 0x08000101); // reset -> main
+    w32(&mut img, 0x04, 0x00000101); // reset -> main
     for v in 2..16u32 {
-        w32(&mut img, (v * 4) as usize, if v == 3 { 0x08000121 } else { 0x08000111 });
+        w32(&mut img, (v * 4) as usize, if v == 3 { 0x00000121 } else { 0x00000111 });
     }
-    w32(&mut img, 0x40, 0x08000111); // IRQ0 -> A
-    w32(&mut img, 0x44, 0x08000121); // IRQ1 -> B
+    w32(&mut img, 0x40, 0x00000111); // IRQ0 -> A
+    w32(&mut img, 0x44, 0x00000121); // IRQ1 -> B
     w16(&mut img, 0x100, 0xE7FE); // main: b .
     if spinning {
         w16(&mut img, 0x110, 0xE7FE);
@@ -1901,7 +1901,7 @@ fn tail_chain_reuses_frame() {
     assert!(cpu.exception_return(sys, &mut mem, lr_a, cpu.regs.r[15] & !1));
     no_fault(&cpu, &mem);
     assert_eq!(cpu.ipsr, 17, "chained into B, not returned to thread");
-    assert_eq!(cpu.regs.r[15] & !1, 0x08000120, "at B handler");
+    assert_eq!(cpu.regs.r[15] & !1, 0x00000120, "at B handler");
     assert_eq!(cpu.exc_stack.len(), 1, "one live entry (pop+push)");
     // B's LR returns to the thread the reused frame came from (F9: the
     // stack held only A, so the frame owner is thread-on-MSP).
@@ -1935,7 +1935,7 @@ fn dwt_cyccnt_counts_instructions() {
     // 100 spinning instructions must read back as exactly 100 counts; with
     // TRCENA clear the counter stays frozen.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write16(0x20002000, 0xE7FE); // b . spin in SRAM
     cpu.regs.r[15] = 0x20002001;
@@ -1954,7 +1954,7 @@ fn msr_basepri_max_semantics() {
     // MSR BASEPRI,R0 (F380 8812) sets the mask; BASEPRI_MAX (F380 8813)
     // only ever raises it; MRS (F3E0 8112) reads it back.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write16(0x20002000, 0xF380);
     mem.write16(0x20002002, 0x8812); // msr basepri, r0
@@ -2037,7 +2037,7 @@ fn aircr_vectkey_gate() {
     // AIRCR writes need the VECTKEY in the HIGH halfword; the old gate
     // checked the low half, so PRIGROUP/SYSRESETREQ never applied.
     let _g = lock_boot();
-    let (_, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (_, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     assert_eq!((mem.read32(0xE000ED0C) >> 8) & 7, 0, "reset PRIGROUP=0");
     mem.write32(0xE000ED0C, 0x05FA0300); // valid key, PRIGROUP=3
@@ -2106,7 +2106,7 @@ fn sev_wfe_event_register() {
     // SEV then WFE: event registered -> clear-and-continue, no sleep.
     // Bare WFE: sleeps. Encodings: SEV=BF40, WFE=BF20, b .=E7FE.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     cpu.deliver_irqs = true;
     mem.write16(0x20002000, 0xBF40);
@@ -2118,7 +2118,7 @@ fn sev_wfe_event_register() {
     assert!(!cpu.sleeping, "SEV-armed WFE must not sleep");
     assert_eq!(cpu.regs.r[15] & !1, 0x20002004, "past the WFE");
 
-    let (mut cpu2, mut mem2) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu2, mut mem2) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys2 = crate::sys();
     cpu2.deliver_irqs = true;
     mem2.write16(0x20002000, 0xBF20);
@@ -2149,7 +2149,7 @@ fn cps_faultmask_target() {
     // CPSID F (B673) sets FAULTMASK, leaving PRIMASK alone; CPSIE I (B662)
     // still drives PRIMASK. Bit 4 is the value, bit 0 the target.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write16(0x20002000, 0xB673); // cpsid f
     mem.write16(0x20002002, 0xB663); // cpsie f
@@ -2537,7 +2537,7 @@ fn nonbasethrdena_faults_boosted_thread_return() {
     mem.write32(0xE000ED14, 0x201); // CCR: STKALIGN + NONBASETHRDENA
     cpu.regs.basepri = 0x50; // boosted: thread return must fault
     cpu.take_exception(sys, &mut mem, 0);
-    cpu.regs.r[15] = 0x08000100; // park PC at the main spin: the aborted
+    cpu.regs.r[15] = 0x00000100; // park PC at the main spin: the aborted
     // return never ran anything, so without this the replacement fault
     // would stack (and resume into) handler code.
     let lr = cpu.regs.r[14];
@@ -2694,7 +2694,7 @@ fn dwt_foldcnt_counts_skipped_slots() {
     // ite eq with Z set: moveq executes, movne folds (FOLDCNT+1, zero
     // guest cycles). GAS: cmp=4289 ite=BF0C moveq=2001 movne=2002.
     let _g = lock_boot();
-    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky.bin"));
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
     let sys = crate::sys();
     mem.write32(0xE000EDFC, 1 << 24); // DEMCR.TRCENA
     mem.write16(0x20002000, 0x4289); // cmp r1,r1 (Z=1)

@@ -24,7 +24,7 @@ pub struct Scb {
 impl Default for Scb {
     fn default() -> Self {
         Self {
-            vtor: 0x0800_0000,
+            vtor: 0x0000_0000,
             aircr: 0xFA05_0000,
             shcsr: 0x0000_0000,
             // CCR reset: STKALIGN=1 (bit 9) like silicon — exception entry

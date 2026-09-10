@@ -49,7 +49,6 @@ pub trait Peripheral: std::any::Any {
     fn write(&mut self, sys: &System, offset: u32, value: u32);
     fn tick(&mut self, _sys: &System) {}
     fn rx_byte(&mut self, _sys: &System, _byte: u8) {}
-    fn flash_erase_applied(&mut self) {}
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
@@ -66,9 +65,6 @@ pub struct Peripherals {
 }
 
 impl Peripherals {
-    pub fn flash_erase_applied(&self) {}
-    pub fn pwr_wakeup(&self) {}
-
     pub fn dwt_count_exc(&self, sys: &System) {
         if sys.p.read(sys, 0xE000EDFC, 4) & (1 << 24) == 0 {
             return;

@@ -544,7 +544,7 @@ impl Cpu {
         // (CPU privilege context was already published as handler-privileged
         // before the stacking pre-validation above.)
         sys.p.nvic.borrow_mut().set_in_interrupt(true);
-        // Load handler PC through VTOR (model SCB, default 0x08000000).
+        // Load handler PC through VTOR (model SCB, default 0x00000000).
         let vtor = sys.p.read(sys, 0xE000ED08, 4);
         let handler = mem.read32(vtor.wrapping_add(vector * 4));
         self.regs.r[15] = handler | 1;

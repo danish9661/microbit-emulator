@@ -9,7 +9,7 @@ plus RADIO loopback.
 Build + serve (pkg/ is generated, not committed):
 
 ```bash
-~/.cargo/bin/wasm-pack build stm32-periph-wasm --target web --out-dir ../demo/pkg
+~/.cargo/bin/wasm-pack build nrf52833-periph-wasm --target web --out-dir ../demo/pkg
 cd demo && python3 -m http.server 8080
 # open http://localhost:8080 (file:// won't load the wasm module)
 ```

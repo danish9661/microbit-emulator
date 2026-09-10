@@ -31,7 +31,7 @@ Reason: Nordic uses TASKS/EVENTS/SHORTS, zero register overlap. Rewrite = delete
 ## 3. REWIRE
 - `cpu/mem.rs`: `flash_base 0x08000000 -> 0x00000000`. Loader reads SP/PC from 0x0/0x4.
 - `peripherals/mod.rs new_wasm/from_svd`: replace STM32 base table with nRF map.
-- Crate rename: `stm32-periph-wasm -> nrf52833-periph-wasm`.
+- Crate + folder renamed `stm32-periph-wasm` -> `nrf52833-periph-wasm` (done P7c).
 - SVD: fetch `nrf52833.svd` from Nordic MDK into `monox/nrf52833.svd`.
 
 ## 4. ADD (Nordic, in order)
