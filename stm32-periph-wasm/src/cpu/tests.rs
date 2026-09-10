@@ -87,6 +87,23 @@ fn nrf_blinky_firmware_runs() {
 }
 
 #[test]
+fn nrf_sensors_buttons_twim_gpiote() {
+    // P3 firmware (sensors_nrf.s): TWIM0 accel probe + GPIOTE BTN_A event.
+    // Harness drives P0.14 high (button pressed) before run.
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/sensors_nrf.bin"));
+    let sys = crate::sys();
+    sys.p.gpio.borrow_mut().set_input_pin(0, 14, true);
+    cpu.run(sys, &mut mem, 1_000_000);
+    assert!(cpu.fault.is_none(), "sensors faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("SENS:OK"), "missing SENS marker, got {out:?}");
+    assert!(out.contains("BTN:1"), "button press not seen, got {out:?}");
+    let ev = crate::system::i2c_tap_take_tx("TWIM0");
+    assert!(ev.contains(&0x28), "accel reg probe missing, got {ev:?}");
+}
+
+#[test]
 fn nrf_boot_flash_at_zero() {
     // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.
     // Boot marker + functional marker + 2nd run (no state leak).
