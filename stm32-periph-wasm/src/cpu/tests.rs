@@ -70,6 +70,23 @@ fn synth_vector_boot() {
 }
 
 #[test]
+fn nrf_blinky_firmware_runs() {
+    // Real bare-metal nRF52833 firmware (blinky_nrf.s, GCC): HFCLK start,
+    // P0.21 DIR, UART "BOOT" + 2x "BLINK", LED toggles. Proves the full
+    // path: flash@0x0 -> CLOCK -> GPIO -> UARTE.
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
+    let sys = crate::sys();
+    cpu.run(sys, &mut mem, 5_000_000);
+    assert!(cpu.fault.is_none(), "blinky faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("BOOT"), "missing BOOT marker, got {out:?}");
+    assert!(out.contains("BLINK"), "missing BLINK marker, got {out:?}");
+    // LED pin P0.21 was driven (ends OFF after 2 blinks, DIR stays set)
+    assert_eq!(sys.p.gpio.borrow().dir[0] & (1 << 21), 1 << 21, "P0.21 DIR");
+}
+
+#[test]
 fn nrf_boot_flash_at_zero() {
     // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.
     // Boot marker + functional marker + 2nd run (no state leak).
