@@ -244,6 +244,28 @@ fn nrf_c_irq_timer_uart() {
     assert!(out.contains("DONE"), "missing DONE, got {out:?}");
 }
 
+
+#[test]
+fn sysresetreq_latches_reboot_request() {
+    // AIRCR write with VECTKEY + SYSRESETREQ latches a reboot the driver
+    // must honor (MicroPython's MBR/SD handoff resets twice during boot).
+    // movw r0,#0xE008 (AIRCR low: VECTKEYSTAT|SREQ); verified by effect.
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(&[0x00, 0x20, 0x00, 0x20, 0x01, 0x00, 0x00, 0x00]);
+    // ldr r0,=0xE000ED0C; ldr r1,=0x05FA0004; str r1,[r0]; b .
+    for (i, w) in [0x4802u16, 0x4903, 0x6001, 0xE7FE].iter().enumerate() {
+        mem.write16(0x20002000 + i as u32 * 2, *w);
+    }
+    mem.write32(0x2000200C, 0xE000ED0C);
+    mem.write32(0x20002010, 0x05FA0004);
+    cpu.regs.r[15] = 0x20002001;
+    let sys = crate::sys();
+    assert!(!crate::system::is_watchdog_reset_requested(), "clean start");
+    cpu.run(sys, &mut mem, 8);
+    assert!(crate::system::is_watchdog_reset_requested(), "SYSRESETREQ latched");
+    assert!(!crate::system::is_watchdog_reset_requested(), "consumed once");
+}
+
 #[test]
 fn nrf_boot_flash_at_zero() {
     // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.

@@ -55,8 +55,38 @@ Per-peripheral: boot marker + functional marker + 2nd consecutive run
 Minimum boot prove: `synth_vector_boot` + new `nrf_boot_flash_at_zero` test.
 
 ## 7. Phases
-P1: strip + rewire + FICR/CLOCK/GPIO/NVMC (this session)
-P2: TIMER/RTC/UARTE + blinky marker
-P3: TWIM/GPIOTE/PPI + matrix/buttons/sensor
-P4: SAADC/TEMP/RNG/PWM/PDM/QSPI/USBD + CODAL
-P5: RADIO + browser page sweep
+P1: strip + rewire + FICR/CLOCK/GPIO/NVMC (done)
+P2: TIMER/RTC/UARTE + blinky marker (done)
+P3: TWIM/GPIOTE/PPI + matrix/buttons/sensor (done)
+P4: SAADC/TEMP/RNG/PWM/PDM/QSPI/USBD + CODAL (done, minus CODAL build)
+P5: RADIO + browser page sweep (done: stubs + demo page)
+P6: EASYDMA take/complete + PPI dispatch + USBD reset + RADIO loopback (done)
+P7: SVD validation + IRQ audit + remaining stubs + cleanup (done)
+P8: real-world firmware gate (done, see below)
+
+## 8. MicroPython v2.1.1 boot findings (2026-09-11, probe, not committed)
+
+Image: official release hex (SoftDevice + app, 450KB) split with
+`blinky/hex2bin.py` (handles type-02 segments + UICR extras) into a
+512KB flash bin + UICR NRFFW words (`0x10001014: 00070700 0007e000`).
+
+Observed over 60M+ instructions, zero CPU faults:
+- MBR/SD handoff issues two `SYSRESETREQ`s (AIRCR wait-loop); the driver
+  must honor `is_watchdog_reset_requested()` by rebooting from the vector
+  table (covered by `sysresetreq_latches_reboot_request`). UICR NRFFW must
+  be seeded or the first stage misbehaves.
+- App reaches main firmware: manages NVIC ISER (UARTE0/GPIOTE/SAADC/
+  TIMER1/TIMER3), no faults, parks in an SVC-driven SoftDevice wait loop.
+- No timer IRQ ever fires (SysTick/RTC0 never configured that far), no
+  USBD pullup (REPL is USB-only), no matrix/NVMC traffic.
+
+Verdict: boot chain works; REPL + scheduler progress are gated on P9.
+
+## 9. Next (P9): SoftDevice-event + USB endpoint modeling
+
+- USBD endpoint DMA (ENDEPIN/EPDATASTATUS, descriptors at known RAM) so
+  TinyUSB enumerates and the MicroPython REPL banner appears on USB.
+- SoftDevice event pump: `sd_evt_get` must eventually return events
+  (BLE/RTC), else the app SVC-spins forever; RADIO air already loops back.
+- Then CODAL full build (`/tmp/codal` clone exists; needs the codal-core
+  orchestrator + era-appropriate GCC, out of scope for P8).
