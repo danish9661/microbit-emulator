@@ -122,6 +122,18 @@ fn nrf_extras_saadc_temp_rng_pwm() {
 }
 
 #[test]
+fn nrf_stubs_spim_pdm_qspi_usbd_radio() {
+    // P5 firmware (stubs_nrf.s, GCC): SPIM alias + PDM + QSPI + USBD + RADIO.
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/stubs_nrf.bin"));
+    let sys = crate::sys();
+    cpu.run(sys, &mut mem, 8_000_000);
+    assert!(cpu.fault.is_none(), "stubs faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("STUBS:OK"), "missing STUBS marker, got {out:?}");
+}
+
+#[test]
 fn nrf_boot_flash_at_zero() {
     // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.
     // Boot marker + functional marker + 2nd run (no state leak).

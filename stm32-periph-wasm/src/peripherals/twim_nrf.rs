@@ -24,9 +24,12 @@ pub struct Twim {
 
 impl Twim {
     pub fn new(name: &str) -> Option<Box<dyn Peripheral>> {
+        // SERIAL0/1 share one base each (TWIM/SPIM/SPIS/TWIS aliases);
+        // one slot per base, ENABLE selects the mode (emulator is mode-blind).
         let irq = match name {
-            "TWIM0" | "TWI0" | "SPIM0_SPIS0_TWIM0_TWIS0" => 3,
-            "TWIM1" | "TWI1" => 33,
+            "TWIM0" | "TWI0" | "SPIM0" | "SPIS0" | "TWIS0" | "SPI0"
+            | "SPIM0_SPIS0_TWIM0_TWIS0" => 3,
+            "TWIM1" | "TWI1" | "SPIM1" | "SPIS1" | "TWIS1" | "SPI1" => 33,
             _ => return None,
         };
         Some(Box::new(Self {
@@ -60,8 +63,9 @@ impl Peripheral for Twim {
     }
     fn write(&mut self, sys: &System, offset: u32, value: u32) {
         match offset {
-            0x000 => { self.started_rx = true; } // STARTRX
+            0x000 => { self.started_rx = true; } // STARTRX (TWIM) / START (SPIM alias 0x010 below)
             0x008 => { self.started_tx = true; self.ev_stopped = false; } // STARTTX
+            0x010 => { self.started_tx = true; self.ev_stopped = false; } // SPIM TASKS_START
             0x014 => { // STOP -> STOPPED event
                 self.started_tx = false;
                 self.started_rx = false;

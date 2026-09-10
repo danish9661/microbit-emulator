@@ -21,6 +21,10 @@ pub mod saadc_nrf;
 pub mod temp_nrf;
 pub mod rng_nrf;
 pub mod pwm_nrf;
+pub mod pdm_nrf;
+pub mod qspi_nrf;
+pub mod usbd_nrf;
+pub mod radio_nrf;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -217,6 +221,10 @@ fn make_nrf_peripheral(name: &str, _ext: &ExtDevices) -> Option<Box<dyn Peripher
         .or_else(|| temp_nrf::TempNrf::new(name))
         .or_else(|| rng_nrf::RngNrf::new(name))
         .or_else(|| pwm_nrf::PwmNrf::new(name))
+        .or_else(|| pdm_nrf::PdmNrf::new(name))
+        .or_else(|| qspi_nrf::QspiNrf::new(name))
+        .or_else(|| usbd_nrf::UsbdNrf::new(name))
+        .or_else(|| radio_nrf::RadioNrf::new(name))
         .or_else(|| Mpu::new(name))
         .or_else(|| Fpu::new(name))
         .or_else(|| Dwt::new(name))
@@ -329,10 +337,12 @@ impl Peripherals {
             (0x4000_B000, 0x4000_C000, "RTC0"),
             (0x4000_C000, 0x4000_D000, "TEMP"),
             (0x4000_D000, 0x4000_E000, "RNG"),
-            (0x4001_1000, 0x4001_2000, "RTC1"),
+            (0x4001_D000, 0x4001_E000, "PDM"),
+            (0x4001_E000, 0x4001_F000, "NVMC"),
             (0x4001_F000, 0x4002_0000, "PPI"),
             (0x4002_1000, 0x4002_2000, "PWM0"),
-            (0x4001_E000, 0x4001_F000, "NVMC"),
+            (0x4002_7000, 0x4002_8000, "USBD"),
+            (0x4002_9000, 0x4002_A000, "QSPI"),
             (0x1000_0000, 0x1000_1000, "FICR"),
             (0x1000_1000, 0x1000_2000, "UICR"),
             (0x5000_0000, 0x5000_0C00, "GPIO"),

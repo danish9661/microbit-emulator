@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>micro:bit v2.2 emulator (nRF52833)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+  #matrix { display: grid; grid-template-columns: repeat(5, 44px); gap: 6px; margin: 1rem 0; }
+  .led { width: 44px; height: 44px; border-radius: 6px; background: #222; }
+  .led.on { background: #f00; box-shadow: 0 0 12px #f00; }
+  button { font-size: 1rem; margin-right: .5rem; }
+  #uart { width: 100%; height: 140px; font-family: monospace; }
+</style>
+</head>
+<body>
+<h1>micro:bit v2.2 emulator <small>(nRF52833 target only)</small></h1>
+<p>Drop a <code>.hex/.bin</code> built for flash <code>0x0</code> (ARM GCC, no SoftDevice).
+Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB serial.</p>
+<input type="file" id="fw" accept=".hex,.bin">
+<div id="matrix"></div>
+<div>
+  <button id="btnA">A (P0.14)</button>
+  <button id="btnB">B (P0.23)</button>
+  <button id="reset">Reset</button>
+</div>
+<h2>UART (UARTE0)</h2>
+<textarea id="uart" readonly></textarea>
+<script type="module">
+  // Wiring map (micro:bit v2 schematic):
+  // ROW1 P0.21 ROW2 P0.22 ROW3 P0.15 ROW4 P0.24 ROW5 P0.19
+  // COL1 P0.28 COL2 P0.11 COL3 P0.31 COL4 P1.05 COL5 P0.30
+  // Matrix is row-sink / col-source scanned from GPIO OUT.
+  const ROWS = [[0,21],[0,22],[0,15],[0,24],[0,19]];
+  const COLS = [[0,28],[0,11],[0,31],[1,5],[0,30]];
+  const grid = document.getElementById('matrix');
+  const leds = [];
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) {
+    const d = document.createElement('div');
+    d.className = 'led'; grid.appendChild(d); leds.push(d);
+  }
+  // TODO(P6): import wasm-pack pkg/ and wire:
+  //   wasm.init(); cpu = new wasm.WasmCpu(sp, pc, 512*1024, 128*1024);
+  //   per frame: wasm.gpio_read_output(port, pin) per ROW/COL,
+  //   led on = row==0 && col==1 (sinking row, sourcing col).
+  //   buttons: wasm.gpio_set_input(0, 14, pressed).
+  //   uart: document.getElementById('uart').value = wasm.get_uart_output().
+  document.getElementById('uart').value =
+    'P5 placeholder — build wasm with wasm-pack and wire exports.\n' +
+    'cargo test (native, 120 green) is the current proof gate.';
+</script>
+</body>
+</html>
