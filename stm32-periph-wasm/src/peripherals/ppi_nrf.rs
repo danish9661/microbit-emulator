@@ -61,7 +61,7 @@ impl Peripheral for Ppi {
     fn read(&mut self, _sys: &System, offset: u32) -> u32 {
         match offset {
             0x500 => self.chen,
-            0x510..=0x55C => self.eep[((offset - 0x510) / 8) as usize],
+            0x510..=0x55C if ((offset - 0x510) % 8) == 0 => self.eep[((offset - 0x510) / 8) as usize],
             0x514..=0x560 if ((offset - 0x514) % 8) == 0 => self.tep[((offset - 0x514) / 8) as usize],
             _ => 0,
         }
@@ -91,6 +91,7 @@ mod tests {
         p.write(&sys, 0x504, 1); // CHENSET0
         assert_eq!(p.read(&sys, 0x500), 1);
         assert_eq!(p.read(&sys, 0x510), 0x4000_8140);
+        assert_eq!(p.read(&sys, 0x514), 0x4000_6000, "TEP reads back");
         p.write(&sys, 0x508, 1);
         assert_eq!(p.read(&sys, 0x500), 0);
     }
