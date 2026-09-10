@@ -1,8 +1,8 @@
 use crate::system::{System, instruction_count};
 use super::Peripheral;
 
-/// RTC0-2 (RTC0 0x4000B000, RTC1 0x40011000, RTC2 0x4000D000? — 52833:
-/// RTC0 0x4000B000, RTC1 0x40011000, RTC2 0x40024000).
+/// RTC0 0x4000B000 / RTC1 0x40011000 / RTC2 0x40024000
+/// (IRQs 11/17/36 per nrf52833.svd).
 /// Offsets: TASKS_START 0x000, TASKS_STOP 0x004, TASKS_CLEAR 0x00C,
 /// EVENTS_TICK 0x100, EVENTS_OVRFLW 0x104, EVENTS_COMPARE[n] 0x140+n*4,
 /// INTENSET 0x304, INTENCLR 0x308, COUNTER 0x504, PRESCALER 0x508,
@@ -26,7 +26,7 @@ impl RtcNrf {
         let irq = match name {
             "RTC0" => 11,
             "RTC1" => 17,
-            "RTC2" => 41,
+            "RTC2" => 36,
             _ => return None,
         };
         Some(Box::new(Self {

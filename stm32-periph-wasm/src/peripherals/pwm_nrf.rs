@@ -1,7 +1,8 @@
 use crate::system::System;
 use super::Peripheral;
 
-/// PWM0-3 (PWM0 0x40021000, stride 0x1000, IRQ 28+i). P4 subset:
+/// PWM0 0x4001C000 / PWM1 0x40021000 / PWM2 0x40022000 / PWM3 0x4002D000
+/// (IRQs 28/33/34/45 per nrf52833.svd). P4 subset:
 ///   TASKS_STOP 0x004, TASKS_SEQSTART[n] 0x008+n*4,
 ///   EVENTS_STOPPED 0x104, EVENTS_SEQSTARTED[n] 0x108+n*4,
 ///   EVENTS_SEQEND[n] 0x110+n*4, EVENTS_PWMPERIODEND 0x120,
@@ -24,9 +25,9 @@ impl PwmNrf {
     pub fn new(name: &str) -> Option<Box<dyn Peripheral>> {
         let irq = match name {
             "PWM0" => 28,
-            "PWM1" => 29,
-            "PWM2" => 30,
-            "PWM3" => 31,
+            "PWM1" => 33,
+            "PWM2" => 34,
+            "PWM3" => 45,
             _ => return None,
         };
         Some(Box::new(Self {

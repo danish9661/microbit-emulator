@@ -25,6 +25,12 @@ pub mod pdm_nrf;
 pub mod qspi_nrf;
 pub mod usbd_nrf;
 pub mod radio_nrf;
+pub mod wdt_nrf;
+pub mod qdec_nrf;
+pub mod comp_nrf;
+pub mod nfct_nrf;
+pub mod egu_nrf;
+pub mod misc_nrf;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -225,6 +231,15 @@ fn make_nrf_peripheral(name: &str, _ext: &ExtDevices) -> Option<Box<dyn Peripher
         .or_else(|| qspi_nrf::QspiNrf::new(name))
         .or_else(|| usbd_nrf::UsbdNrf::new(name))
         .or_else(|| radio_nrf::RadioNrf::new(name))
+        .or_else(|| wdt_nrf::WdtNrf::new(name))
+        .or_else(|| qdec_nrf::QdecNrf::new(name))
+        .or_else(|| comp_nrf::CompNrf::new(name))
+        .or_else(|| nfct_nrf::NfctNrf::new(name))
+        .or_else(|| egu_nrf::EguNrf::new(name))
+        .or_else(|| misc_nrf::MwuNrf::new(name))
+        .or_else(|| misc_nrf::EcbNrf::new(name))
+        .or_else(|| misc_nrf::AarCcmNrf::new(name))
+        .or_else(|| misc_nrf::I2sNrf::new(name))
         .or_else(|| Mpu::new(name))
         .or_else(|| Fpu::new(name))
         .or_else(|| Dwt::new(name))
@@ -267,21 +282,28 @@ impl Peripherals {
                 .unwrap_or(p);
             let name = &p.name;
             let size = extract_svd_max_offset(resolved).max(0x10).min(0x1000);
-            let (start, end) = if name.as_str() == "FPU" {
-                (0xE000_EF34, 0xE000_EF34 + 0x18)
-            } else if name.as_str() == "FPU_CPACR" {
-                (0xE000_ED88, 0xE000_ED8C)
-            } else {
-                (p.base_address as u32, p.base_address as u32 + size)
-            };
-            // CLOCK+POWER share 0x40000000 region: merge into one slot to
-            // avoid overlap assert (see new_wasm for the hardcoded twin).
-            let name_eff = if name.as_str() == "POWER" { "CLOCK" } else { name.as_str() };
-            if name.as_str() == "POWER" && peripherals.peripherals.iter().any(|s| s.start == 0x4000_0000) {
+            // nRF FPU engine (@0x40026000) is not the ARM core FPU: skip the
+            // SVD entry (read-as-0 is fine, no driver touches it) and let
+            // the explicit ARM slot below own the "FPU" model.
+            if name.as_str() == "FPU" {
                 continue;
             }
+            let (start, end, name_eff) = if name.as_str() == "P0" {
+                // P0/P1 blocks overlap in the SVD (shared GPIO register
+                // file): one combined slot, same as new_wasm (see gpio_nrf).
+                (0x5000_0000, 0x5000_0C00, "GPIO")
+            } else if name.as_str() == "P1" {
+                continue;
+            } else if name.as_str() == "FPU_CPACR" {
+                (0xE000_ED88, 0xE000_ED8C, "FPU_CPACR")
+            } else if name.as_str() == "POWER" {
+                // CLOCK+POWER share 0x40000000: merge into one slot.
+                (0x4000_0000, 0x4000_1000, "CLOCK")
+            } else {
+                (p.base_address as u32, p.base_address as u32 + size, name.as_str())
+            };
             if let Some(peri) = make_nrf_peripheral(name_eff, ext_devices) {
-                // avoid double-register when SVD lists both CLOCK and POWER
+                // avoid double-register on shared-base aliases
                 if peripherals.peripherals.iter().any(|s| s.start == start) {
                     continue;
                 }
@@ -290,6 +312,12 @@ impl Peripherals {
                     peripheral: RefCell::new(peri),
                 });
             }
+        }
+        // Explicit ARM core slots (absent from the SVD address space).
+        if let Some(p) = Fpu::new("FPU") {
+            peripherals.peripherals.push(PeripheralSlot {
+                start: 0xE000_EF34, end: 0xE000_EF34 + 0x18, peripheral: RefCell::new(p),
+            });
         }
         // Explicit slots absent from SVD (same precedent as old QSPI/DWT).
         if let Some(p) = Dwt::new("DWT") {
@@ -329,6 +357,7 @@ impl Peripherals {
             (0x4000_2000, 0x4000_3000, "UARTE0"),
             (0x4000_3000, 0x4000_4000, "TWIM0"),
             (0x4000_4000, 0x4000_5000, "TWIM1"),
+            (0x4000_5000, 0x4000_6000, "NFCT"),
             (0x4000_6000, 0x4000_7000, "GPIOTE"),
             (0x4000_7000, 0x4000_8000, "SAADC"),
             (0x4000_8000, 0x4000_9000, "TIMER0"),
@@ -337,12 +366,30 @@ impl Peripherals {
             (0x4000_B000, 0x4000_C000, "RTC0"),
             (0x4000_C000, 0x4000_D000, "TEMP"),
             (0x4000_D000, 0x4000_E000, "RNG"),
+            (0x4000_E000, 0x4000_F000, "ECB"),
+            (0x4000_F000, 0x4001_0000, "AAR"),
+            (0x4001_0000, 0x4001_1000, "WDT"),
+            (0x4001_1000, 0x4001_2000, "RTC1"),
+            (0x4001_2000, 0x4001_3000, "QDEC"),
+            (0x4001_3000, 0x4001_4000, "COMP"),
+            (0x4001_4000, 0x4001_5000, "EGU0"),
+            (0x4001_A000, 0x4001_B000, "TIMER3"),
+            (0x4001_B000, 0x4001_C000, "TIMER4"),
+            (0x4001_C000, 0x4001_D000, "PWM0"),
             (0x4001_D000, 0x4001_E000, "PDM"),
             (0x4001_E000, 0x4001_F000, "NVMC"),
             (0x4001_F000, 0x4002_0000, "PPI"),
-            (0x4002_1000, 0x4002_2000, "PWM0"),
+            (0x4002_0000, 0x4002_1000, "MWU"),
+            (0x4002_1000, 0x4002_2000, "PWM1"),
+            (0x4002_2000, 0x4002_3000, "PWM2"),
+            (0x4002_3000, 0x4002_4000, "SPIM2"),
+            (0x4002_4000, 0x4002_5000, "RTC2"),
+            (0x4002_5000, 0x4002_6000, "I2S"),
             (0x4002_7000, 0x4002_8000, "USBD"),
+            (0x4002_8000, 0x4002_9000, "UARTE1"),
             (0x4002_9000, 0x4002_A000, "QSPI"),
+            (0x4002_D000, 0x4002_E000, "PWM3"),
+            (0x4002_F000, 0x4003_0000, "SPIM3"),
             (0x1000_0000, 0x1000_1000, "FICR"),
             (0x1000_1000, 0x1000_2000, "UICR"),
             (0x5000_0000, 0x5000_0C00, "GPIO"),
@@ -438,6 +485,67 @@ impl Peripherals {
 
     pub fn addr_desc(&self, addr: u32) -> String {
         format!("addr=0x{:08x}", addr)
+    }
+}
+
+#[cfg(test)]
+mod svd_tests {
+    use super::*;
+
+    static NRF_SVD: &str = include_str!("../../../monox/nrf52833.svd");
+
+    fn slot_at(p: &Peripherals, addr: u32) -> bool {
+        p.peripherals.iter().any(|s| s.start == addr)
+    }
+
+    #[test]
+    fn svd_builds_without_overlap_and_matches_bases() {
+        let p = Peripherals::from_svd(NRF_SVD, GpioPorts::default(), &ExtDevices::default());
+        // Spot-check SVD ground-truth bases landed as slots.
+        for (base, why) in [
+            (0x1000_0000, "FICR"), (0x1000_1000, "UICR"),
+            (0x4000_0000, "CLOCK/POWER"), (0x4000_1000, "RADIO"),
+            (0x4000_2000, "UARTE0"), (0x4000_3000, "SERIAL0"),
+            (0x4000_4000, "SERIAL1"), (0x4000_6000, "GPIOTE"),
+            (0x4000_7000, "SAADC"), (0x4000_8000, "TIMER0"),
+            (0x4000_B000, "RTC0"), (0x4000_C000, "TEMP"),
+            (0x4000_D000, "RNG"), (0x4001_E000, "NVMC"),
+            (0x4002_7000, "USBD"), (0x5000_0000, "P0"),
+        ] {
+            assert!(slot_at(&p, base), "missing slot {base:#010x} ({why})");
+        }
+        // No duplicate starts (shared-base aliases merged).
+        let mut starts: Vec<u32> = p.peripherals.iter().map(|s| s.start).collect();
+        starts.sort();
+        let ndedup = starts.len();
+        starts.dedup();
+        assert_eq!(ndedup, starts.len(), "duplicate slot starts");
+        // FICR PART readable through the SVD-built map too.
+        assert_eq!(p.peripherals.iter().filter(|s| s.start == 0x1000_0000).count(), 1);
+    }
+
+    #[test]
+    fn hardcoded_map_matches_svd_bases() {
+        // Every new_wasm slot start must equal some SVD peripheral base
+        // (guards against hand-typed address typos like the PWM0 one).
+        let xml_bases: std::collections::HashSet<u32> = {
+            let dev: svd_parser::svd::Device = svd_parser::parse(NRF_SVD).unwrap();
+            dev.peripherals.into_iter().filter_map(|p| match p {
+                MaybeArray::Single(p) => Some(p.base_address as u32),
+                MaybeArray::Array(_, _) => None,
+            }).collect()
+        };
+        let p = Peripherals::new_wasm(GpioPorts::default(), &ExtDevices::default());
+        for s in &p.peripherals {
+            if s.start >= 0xE000_0000 {
+                continue; // ARM core slots (DWT/SCB/...) are not in the SVD
+            }
+            if s.start == 0x4002_9000 {
+                continue; // QSPI absent from this SVD revision (see qspi_nrf)
+            }
+            assert!(xml_bases.contains(&s.start),
+                "hardcoded slot {:#010x} not a SVD base", s.start);
+        }
     }
 }
 

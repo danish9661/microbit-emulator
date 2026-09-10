@@ -1,7 +1,7 @@
 use crate::system::{System, instruction_count};
 use super::Peripheral;
 
-/// RNG @ 0x4000D000 (IRQ 22). TASKS_START 0x000, TASKS_STOP 0x004,
+/// RNG @ 0x4000D000 (IRQ 13 per nrf52833.svd). TASKS_START 0x000, TASKS_STOP 0x004,
 /// EVENTS_VALRDY 0x100, SHORTS 0x200, INTENSET 0x304/CLR 0x308,
 /// VALUE 0x508. Deterministic LCG seeded from INSTRUCTION_COUNT
 /// (same recipe as the old STM32 RNG, new addresses). SHORTS bit0 =
@@ -32,7 +32,7 @@ impl RngNrf {
         if self.value == 0 { self.value = 0x1F2E_3D4C; }
         self.ev_valrdy = true;
         if self.intenset & 1 != 0 {
-            sys.p.nvic.borrow_mut().set_intr_pending(22);
+            sys.p.nvic.borrow_mut().set_intr_pending(13);
         }
         if self.shorts & 1 != 0 { self.running = false; }
     }

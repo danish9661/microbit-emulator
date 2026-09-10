@@ -1,7 +1,7 @@
 use crate::system::System;
 use super::Peripheral;
 
-/// TEMP @ 0x4000C000 (IRQ 21). TASKS_START 0x000, TASKS_STOP 0x004,
+/// TEMP @ 0x4000C000 (IRQ 12 per nrf52833.svd). TASKS_START 0x000, TASKS_STOP 0x004,
 /// EVENTS_DATARDY 0x100, INTENSET 0x304/CLR 0x308, TEMP 0x508 (signed,
 /// 0.25 degC LSB). Synthetic 21 degC = 84. DATARDY set on START.
 pub struct TempNrf {
@@ -37,7 +37,7 @@ impl Peripheral for TempNrf {
             0x000 => {
                 self.ev_datardy = true;
                 if self.intenset & 1 != 0 {
-                    sys.p.nvic.borrow_mut().set_intr_pending(21);
+                    sys.p.nvic.borrow_mut().set_intr_pending(12);
                 }
             }
             0x004 => self.ev_datardy = false,

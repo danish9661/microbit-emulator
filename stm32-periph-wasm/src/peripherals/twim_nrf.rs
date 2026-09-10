@@ -39,10 +39,13 @@ impl Twim {
     pub fn new(name: &str) -> Option<Box<dyn Peripheral>> {
         // SERIAL0/1 share one base each (TWIM/SPIM/SPIS/TWIS aliases);
         // one slot per base, ENABLE selects the mode (emulator is mode-blind).
+        // IRQ ground truth (nrf52833.svd): SERIAL0=3, SERIAL1=4.
         let irq = match name {
             "TWIM0" | "TWI0" | "SPIM0" | "SPIS0" | "TWIS0" | "SPI0"
             | "SPIM0_SPIS0_TWIM0_TWIS0" => 3,
-            "TWIM1" | "TWI1" | "SPIM1" | "SPIS1" | "TWIS1" | "SPI1" => 33,
+            "TWIM1" | "TWI1" | "SPIM1" | "SPIS1" | "TWIS1" | "SPI1" => 4,
+            "SPIM2" | "SPIS2" | "SPI2" => 35,
+            "SPIM3" => 47,
             _ => return None,
         };
         Some(Box::new(Self {
@@ -58,7 +61,6 @@ impl Twim {
             sys.p.nvic.borrow_mut().set_intr_pending(self.irq);
         }
     }
-    fn tap_addr(&self) -> u8 { self.address }
 }
 
 impl Peripheral for Twim {
@@ -117,10 +119,13 @@ impl Peripheral for Twim {
             0x308 => self.intenset &= !value,
             0x500 => self.enable = value & 0xF,
             0x51C => {
-                // TXD byte -> tapped slave matching ADDRESS
+                // TXD byte -> tapped I2C slave matching ADDRESS. SPIM-only
+                // instances (SPIM2/3) skip the I2C tap (TODO P8: route them
+                // to spi_taps with CS/DC like the JS display layer expects).
                 self.tx_byte = (value & 0xFF) as u8;
-                let _ = self.tap_addr();
-                crate::system::i2c_tap_push_tx(&self.name, self.tx_byte);
+                if self.name.starts_with("TWI") {
+                    crate::system::i2c_tap_push_tx(&self.name, self.tx_byte);
+                }
             }
             0x588 => self.address = (value & 0x7F) as u8,
             0x534 => self.rx_ptr = value,
@@ -150,6 +155,8 @@ fn base_of(name: &str) -> Option<u32> {
     match name {
         "TWIM0" | "SPIM0" | "TWI0" | "SPI0" => Some(0x4000_3000),
         "TWIM1" | "SPIM1" | "TWI1" | "SPI1" => Some(0x4000_4000),
+        "SPIM2" | "SPI2" => Some(0x4002_3000),
+        "SPIM3" => Some(0x4002_F000),
         _ => None,
     }
 }
@@ -214,19 +221,19 @@ mod tests {
     #[test]
     fn tx_byte_reaches_tap_and_stop_events() {
         let sys = test_dummy_system();
-        // Own tap queue (SPIM1 alias): the TWIM1 queue is used by the DMA
-        // test running in parallel (global per-name queues).
-        let mut t = Twim::new("SPIM1").unwrap();
+        // Own tap queue (TWI0 alias): TWIM0 is used by the sensors firmware
+        // test and TWIM1 by the DMA test (global per-name queues).
+        let mut t = Twim::new("TWI0").unwrap();
         t.write(&sys, 0x500, 6); // ENABLE
         t.write(&sys, 0x588, 0x19); // LSM303 accel addr
         t.write(&sys, 0x008, 1); // STARTTX
         t.write(&sys, 0x51C, 0x28); // OUT_X_L register
         t.write(&sys, 0x014, 1); // STOP
         assert_eq!(t.read(&sys, 0x104), 1, "STOPPED");
-        let ev = crate::system::i2c_tap_take_tx("SPIM1");
+        let ev = crate::system::i2c_tap_take_tx("TWI0");
         assert!(ev.contains(&0x28), "tap got byte, got {ev:?}");
         // 2nd run: fresh instance, no leak
-        let mut t2 = Twim::new("SPIM1").unwrap();
+        let mut t2 = Twim::new("TWI0").unwrap();
         assert_eq!(t2.read(&sys, 0x104), 0);
     }
     #[test]
