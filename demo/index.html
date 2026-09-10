@@ -11,6 +11,7 @@
   .led.on { background: #f00; box-shadow: 0 0 12px #f00; }
   button { font-size: 1rem; margin-right: .5rem; }
   #uart { width: 100%; height: 140px; font-family: monospace; }
+  #status { color: #555; }
 </style>
 </head>
 <body>
@@ -18,6 +19,7 @@
 <p>Drop a <code>.hex/.bin</code> built for flash <code>0x0</code> (ARM GCC, no SoftDevice).
 Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB serial.</p>
 <input type="file" id="fw" accept=".hex,.bin">
+<span id="status">loading wasm…</span>
 <div id="matrix"></div>
 <div>
   <button id="btnA">A (P0.14)</button>
@@ -27,10 +29,9 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
 <h2>UART (UARTE0)</h2>
 <textarea id="uart" readonly></textarea>
 <script type="module">
-  // Wiring map (micro:bit v2 schematic):
-  // ROW1 P0.21 ROW2 P0.22 ROW3 P0.15 ROW4 P0.24 ROW5 P0.19
-  // COL1 P0.28 COL2 P0.11 COL3 P0.31 COL4 P1.05 COL5 P0.30
-  // Matrix is row-sink / col-source scanned from GPIO OUT.
+  import init, * as wasm from './pkg/nrf52833_periph_wasm.js';
+
+  // Wiring map (micro:bit v2 schematic, rows sink / cols source):
   const ROWS = [[0,21],[0,22],[0,15],[0,24],[0,19]];
   const COLS = [[0,28],[0,11],[0,31],[1,5],[0,30]];
   const grid = document.getElementById('matrix');
@@ -39,15 +40,128 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     const d = document.createElement('div');
     d.className = 'led'; grid.appendChild(d); leds.push(d);
   }
-  // TODO(P6): import wasm-pack pkg/ and wire:
-  //   wasm.init(); cpu = new wasm.WasmCpu(sp, pc, 512*1024, 128*1024);
-  //   per frame: wasm.gpio_read_output(port, pin) per ROW/COL,
-  //   led on = row==0 && col==1 (sinking row, sourcing col).
-  //   buttons: wasm.gpio_set_input(0, 14, pressed).
-  //   uart: document.getElementById('uart').value = wasm.get_uart_output().
-  document.getElementById('uart').value =
-    'P5 placeholder — build wasm with wasm-pack and wire exports.\n' +
-    'cargo test (native, 120 green) is the current proof gate.';
+  const uartBox = document.getElementById('uart');
+  const status = document.getElementById('status');
+
+  await init();
+  wasm.reset_state();
+  wasm.init();
+  status.textContent = 'wasm ready — drop firmware.';
+
+  let cpu = null, boot = null;
+  function parseHex(text) {
+    // Minimal Intel HEX: data records only, up to 512KB from base 0.
+    const img = new Uint8Array(512 * 1024);
+    let high = 0, empty = true;
+    for (const line of text.split(/\r?\n/)) {
+      if (!line.startsWith(':')) continue;
+      const n = parseInt(line.slice(1, 3), 16);
+      const addr = parseInt(line.slice(3, 7), 16);
+      const type = parseInt(line.slice(7, 9), 16);
+      if (type === 4) { high = parseInt(line.slice(9, 13), 16) << 16; continue; }
+      if (type !== 0) continue;
+      for (let i = 0; i < n; i++) {
+        const a = (high + addr + i) & 0x7FFFF;
+        img[a] = parseInt(line.slice(9 + i * 2, 11 + i * 2), 16);
+        empty = false;
+      }
+    }
+    return empty ? null : img;
+  }
+  function bootImage(u8) {
+    const dv = new DataView(u8.buffer);
+    const sp = dv.getUint32(0, true), pc = dv.getUint32(4, true);
+    wasm.reset_state();
+    wasm.init();
+    cpu = new wasm.WasmCpu(sp, pc, 512 * 1024, 128 * 1024);
+    cpu.load_firmware(u8, 0);
+    boot = { sp, pc };
+    uartBox.value = '';
+    status.textContent = `running (SP=${sp.toString(16)} PC=${pc.toString(16)})`;
+  }
+  document.getElementById('fw').addEventListener('change', async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    const buf = await f.arrayBuffer();
+    let img = null;
+    if (f.name.endsWith('.hex')) {
+      img = parseHex(new TextDecoder().decode(buf));
+      if (!img) { status.textContent = 'no data records in hex'; return; }
+    } else {
+      img = new Uint8Array(buf);
+    }
+    bootImage(img);
+  });
+  document.getElementById('reset').addEventListener('click', () => {
+    if (cpu && boot) {
+      cpu.reset_cpu(boot.sp, boot.pc);
+      uartBox.value = '';
+      status.textContent = 'reset';
+    }
+  });
+  for (const [id, port, pin] of [['btnA', 0, 14], ['btnB', 0, 23]]) {
+    const b = document.getElementById(id);
+    b.addEventListener('pointerdown', () => wasm.gpio_set_input(port, pin, true));
+    b.addEventListener('pointerup', () => wasm.gpio_set_input(port, pin, false));
+    b.addEventListener('pointerleave', () => wasm.gpio_set_input(port, pin, false));
+  }
+  // EASYDMA pump: move staged transfers between guest RAM and hosts.
+  function pumpDma() {
+    if (!cpu) return;
+    let t = wasm.uarte_take_txdma();
+    if (t.length) {
+      const bytes = cpu.mem_read(t[0], t[1]);
+      wasm.uarte_complete_txdma(bytes);
+    }
+    for (const name of ['TWIM0', 'TWIM1']) {
+      t = wasm.twim_take_txdma(name);
+      if (t.length) {
+        const bytes = cpu.mem_read(t[1], t[2]);
+        wasm.twim_complete_txdma(name, bytes);
+      }
+      t = wasm.twim_take_rxdma(name);
+      if (t.length) {
+        // No slave model bound in the demo: complete with 0xFF fill.
+        const fill = new Uint8Array(t[2]).fill(0xFF);
+        cpu.mem_write(t[1], fill);
+        wasm.twim_complete_rxdma(name, t[2]);
+      }
+    }
+    t = wasm.saadc_take_result();
+    if (t.length) {
+      const fill = new Uint8Array(t[1] * 2).fill(0x80);
+      cpu.mem_write(t[0], fill);
+      wasm.saadc_complete_result(t[1]);
+    }
+    t = wasm.pdm_take_sample();
+    if (t.length) {
+      const fill = new Uint8Array(t[1] * 2);
+      cpu.mem_write(t[0], fill);
+      wasm.pdm_complete_sample();
+    }
+    t = wasm.radio_take_tx();
+    if (t.length) {
+      // Demo air: loop straight back.
+      const bytes = cpu.mem_read(t[0], 8);
+      wasm.radio_inject_rx(bytes);
+    }
+  }
+  function frame() {
+    if (cpu) {
+      cpu.step(20000);
+      wasm.tick_peripherals();
+      pumpDma();
+      const out = wasm.get_uart_output();
+      if (out) uartBox.value += out;
+      for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) {
+        const row = wasm.gpio_read_output(ROWS[r][0], ROWS[r][1]);
+        const col = wasm.gpio_read_output(COLS[c][0], COLS[c][1]);
+        leds[r * 5 + c].classList.toggle('on', !row && col);
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
 </script>
 </body>
 </html>

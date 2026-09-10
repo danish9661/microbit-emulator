@@ -144,6 +144,75 @@ pub fn spi_push_miso(peripheral: &str, bytes: &[u8]) {
     system::spi_tap_miso_push(peripheral, bytes);
 }
 
+// ── EASYDMA driver API (JS owns the data path: take -> mem move -> complete)
+#[wasm_bindgen]
+pub fn uarte_take_txdma() -> Vec<u32> {
+    crate::peripherals::uarte_nrf::take_txdma(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn uarte_complete_txdma(bytes: &[u8]) {
+    crate::peripherals::uarte_nrf::complete_txdma(sys(), bytes);
+}
+
+#[wasm_bindgen]
+pub fn twim_take_txdma(peripheral: &str) -> Vec<u32> {
+    crate::peripherals::twim_nrf::take_txdma(sys(), peripheral)
+        .map(|(a, p, n)| vec![a as u32, p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn twim_complete_txdma(peripheral: &str, data: &[u8]) {
+    crate::peripherals::twim_nrf::complete_txdma(sys(), peripheral, data);
+}
+
+#[wasm_bindgen]
+pub fn twim_take_rxdma(peripheral: &str) -> Vec<u32> {
+    crate::peripherals::twim_nrf::take_rxdma(sys(), peripheral)
+        .map(|(a, p, n)| vec![a as u32, p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn twim_complete_rxdma(peripheral: &str, amount: u32) {
+    crate::peripherals::twim_nrf::complete_rxdma(sys(), peripheral, amount);
+}
+
+#[wasm_bindgen]
+pub fn saadc_take_result() -> Vec<u32> {
+    crate::peripherals::saadc_nrf::take_result(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn saadc_complete_result(amount: u32) {
+    crate::peripherals::saadc_nrf::complete_result(sys(), amount);
+}
+
+#[wasm_bindgen]
+pub fn pdm_take_sample() -> Vec<u32> {
+    crate::peripherals::pdm_nrf::take_sample(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn pdm_complete_sample() {
+    crate::peripherals::pdm_nrf::complete_sample(sys());
+}
+
+// ── USBD host events + RADIO air ──
+#[wasm_bindgen]
+pub fn usbd_signal_reset() {
+    crate::peripherals::usbd_nrf::signal_usbreset(sys());
+}
+
+#[wasm_bindgen]
+pub fn radio_take_tx() -> Vec<u32> {
+    crate::peripherals::radio_nrf::take_tx(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn radio_inject_rx(bytes: &[u8]) {
+    crate::peripherals::radio_nrf::inject_rx(sys(), bytes.to_vec());
+}
+
 // ── I2C bus taps (JS hardware layer: LSM303 accel/mag) ──
 #[wasm_bindgen]
 pub fn i2c_register_slave(peripheral: &str, address: u8) {
