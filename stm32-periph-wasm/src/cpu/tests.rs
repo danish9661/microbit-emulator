@@ -31,9 +31,11 @@ fn boot(bin: &[u8]) -> (Cpu, FlatMemory) {
     let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
     mem.load(bin, 0x00000000);
     assert_eq!(mem.read32(0x00000000), sp, "flash load failed");
-    // drain stale UART
-    let _ = crate::system::get_uart_output().lock().unwrap().clone();
-    crate::system::get_uart_output().lock().unwrap().clear();
+    // Drain stale UART when possible (best-effort: marker tests hold the
+    // UART lock across their whole body and drain explicitly themselves).
+    if crate::system::try_lock_uart().is_some() {
+        crate::system::get_uart_output().lock().unwrap().clear();
+    }
     (cpu, mem)
 }
 
@@ -71,6 +73,8 @@ fn synth_vector_boot() {
 
 #[test]
 fn nrf_blinky_firmware_runs() {
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
     // Real bare-metal nRF52833 firmware (blinky_nrf.s, GCC): HFCLK start,
     // P0.21 DIR, UART "BOOT" + 2x "BLINK", LED toggles. Proves the full
     // path: flash@0x0 -> CLOCK -> GPIO -> UARTE.
@@ -88,6 +92,8 @@ fn nrf_blinky_firmware_runs() {
 
 #[test]
 fn nrf_sensors_buttons_twim_gpiote() {
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
     // P3 firmware (sensors_nrf.s): TWIM0 accel probe + GPIOTE BTN_A event.
     // Harness drives P0.14 high (button pressed) before run.
     let _g = lock_boot();
@@ -105,6 +111,8 @@ fn nrf_sensors_buttons_twim_gpiote() {
 
 #[test]
 fn nrf_extras_saadc_temp_rng_pwm() {
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
     // P4 firmware (extras_nrf.s, GCC): SAADC/TEMP/RNG/PWM0 handshake.
     // Toolchain note: micro:bit firmware is built with ARM GCC directly
     // (xpack 14.2.1 via arduino packages); arduino-cli itself is proven
@@ -123,6 +131,8 @@ fn nrf_extras_saadc_temp_rng_pwm() {
 
 #[test]
 fn nrf_stubs_spim_pdm_qspi_usbd_radio() {
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
     // P5 firmware (stubs_nrf.s, GCC): SPIM alias + PDM + QSPI + USBD + RADIO.
     let _g = lock_boot();
     let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/stubs_nrf.bin"));

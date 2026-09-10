@@ -12,6 +12,23 @@ pub fn get_uart_output() -> &'static Mutex<String> {
     UART_OUTPUT.get_or_init(|| Mutex::new(String::new()))
 }
 
+#[cfg(test)]
+static UART_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Serialize tests that assert on the process-global UART buffer
+/// (firmware marker tests + peripheral console tests). Without it a
+/// concurrent boot() drain clears the buffer mid-assert.
+#[cfg(test)]
+pub fn lock_uart() -> std::sync::MutexGuard<'static, ()> {
+    UART_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+/// Best-effort drain guard for boot(): never blocks (a marker test may hold
+/// the lock across its whole run, including its own boot() call — blocking
+/// here would deadlock the same thread).
+#[cfg(test)]
+pub fn try_lock_uart() -> Option<std::sync::MutexGuard<'static, ()>> {
+    UART_TEST_LOCK.try_lock().ok()
+}
+
 // Global ExtDevices: populated by JS add_* calls before init
 static EXT_DEVICES: OnceLock<Mutex<ExtDevices>> = OnceLock::new();
 pub fn get_ext_devices() -> &'static Mutex<ExtDevices> {

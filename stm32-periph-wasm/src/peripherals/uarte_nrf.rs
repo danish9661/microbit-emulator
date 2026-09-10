@@ -1,12 +1,16 @@
 use crate::system::{System, instruction_count, get_uart_output};
 use super::Peripheral;
 
-/// UARTE0 @ 0x40002000 (IRQ 2). P2 polling subset:
+/// UARTE0 @ 0x40002000 (IRQ 2). Polling subset + EASYDMA:
 ///   ENABLE 0x500, BAUDRATE 0x524, TXD 0x51C (byte TX -> UART_OUTPUT),
-///   RXD 0x518 (byte RX), EVENTS_TXDRDY 0x11C / EVENTS_ENDTX 0x120 /
-///   EVENTS_RXDRDY 0x108 / EVENTS_ERROR 0x124, TASKS_STARTTX 0x008 /
-///   TASKS_STARTRX 0x000, INTENSET 0x304 / INTENCLR 0x308.
-/// EASYDMA (TXD.PTR/MAXCNT at 0x544+) comes in P3 with TWIM/SPIM DMA.
+///   RXD 0x518 (byte RX), EVENTS_RXDRDY 0x108 / EVENTS_ENDRX 0x10C /
+///   EVENTS_TXDRDY 0x11C / EVENTS_ENDTX 0x120 / EVENTS_ERROR 0x124,
+///   TASKS_STARTRX 0x000 / TASKS_STOPRX 0x004 / TASKS_STARTTX 0x008 /
+///   TASKS_STOPTX 0x00C, RXD.PTR 0x534 / MAXCNT 0x538 / AMOUNT 0x53C,
+///   TXD.PTR 0x544 / MAXCNT 0x548 / AMOUNT 0x54C, INTENSET 0x304/CLR 0x308.
+/// DMA rule: STARTTX with TXD.MAXCNT>0 stages a driver transfer
+/// (take_txdma -> mem_read -> complete_txdma); MAXCNT==0 completes at once
+/// (keeps polling firmware timing). Same for RX.
 pub struct Uarte {
     irq: i32,
     enable: u32,
@@ -14,15 +18,26 @@ pub struct Uarte {
     ev_txdrdy: bool,
     ev_endtx: bool,
     ev_rxdrdy: bool,
+    ev_endrx: bool,
     ev_error: bool,
     rx_buf: Vec<u8>,
     intenset: u32,
+    rx_ptr: u32,
+    rx_maxcnt: u32,
+    rx_amount: u32,
+    rx_pending: bool,
+    tx_ptr: u32,
+    tx_maxcnt: u32,
+    tx_amount: u32,
+    tx_pending: bool,
 }
 
 impl Default for Uarte {
     fn default() -> Self {
         Self { irq: 2, enable: 0, baudrate: 0, ev_txdrdy: false, ev_endtx: false,
-               ev_rxdrdy: false, ev_error: false, rx_buf: Vec::new(), intenset: 0 }
+               ev_rxdrdy: false, ev_endrx: false, ev_error: false, rx_buf: Vec::new(),
+               intenset: 0, rx_ptr: 0, rx_maxcnt: 0, rx_amount: 0, rx_pending: false,
+               tx_ptr: 0, tx_maxcnt: 0, tx_amount: 0, tx_pending: false }
     }
 }
 
@@ -47,6 +62,7 @@ impl Peripheral for Uarte {
     fn read(&mut self, _sys: &System, offset: u32) -> u32 {
         match offset {
             0x108 => self.ev_rxdrdy as u32,
+            0x10C => self.ev_endrx as u32,
             0x11C => self.ev_txdrdy as u32,
             0x120 => self.ev_endtx as u32,
             0x124 => self.ev_error as u32,
@@ -54,14 +70,38 @@ impl Peripheral for Uarte {
             0x500 => self.enable,
             0x518 => self.rx_buf.first().copied().unwrap_or(0) as u32,
             0x524 => self.baudrate,
+            0x534 => self.rx_ptr,
+            0x538 => self.rx_maxcnt,
+            0x53C => self.rx_amount,
+            0x544 => self.tx_ptr,
+            0x548 => self.tx_maxcnt,
+            0x54C => self.tx_amount,
             _ => 0,
         }
     }
     fn write(&mut self, sys: &System, offset: u32, value: u32) {
         match offset {
-            0x000 => {} // TASKS_STARTRX
-            0x008 => { self.ev_endtx = false; } // TASKS_STARTTX
+            0x000 => { // TASKS_STARTRX
+                self.ev_endrx = false;
+                self.rx_amount = 0;
+                self.rx_pending = self.rx_maxcnt > 0;
+            }
+            0x004 => { self.rx_pending = false; self.ev_endrx = true; self.fire(sys, 1 << 3); }
+            0x008 => { // TASKS_STARTTX
+                self.ev_endtx = false;
+                self.tx_amount = 0;
+                if self.tx_maxcnt > 0 {
+                    self.tx_pending = true; // driver completes (take/complete)
+                } else {
+                    self.ev_txdrdy = true;
+                    self.ev_endtx = true;
+                    self.fire(sys, 1 << 7);
+                    self.fire(sys, 1 << 8);
+                }
+            }
+            0x00C => { self.tx_pending = false; self.ev_endtx = true; self.fire(sys, 1 << 8); }
             0x108 => if value == 0 { self.ev_rxdrdy = false; }
+            0x10C => if value == 0 { self.ev_endrx = false; }
             0x11C => if value == 0 { self.ev_txdrdy = false; }
             0x120 => if value == 0 { self.ev_endtx = false; }
             0x124 => if value == 0 { self.ev_error = false; }
@@ -86,14 +126,77 @@ impl Peripheral for Uarte {
                 self.fire(sys, 1 << 8);
             }
             0x524 => self.baudrate = value,
+            0x534 => self.rx_ptr = value,
+            0x538 => self.rx_maxcnt = value & 0xFF,
+            0x544 => self.tx_ptr = value,
+            0x548 => self.tx_maxcnt = value & 0xFF,
             _ => {}
         }
     }
     fn rx_byte(&mut self, sys: &System, byte: u8) {
         self.rx_buf.push(byte);
+        if self.rx_pending {
+            // DMA RX: stream into the staged buffer accounting; the driver
+            // drains it via take_rx_pending (RAM write happens driver-side).
+            self.rx_amount += 1;
+            if self.rx_amount >= self.rx_maxcnt.max(1) {
+                self.rx_pending = false;
+                self.ev_endrx = true;
+                self.fire(sys, 1 << 3);
+            }
+        }
         if self.rx_buf.len() == 1 {
             self.ev_rxdrdy = true;
             self.fire(sys, 1 << 2);
+        }
+    }
+}
+
+/// Driver-side EASYDMA: find the UARTE0 slot and run `f` on it.
+pub fn with_uarte<R>(sys: &System, f: impl FnOnce(&mut Uarte) -> R) -> Option<R> {
+    for slot in &sys.p.peripherals {
+        if slot.start == 0x4000_2000 {
+            let mut b = slot.peripheral.borrow_mut();
+            if let Some(u) = b.as_any_mut().downcast_mut::<Uarte>() {
+                return Some(f(u));
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// Take a staged TX DMA transfer (PTR, MAXCNT); None when idle.
+pub fn take_txdma(sys: &System) -> Option<(u32, u32)> {
+    with_uarte(sys, |u| {
+        if u.tx_pending {
+            u.tx_pending = false;
+            Some((u.tx_ptr, u.tx_maxcnt))
+        } else {
+            None
+        }
+    })
+    .flatten()
+}
+
+/// Complete a TX DMA transfer: bytes hit the console, AMOUNT + ENDTX set.
+pub fn complete_txdma(sys: &System, data: &[u8]) {
+    if let Some(n) = with_uarte(sys, |u| {
+        for &b in data {
+            get_uart_output().lock().unwrap().push(b as char);
+        }
+        u.tx_amount = data.len() as u32;
+        u.ev_txdrdy = true;
+        u.ev_endtx = true;
+        let irq = u.irq;
+        let en = u.intenset;
+        (irq, en)
+    }) {
+        if n.1 & (1 << 7) != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(n.0);
+        }
+        if n.1 & (1 << 8) != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(n.0);
         }
     }
 }
@@ -104,6 +207,7 @@ mod tests {
     use crate::system::test_dummy_system;
     #[test]
     fn tx_byte_reaches_console_and_events() {
+        let _u = crate::system::lock_uart();
         let sys = test_dummy_system();
         crate::system::get_uart_output().lock().unwrap().clear();
         let mut u = Uarte::default();
@@ -122,5 +226,24 @@ mod tests {
         u.rx_byte(&sys, 0x41);
         assert_eq!(u.read(&sys, 0x108), 1);
         assert_eq!(u.read(&sys, 0x518), 0x41);
+    }
+    #[test]
+    fn tx_dma_stages_and_completes() {
+        let _u = crate::system::lock_uart();
+        // Full driver round-trip against the live map (take/complete take
+        // sys explicitly, like the JS driver — no SYS install needed).
+        let sys = test_dummy_system();
+        crate::system::get_uart_output().lock().unwrap().clear();
+        sys.p.write(&sys, 0x40002544, 4, 0x20001000); // TXD.PTR
+        sys.p.write(&sys, 0x40002548, 4, 3);          // TXD.MAXCNT
+        sys.p.write(&sys, 0x40002008, 4, 1);          // STARTTX
+        assert_eq!(sys.p.read(&sys, 0x40002120, 4), 0, "ENDTX waits for driver");
+        let t = take_txdma(&sys).expect("staged");
+        assert_eq!(t, (0x20001000, 3));
+        assert!(take_txdma(&sys).is_none(), "staged once only");
+        complete_txdma(&sys, b"DMA");
+        assert_eq!(sys.p.read(&sys, 0x40002120, 4), 1, "ENDTX after complete");
+        assert_eq!(sys.p.read(&sys, 0x4000254C, 4), 3, "AMOUNT");
+        assert!(crate::system::get_uart_output().lock().unwrap().contains("DMA"));
     }
 }
