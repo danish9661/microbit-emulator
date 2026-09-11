@@ -21,7 +21,16 @@ static UART_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub fn lock_uart() -> std::sync::MutexGuard<'static, ()> {
     UART_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
 }
-/// Best-effort drain guard for boot(): never blocks (a marker test may hold
+
+#[cfg(test)]
+static I2C_TAP_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Serialize tests sharing a global I2C tap queue (currently TWIM0: the
+/// sensors firmware test and the DMA driver test both push/take it).
+/// A stolen byte fails the other's `contains` assert ~1/50 runs.
+#[cfg(test)]
+pub fn lock_i2c_tap() -> std::sync::MutexGuard<'static, ()> {
+    I2C_TAP_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}/// Best-effort drain guard for boot(): never blocks (a marker test may hold
 /// the lock across its whole run, including its own boot() call — blocking
 /// here would deadlock the same thread).
 #[cfg(test)]

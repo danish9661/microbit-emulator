@@ -93,6 +93,7 @@ fn nrf_blinky_firmware_runs() {
 #[test]
 fn nrf_sensors_buttons_twim_gpiote() {
     let _u = crate::system::lock_uart();
+    let _t = crate::system::lock_i2c_tap();
     crate::system::get_uart_output().lock().unwrap().clear();
     // P3 firmware (sensors_nrf.s): TWIM0 accel probe + GPIOTE BTN_A event.
     // Harness drives P0.14 high (button pressed) before run.
@@ -149,6 +150,7 @@ fn nrf_dma_driver_roundtrip() {
     // RESULT DMA, each completed driver-side in phases (take -> RAM move ->
     // complete), exactly like the JS driver will.
     let _u = crate::system::lock_uart();
+    let _t = crate::system::lock_i2c_tap();
     crate::system::get_uart_output().lock().unwrap().clear();
     let _g = lock_boot();
     // Virtual accel so the TWIM RX DMA is ACKed (no slave -> NACK, by design).
