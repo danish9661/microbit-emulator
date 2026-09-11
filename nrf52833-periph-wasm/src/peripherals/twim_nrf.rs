@@ -254,6 +254,7 @@ pub fn take_txdma(sys: &System, name: &str) -> Option<(u8, u32, u32)> {
     with_twim(sys, base, |t| {
         if t.tx_pending {
             t.tx_pending = false;
+            t.nack_at = None; // driver owns it now: no bus-error timeout
             Some((t.address, t.tx_ptr, t.tx_maxcnt))
         } else {
             None
@@ -313,6 +314,7 @@ pub fn take_rxdma(sys: &System, name: &str) -> Option<(u8, u32, u32)> {
     with_twim(sys, base, |t| {
         if t.rx_pending {
             t.rx_pending = false;
+            t.nack_at = None;
             Some((t.address, t.rx_ptr, t.rx_maxcnt))
         } else {
             None
