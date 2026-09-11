@@ -208,6 +208,22 @@ static DMA_STREAM_FLAGS: [AtomicU8; 8] = [
     AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0), AtomicU8::new(0),
 ];
 
+// ── I2S TX capture FIFO (browser playback / test compare) ───────────────
+// DR writes (TX DMA MEM->PERIPH) complete here via complete_i2s_tx;
+// JS drains with i2s_take_capture.
+static I2S_CAPTURE: OnceLock<Mutex<Vec<u8>>> = OnceLock::new();
+pub fn i2s_capture() -> Option<&'static Mutex<Vec<u8>>> {
+    Some(I2S_CAPTURE.get_or_init(|| Mutex::new(Vec::new())))
+}
+pub fn i2s_take_capture() -> Vec<u8> {
+    I2S_CAPTURE.get().map_or(Vec::new(), |m| std::mem::take(&mut *m.lock().unwrap()))
+}
+pub fn i2s_clear() {
+    if let Some(m) = I2S_CAPTURE.get() {
+        m.lock().unwrap().clear();
+    }
+}
+
 // ── SPI bus taps (JS hardware layer plumbing) ──────────────────────────────
 // Event word layout: bit 31 = CS edge event, bit 30 = asserted (1) when CS
 // is a CS event, bit 29 = DC level (1 = data) when the tap has a DC pin,

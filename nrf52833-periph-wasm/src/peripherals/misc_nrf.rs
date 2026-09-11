@@ -263,20 +263,35 @@ pub fn complete_aar(sys: &System, resolved: bool) {
     }
 }
 
-/// I2S @ 0x40025000 (IRQ 37, audio). TASKS_START 0x000, TASKS_STOP 0x004,
-/// EVENTS_RXPTRUPD 0x100, EVENTS_TXPTRUPD 0x104, EVENTS_STOPPED 0x108,
-/// RXD.PTR 0x538, TXD.PTR 0x540, ENABLE 0x500, CONFIG.*.
-/// Stub: START->TXPTRUPD+RXPTRUPD, STOP->STOPPED. Sample streaming is P8.
+/// I2S @ 0x40025000 (IRQ 37, audio). Offsets from nrf52833.svd:
+/// TASKS_START 0x000, TASKS_STOP 0x004, EVENTS_RXPTRUPD 0x104,
+/// EVENTS_STOPPED 0x108, EVENTS_TXPTRUPD 0x114, INTENSET 0x304
+/// (RXPTRUPD 1, STOPPED 2, TXPTRUPD 5) / CLR 0x308, ENABLE 0x500,
+/// CONFIG 0x504 (stored), RXD.PTR 0x538 / MAXCNT 0x53C,
+/// TXD.PTR 0x540 / MAXCNT 0x544. All sample movement is EASYDMA:
+/// START stages take_rx/take_tx (PTRUPD events fire); the driver moves
+/// bytes and completes. TX bytes also land in a capture FIFO (browser
+/// playback / test compare via i2s_take_capture).
 pub struct I2sNrf {
     enabled: bool,
+    config: u32,
     ev_rxptr: bool,
     ev_txptr: bool,
     ev_stopped: bool,
+    intenset: u32,
+    rx_ptr: u32,
+    rx_maxcnt: u32,
+    rx_pending: bool,
+    tx_ptr: u32,
+    tx_maxcnt: u32,
+    tx_pending: bool,
 }
 
 impl Default for I2sNrf {
     fn default() -> Self {
-        Self { enabled: false, ev_rxptr: false, ev_txptr: false, ev_stopped: false }
+        Self { enabled: false, config: 0, ev_rxptr: false, ev_txptr: false,
+               ev_stopped: false, intenset: 0, rx_ptr: 0, rx_maxcnt: 0,
+               rx_pending: false, tx_ptr: 0, tx_maxcnt: 0, tx_pending: false }
     }
 }
 
@@ -284,29 +299,116 @@ impl I2sNrf {
     pub fn new(name: &str) -> Option<Box<dyn Peripheral>> {
         if name == "I2S" { Some(Box::new(Self::default())) } else { None }
     }
+    fn fire(&self, sys: &System, bit: u32) {
+        if self.intenset & bit != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(37);
+        }
+    }
 }
 
 impl Peripheral for I2sNrf {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     fn read(&mut self, _sys: &System, offset: u32) -> u32 {
         match offset {
-            0x100 => self.ev_rxptr as u32,
-            0x104 => self.ev_txptr as u32,
+            0x104 => self.ev_rxptr as u32,
             0x108 => self.ev_stopped as u32,
+            0x114 => self.ev_txptr as u32,
+            0x304 => self.intenset,
             0x500 => self.enabled as u32,
+            0x504 => self.config,
+            0x538 => self.rx_ptr,
+            0x53C => self.rx_maxcnt,
+            0x540 => self.tx_ptr,
+            0x544 => self.tx_maxcnt,
             _ => 0,
         }
     }
-    fn write(&mut self, _sys: &System, offset: u32, value: u32) {
+    fn write(&mut self, sys: &System, offset: u32, value: u32) {
         match offset {
-            0x000 => { self.ev_rxptr = true; self.ev_txptr = true; }
-            0x004 => self.ev_stopped = true,
-            0x100 => if value == 0 { self.ev_rxptr = false; }
-            0x104 => if value == 0 { self.ev_txptr = false; }
+            0x000 => {
+                // START: consume both pointers (PTRUPD events), stage DMA.
+                if self.rx_maxcnt > 0 {
+                    self.rx_pending = true;
+                    self.ev_rxptr = true;
+                    self.fire(sys, 1 << 1);
+                }
+                if self.tx_maxcnt > 0 {
+                    self.tx_pending = true;
+                    self.ev_txptr = true;
+                    self.fire(sys, 1 << 5);
+                }
+            }
+            0x004 => {
+                self.rx_pending = false;
+                self.tx_pending = false;
+                self.ev_stopped = true;
+                self.fire(sys, 1 << 2);
+            }
+            0x104 => if value == 0 { self.ev_rxptr = false; }
             0x108 => if value == 0 { self.ev_stopped = false; }
+            0x114 => if value == 0 { self.ev_txptr = false; }
+            0x304 => self.intenset |= value & 0x27,
+            0x308 => self.intenset &= !value,
             0x500 => self.enabled = value & 1 == 1,
+            0x504 => self.config = value,
+            0x538 => self.rx_ptr = value,
+            0x53C => self.rx_maxcnt = value & 0xFFFF,
+            0x540 => self.tx_ptr = value,
+            0x544 => self.tx_maxcnt = value & 0xFFFF,
             _ => {}
         }
+    }
+}
+
+fn with_i2s<R>(sys: &System, f: impl FnOnce(&mut I2sNrf) -> R) -> Option<R> {
+    for slot in &sys.p.peripherals {
+        if slot.start == 0x4002_5000 {
+            let mut b = slot.peripheral.borrow_mut();
+            if let Some(i) = b.as_any_mut().downcast_mut::<I2sNrf>() {
+                return Some(f(i));
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// Take a staged RX transfer (ptr, maxcnt); None when idle.
+pub fn take_i2s_rx(sys: &System) -> Option<(u32, u32)> {
+    with_i2s(sys, |i| {
+        if i.rx_pending {
+            i.rx_pending = false;
+            Some((i.rx_ptr, i.rx_maxcnt))
+        } else {
+            None
+        }
+    })
+    .flatten()
+}
+
+/// Complete RX: driver wrote samples to RAM at PTR.
+pub fn complete_i2s_rx(sys: &System) {
+    with_i2s(sys, |_| {});
+}
+
+/// Take a staged TX transfer (ptr, maxcnt); None when idle.
+pub fn take_i2s_tx(sys: &System) -> Option<(u32, u32)> {
+    with_i2s(sys, |i| {
+        if i.tx_pending {
+            i.tx_pending = false;
+            Some((i.tx_ptr, i.tx_maxcnt))
+        } else {
+            None
+        }
+    })
+    .flatten()
+}
+
+/// Complete TX: `data` went on the wire; captured for playback/compare.
+pub fn complete_i2s_tx(sys: &System, data: &[u8]) {
+    let _ = sys;
+    if let Some(m) = crate::system::i2s_capture() {
+        m.lock().unwrap().extend_from_slice(data);
     }
 }
 
@@ -341,11 +443,22 @@ mod tests {
         complete_aar(&sys2, true);
         assert_eq!(sys2.p.read(&sys2, 0x4000F100, 4), 1, "END set");
         assert_eq!(sys2.p.read(&sys2, 0x4000F104, 4), 1, "RESOLVED set");
-        let mut i = I2sNrf::default();
-        i.write(&sys, 0x500, 1);
-        i.write(&sys, 0x000, 1);
-        assert_eq!(i.read(&sys, 0x104), 1);
-        i.write(&sys, 0x004, 1);
-        assert_eq!(i.read(&sys, 0x108), 1);
+        let sys3 = test_dummy_system();
+        sys3.p.write(&sys3, 0x40025500, 4, 1); // ENABLE
+        sys3.p.write(&sys3, 0x40025538, 4, 0x20001000); // RXD.PTR
+        sys3.p.write(&sys3, 0x4002553C, 4, 8); // RXD.MAXCNT
+        sys3.p.write(&sys3, 0x40025540, 4, 0x20002000); // TXD.PTR
+        sys3.p.write(&sys3, 0x40025544, 4, 8); // TXD.MAXCNT
+        sys3.p.write(&sys3, 0x40025000, 4, 1); // START
+        assert_eq!(take_i2s_rx(&sys3), Some((0x20001000, 8)));
+        assert_eq!(take_i2s_tx(&sys3), Some((0x20002000, 8)));
+        assert_eq!(sys3.p.read(&sys3, 0x40025104, 4), 1, "RXPTRUPD");
+        assert_eq!(sys3.p.read(&sys3, 0x40025114, 4), 1, "TXPTRUPD");
+        complete_i2s_rx(&sys3);
+        complete_i2s_tx(&sys3, &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(crate::system::i2s_take_capture(), vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        sys3.p.write(&sys3, 0x40025004, 4, 1); // STOP
+        assert_eq!(sys3.p.read(&sys3, 0x40025108, 4), 1, "STOPPED");
+        crate::system::i2s_clear();
     }
 }

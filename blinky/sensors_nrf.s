@@ -15,9 +15,9 @@ _start:
     ldr r0, =0x40002500
     movs r1, #8
     str r1, [r0]
-    /* GPIOTE CH0 = event, P0.14 BTN_A, LoToHi: *(0x40006510) = 0x10E01 */
+    /* GPIOTE CH0 = event, P0.14 BTN_A, HiToLo (active-low): *(0x40006510) = 0x20E01 */
     ldr r0, =0x40006510
-    ldr r1, =0x10E01
+    ldr r1, =0x20E01
     str r1, [r0]
     /* TWIM0 ENABLE=6, ADDRESS=0x19 */
     ldr r0, =0x40003500

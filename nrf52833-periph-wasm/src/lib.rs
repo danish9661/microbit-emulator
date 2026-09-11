@@ -110,6 +110,8 @@ pub fn gpio_read_output(port: u32, pin: u32) -> bool {
     sys().p.gpio.borrow().read_output_pin(port as u8, pin as u8)
 }
 
+/// Drive a raw input level. Buttons are active-low: released = true
+/// (idle pull-up default), pressed = false. JS button layer maps to this.
 #[wasm_bindgen]
 pub fn gpio_set_input(port: u32, pin: u32, value: bool) {
     sys().p.gpio.borrow_mut().set_input_pin(port as u8, pin as u8, value);
@@ -231,6 +233,32 @@ pub fn radio_take_tx() -> Vec<u32> {
 #[wasm_bindgen]
 pub fn radio_inject_rx(bytes: &[u8]) {
     crate::peripherals::radio_nrf::inject_rx(sys(), bytes.to_vec());
+}
+
+// ── I2S streaming driver API ──
+#[wasm_bindgen]
+pub fn i2s_take_rx() -> Vec<u32> {
+    crate::peripherals::misc_nrf::take_i2s_rx(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn i2s_complete_rx() {
+    crate::peripherals::misc_nrf::complete_i2s_rx(sys());
+}
+
+#[wasm_bindgen]
+pub fn i2s_take_tx() -> Vec<u32> {
+    crate::peripherals::misc_nrf::take_i2s_tx(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn i2s_complete_tx(bytes: &[u8]) {
+    crate::peripherals::misc_nrf::complete_i2s_tx(sys(), bytes);
+}
+
+#[wasm_bindgen]
+pub fn i2s_take_capture() -> Vec<u8> {
+    system::i2s_take_capture()
 }
 
 // ── USBD endpoint driver API ──

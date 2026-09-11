@@ -11,13 +11,16 @@ use super::Peripheral;
 pub struct GpioPorts {
     pub out: [u32; 2],
     pub dir: [u32; 2],
+    /// Raw pin levels. Idle HIGH: nRF GPIO reset state + micro:bit buttons
+    /// (A/B) are active-low with pull-ups, so untouched = released = 1.
+    /// Drive `false` for a button press (CODAL ACTIVE_LOW `isPressed`).
     pub input_state: [u32; 2],
     pub cnf: [[u32; 32]; 2],
 }
 
 impl Default for GpioPorts {
     fn default() -> Self {
-        Self { out: [0; 2], dir: [0; 2], input_state: [0; 2], cnf: [[0; 32]; 2] }
+        Self { out: [0; 2], dir: [0; 2], input_state: [u32::MAX; 2], cnf: [[0; 32]; 2] }
     }
 }
 
@@ -162,11 +165,12 @@ mod tests {
         p0.write(&sys, 0x514, 0x1); // DIR = output pin0
         p0.write(&sys, 0x508, 0x1); // OUTSET
         assert_eq!(p0.read(&sys, 0x504), 0x1);
-        assert_eq!(p0.read(&sys, 0x510), 0x1);
+        assert_eq!(p0.read(&sys, 0x510) & 0x1, 0x1);
         p0.write(&sys, 0x50C, 0x1); // OUTCLR
         assert_eq!(p0.read(&sys, 0x504), 0x0);
-        // input pin1 driven high from test harness
-        sys.p.gpio.borrow_mut().set_input_pin(0, 1, true);
-        assert_eq!(p0.read(&sys, 0x510) & 0x2, 0x2);
+        // inputs idle HIGH (pull-ups); driving pin1 low reads back low
+        assert_eq!(p0.read(&sys, 0x510) & 0x2, 0x2, "pull-up default");
+        sys.p.gpio.borrow_mut().set_input_pin(0, 1, false);
+        assert_eq!(p0.read(&sys, 0x510) & 0x2, 0x0);
     }
 }

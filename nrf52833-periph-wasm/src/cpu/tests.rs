@@ -96,11 +96,11 @@ fn nrf_sensors_buttons_twim_gpiote() {
     let _t = crate::system::lock_i2c_tap();
     crate::system::get_uart_output().lock().unwrap().clear();
     // P3 firmware (sensors_nrf.s): TWIM0 accel probe + GPIOTE BTN_A event.
-    // Harness drives P0.14 high (button pressed) before run.
+    // BTN_A is active-low: idle pull-up HIGH = released, drive LOW = pressed.
     let _g = lock_boot();
     let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/sensors_nrf.bin"));
     let sys = crate::sys();
-    sys.p.gpio.borrow_mut().set_input_pin(0, 14, true);
+    sys.p.gpio.borrow_mut().set_input_pin(0, 14, false);
     cpu.run(sys, &mut mem, 1_000_000);
     assert!(cpu.fault.is_none(), "sensors faulted: {:?}", cpu.fault);
     let out = crate::system::get_uart_output().lock().unwrap().clone();
@@ -376,6 +376,41 @@ fn nrf_wdt_resets_unpetted_firmware() {
         assert_eq!(mem.read32(0x20001000), expected, "boot count retained");
         cpu.reset(mem.read32(0x0), mem.read32(0x4));
     }
+}
+
+#[test]
+fn nrf_i2s_streaming_roundtrip() {
+    // i2s_nrf.s (GCC): TX buf filled 0xA0.., ENABLE + RXD/TXD PTR/MAXCNT +
+    // START, poll PTRUPDs, park on RAM mailbox 0x20003000, verify RX bytes,
+    // STOP, poll STOPPED, print. Driver moves samples both ways + captures TX.
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/i2s_nrf.bin"));
+    let sys = crate::sys();
+    crate::system::i2s_clear();
+    // Phase 1: firmware stages both directions, parks on the mailbox.
+    cpu.run(sys, &mut mem, 200_000);
+    assert!(cpu.fault.is_none(), "i2s faulted: {:?}", cpu.fault);
+    let (ptr, len) = crate::peripherals::misc_nrf::take_i2s_rx(sys).expect("rx staged");
+    assert_eq!((ptr, len), (0x20001000, 8));
+    for k in 0..len {
+        mem.write8(ptr.wrapping_add(k), (0x10 + k) as u8);
+    }
+    crate::peripherals::misc_nrf::complete_i2s_rx(sys);
+    let (ptr, len) = crate::peripherals::misc_nrf::take_i2s_tx(sys).expect("tx staged");
+    assert_eq!((ptr, len), (0x20002000, 8));
+    let bytes: Vec<u8> = (0..len).map(|k| mem.read8(ptr.wrapping_add(k))).collect();
+    assert_eq!(bytes, vec![0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7]);
+    crate::peripherals::misc_nrf::complete_i2s_tx(sys, &bytes);
+    assert_eq!(crate::system::i2s_take_capture(), bytes, "TX captured");
+    // Phase 2: release the mailbox; firmware verifies RX, STOPs, prints.
+    mem.write32(0x2000_3000, 1);
+    cpu.run(sys, &mut mem, 2_000_000);
+    assert!(cpu.fault.is_none(), "i2s faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("I2S:OK"), "missing I2S marker, got {out:?}");
+    crate::system::i2s_clear();
 }
 
 #[test]

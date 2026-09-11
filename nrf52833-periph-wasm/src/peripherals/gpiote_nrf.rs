@@ -19,7 +19,7 @@ pub struct Gpiote {
 
 impl Default for Gpiote {
     fn default() -> Self {
-        Self { config: [0; 8], ev_in: [false; 8], ev_port: false, intenset: 0, last_in: [false; 8] }
+        Self { config: [0; 8], ev_in: [false; 8], ev_port: false, intenset: 0, last_in: [true; 8] }
     }
 }
 
