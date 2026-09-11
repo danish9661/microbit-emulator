@@ -321,8 +321,14 @@ mod tests {
         m.write(&sys, 0x500, 0x0F);
         assert_eq!(m.read(&sys, 0x500), 0x0F);
         let mut e = EcbNrf::default();
-        e.write(&sys, 0x000, 1);
-        assert_eq!(e.read(&sys, 0x100), 1);
+        e.write(&sys, 0x504, 0x20001000); // ECBDATAPTR
+        e.write(&sys, 0x000, 1); // STARTECB stages
+        assert_eq!(e.read(&sys, 0x100), 0, "END waits for driver");
+        drop(e);
+        let sys_e = test_dummy_system();
+        sys_e.p.write(&sys_e, 0x4000E504, 4, 0x20001000);
+        sys_e.p.write(&sys_e, 0x4000E000, 4, 1);
+        assert!(take_ecb(&sys_e).is_some(), "staged");
         let mut a = AarCcmNrf::default();
         a.write(&sys, 0x500, 1);
         assert_eq!(a.read(&sys, 0x500), 1, "ENABLE reads back");

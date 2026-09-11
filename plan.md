@@ -69,6 +69,9 @@ P8: real-world firmware gate (done, see below)
 Image: official release hex (SoftDevice + app, 450KB) split with
 `blinky/hex2bin.py` (handles type-02 segments + UICR extras) into a
 512KB flash bin + UICR NRFFW words (`0x10001014: 00070700 0007e000`).
+Release: MicroPython v2.1.1
+(github.com/microbit-foundation/micropython-microbit-v2/releases —
+re-download per session, /tmp is reaped; do NOT commit the 512KB blob).
 
 Observed over 60M+ instructions, zero CPU faults:
 - MBR/SD handoff issues two `SYSRESETREQ`s (AIRCR wait-loop); the driver
