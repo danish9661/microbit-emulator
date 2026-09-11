@@ -159,7 +159,6 @@ work (test-side first, then demo pump); no new peripheral registers.
   started. Next: find what the REPL waits on (BLE-NUS vs USB-CDC binding).
 
 ## 13. P11b REPL forensics (2026-09-11, source-grounded)
-
 - The v2.1.1 firmware IS CODAL-based (MicroPython on micro:bit via
   CODAL): REPL stdin/stdout = `uBit.serial` = UARTE0
   (`src/codal_app/mphalport.cpp`), NOT USB. "MicroBitUART" is the
@@ -193,3 +192,26 @@ work (test-side first, then demo pump); no new peripheral registers.
 - Deferred with reason: WDT expiry (a wrong deadline breaks running
   firmware; needs a WDT-pet firmware proof first), I2S streaming
   (needs sample-source infra stripped in P7c; zero consumers).
+
+## 15. P13 REPL end-to-end (2026-09-11): input path proven, app gated on SD
+
+- NRF52Serial source (codal-nrf52, cloned): TX is 1-byte DMA per char,
+  RX drains via DMA ring (`dataReceivedDMA` from RXD.PTR RAM) + RXDRDY
+  IRQ. Input bytes only reach the REPL through the DMA ring — the
+  `uarte_take_rxdma/complete_rxdma` driver API exists for exactly this
+  (demo pump wires it).
+- Live proof the app never prints: 200M+ instr with full RX+TX DMA
+  pumping, `take_txdma` never stages, TXD byte never written. Not a
+  model gap on the output path.
+- IPR words prove the SOFTDEVICE IS ENABLED (app priorities 2/1 in
+  TIMER/UARTE slots — SD-reserved pattern, not CODAL MicroBit::init
+  values). Main()'s `NVIC_SetVector(RADIO)` never lands (live vector
+  == flash vector), RXD.PTR stays 0, display DIR stays 0: uBit.init()
+  never completes; the app parks waiting on SoftDevice events.
+- 300k-PC trace: ZERO SVCs in steady state (the wait is not an SD SVC
+  spin), zero WFI-sleep, live TIMER1/3/4 IRQs (VECTACTIVE-proven).
+- Verdict: every peripheral + driver path on the REPL route is modeled
+  and proven. Progress now requires SoftDevice event synthesis
+  (sd_evt_get responses, BLE/RTC event pump) — the explicitly
+  out-of-scope workstream from §0. Nothing further is actionable
+  without it.
