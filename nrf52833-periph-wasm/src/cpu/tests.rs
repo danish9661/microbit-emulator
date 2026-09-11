@@ -350,6 +350,34 @@ fn nrf_ecb_aes128_fips_vector() {
 
 
 
+
+#[test]
+fn nrf_wdt_resets_unpetted_firmware() {
+    // wdt_nrf.s counts boots in retained RAM, arms the WDT (CRV=1), and
+    // spins. Each boot must end in a latched reboot request; RAM proves
+    // two consecutive expiries with no petting.
+    let _u = crate::system::lock_uart();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/wdt_nrf.bin"));
+    let sys = crate::sys();
+    for expected in 1..=2u32 {
+        // drain any stale flag, then run until the watchdog fires
+        while crate::system::is_watchdog_reset_requested() {}
+        let mut fired = false;
+        for _ in 0..20 {
+            cpu.run(sys, &mut mem, 20_000);
+            sys.tick(); // WDT expiry lives in tick()
+            if crate::system::is_watchdog_reset_requested() {
+                fired = true;
+                break;
+            }
+        }
+        assert!(fired, "WDT never fired on boot {expected}");
+        assert_eq!(mem.read32(0x20001000), expected, "boot count retained");
+        cpu.reset(mem.read32(0x0), mem.read32(0x4));
+    }
+}
+
 #[test]
 fn nrf_boot_flash_at_zero() {
     // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.
