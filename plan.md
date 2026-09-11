@@ -174,3 +174,19 @@ work (test-side first, then demo pump); no new peripheral registers.
   `MICROBIT_BLE_ENABLED=0`), button polarity (our inputs default LOW;
   real board pulls buttons HIGH — pressed reads LOW, so we may report
   both buttons stuck pressed!). Button default polarity is next to verify.
+
+## 14. P12 stub completions (2026-09-11)
+
+- ECB: real offsets (STARTECB/STOPECB/ENDECB/ERRORECB/INTEN, DATAPTR),
+  take/complete driver flow, FIPS-197 AES-128 round-trip proof
+  (`nrf_ecb_aes128_fips_vector`). Crypto itself runs driver-side
+  (model has no RAM handle); AAR likewise (take/complete +
+  RESOLVED/NOTRESOLVED). CCM stays unmodeled (shares AAR's base with a
+  different task map — aliasing would lie about both).
+- PPI groups: CHG[0..5] masks + TASKS_CHG[n].EN/DIS; FORK field removed
+  (no register mapping exists to ever set it).
+- QSPI backend: registered image, AND-only program, 4K/64K erase,
+  take/complete for read/write/erase + JS exports.
+- Deferred with reason: WDT expiry (a wrong deadline breaks running
+  firmware; needs a WDT-pet firmware proof first), I2S streaming
+  (needs sample-source infra stripped in P7c; zero consumers).

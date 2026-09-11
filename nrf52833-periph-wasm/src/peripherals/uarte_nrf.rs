@@ -174,6 +174,33 @@ pub fn with_uarte<R>(sys: &System, f: impl FnOnce(&mut Uarte) -> R) -> Option<R>
     None
 }
 
+/// Take a staged RX DMA transfer (PTR, MAXCNT); None when idle.
+pub fn take_rxdma(sys: &System) -> Option<(u32, u32)> {
+    with_uarte(sys, |u| {
+        if u.rx_pending {
+            u.rx_pending = false;
+            Some((u.rx_ptr, u.rx_maxcnt))
+        } else {
+            None
+        }
+    })
+    .flatten()
+}
+
+/// Complete an RX DMA transfer: driver already wrote `amount` bytes to RAM
+/// at PTR. Sets ENDRX (+ IRQ when INTEN bit 4 is set).
+pub fn complete_rxdma(sys: &System, amount: u32) {
+    let fire = with_uarte(sys, |u| {
+        u.rx_amount = amount;
+        u.ev_endrx = true;
+        (u.irq, u.intenset)
+    });
+    if let Some((irq, en)) = fire {
+        if en & (1 << 4) != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(irq);
+        }
+    }
+}
 /// Take a staged TX DMA transfer (PTR, MAXCNT); None when idle.
 pub fn take_txdma(sys: &System) -> Option<(u32, u32)> {
     with_uarte(sys, |u| {
@@ -236,8 +263,15 @@ mod tests {
         assert_eq!(u.read(&sys, 0x518), 0x41);
     }
     #[test]
-    fn rx_overrun_sets_error() {
+    fn map_routed_rx_byte_sets_event() {
+        use crate::system::test_dummy_system;
         let sys = test_dummy_system();
+        assert!(sys.p.rx_byte(&sys, 0x40002000, 0x41), "route exists");
+        assert_eq!(sys.p.read(&sys, 0x40002108, 4), 1, "RXDRDY via map");
+        assert_eq!(sys.p.read(&sys, 0x40002518, 4), 0x41, "RXD via map");
+    }
+    #[test]
+    fn rx_overrun_sets_error() {        let sys = test_dummy_system();
         let mut u = Uarte::default();
         u.rx_byte(&sys, 0x41);
         u.rx_byte(&sys, 0x42); // unread: overrun, latest wins
@@ -276,5 +310,18 @@ mod tests {
         assert_eq!(sys.p.read(&sys, 0x40002120, 4), 1, "ENDTX after complete");
         assert_eq!(sys.p.read(&sys, 0x4000254C, 4), 3, "AMOUNT");
         assert!(crate::system::get_uart_output().lock().unwrap().contains("DMA"));
+    }
+    #[test]
+    fn rx_dma_stages_and_completes() {
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x40002534, 4, 0x20001000); // RXD.PTR
+        sys.p.write(&sys, 0x40002538, 4, 4);          // RXD.MAXCNT
+        sys.p.write(&sys, 0x40002000, 4, 1);          // STARTRX
+        assert_eq!(sys.p.read(&sys, 0x4000210C, 4), 0, "ENDRX waits for driver");
+        let t = take_rxdma(&sys).expect("staged");
+        assert_eq!(t, (0x20001000, 4));
+        complete_rxdma(&sys, 4);
+        assert_eq!(sys.p.read(&sys, 0x4000210C, 4), 1, "ENDRX after complete");
+        assert_eq!(sys.p.read(&sys, 0x4000253C, 4), 4, "AMOUNT");
     }
 }

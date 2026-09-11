@@ -306,6 +306,179 @@ fn nrf_usbep_setup_and_epin_dma() {
 
 
 
+
+#[test]
+fn probe_mpy_endings() {
+    use crate::ext_devices::i2c_tap::{I2cTap, I2cTapConfig};
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    {
+        let mut ext = crate::system::get_ext_devices().lock().unwrap();
+        ext.i2c_taps.push(std::rc::Rc::new(std::cell::RefCell::new(I2cTap::new(
+            I2cTapConfig { peripheral: "TWIM1".to_string(), address: 0x19 }))));
+        ext.i2c_taps.push(std::rc::Rc::new(std::cell::RefCell::new(I2cTap::new(
+            I2cTapConfig { peripheral: "TWIM1".to_string(), address: 0x1E }))));
+    }
+    let _g = lock_boot();
+    let bin = std::fs::read("/tmp/opencode/mpy/mpy_flash.bin").unwrap();
+    let (mut cpu, mut mem) = boot(&bin);
+    let sys = crate::sys();
+    sys.p.write(sys, 0x10001014, 4, 0x00070700);
+    sys.p.write(sys, 0x10001018, 4, 0x0007e000);
+    cpu.deliver_irqs = true;
+    let mut resets = 0;
+    let mut regptr: std::collections::HashMap<u8, u8> = Default::default();
+    let mut regfile: std::collections::HashMap<(u8, u8), u8> = Default::default();
+    regfile.insert((0x19, 0x0F), 0x33);
+    regfile.insert((0x19, 0x27), 0x0F);
+    regfile.insert((0x1E, 0x0F), 0x40);
+    regfile.insert((0x1E, 0x4F), 0x40);
+    // three lines, three endings: CR, LF, CRLF + Ctrl-C
+    let script = b"1+1\r2+2\n3+3\r\n\x03";
+    let mut fed = 0usize;
+    for i in 0..100 {
+        cpu.run(sys, &mut mem, 1_000_000);
+        sys.tick();
+        if crate::system::is_watchdog_reset_requested() {
+            resets += 1;
+            cpu.reset(mem.read32(0x0), mem.read32(0x4));
+            if resets > 5 { break; }
+        }
+        if let Some((addr, ptr, len)) = crate::peripherals::twim_nrf::take_txdma(sys, "TWIM1") {
+            let bytes: Vec<u8> = (0..len).map(|k| mem.read8(ptr.wrapping_add(k))).collect();
+            if bytes.len() == 1 { regptr.insert(addr, bytes[0] & 0x7F); }
+            else if bytes.len() > 1 {
+                let mut r = bytes[0] & 0x7F;
+                for &b in &bytes[1..] { regfile.insert((addr, r), b); r = r.wrapping_add(1); }
+            }
+            crate::peripherals::twim_nrf::complete_txdma(sys, "TWIM1", &bytes);
+            sys.p.write(sys, 0x40004014, 4, 1);
+        }
+        if let Some((addr, ptr, len)) = crate::peripherals::twim_nrf::take_rxdma(sys, "TWIM1") {
+            let reg = regptr.get(&addr).copied().unwrap_or(0);
+            for k in 0..len {
+                let r = reg.wrapping_add(k as u8) & 0x7F;
+                mem.write8(ptr.wrapping_add(k), regfile.get(&(addr, r)).copied().unwrap_or(0));
+            }
+            crate::peripherals::twim_nrf::complete_rxdma(sys, "TWIM1", len);
+            sys.p.write(sys, 0x40004014, 4, 1);
+        }
+        if i > 10 && fed < script.len() && sys.p.read(sys, 0x40002108, 4) == 0 {
+            sys.p.rx_byte(sys, 0x40002000, script[fed]);
+            fed += 1;
+        }
+        if cpu.fault.is_some() { break; }
+    }
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    eprintln!("fed={} UART[{}]: {:?}", fed, out.len(), &out[..out.len().min(300)]);
+    panic!("endings dump");
+}
+
+#[test]
+fn probe_mpy_rw() {
+    use crate::ext_devices::i2c_tap::{I2cTap, I2cTapConfig};
+    let _u = crate::system::lock_uart();
+    let _t = crate::system::lock_i2c_tap();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    {
+        let mut ext = crate::system::get_ext_devices().lock().unwrap();
+        ext.i2c_taps.push(std::rc::Rc::new(std::cell::RefCell::new(I2cTap::new(
+            I2cTapConfig { peripheral: "TWIM1".to_string(), address: 0x19 }))));
+        ext.i2c_taps.push(std::rc::Rc::new(std::cell::RefCell::new(I2cTap::new(
+            I2cTapConfig { peripheral: "TWIM1".to_string(), address: 0x1E }))));
+    }
+    let _g = lock_boot();
+    let bin = std::fs::read("/tmp/opencode/mpy/mpy_flash.bin").unwrap();
+    let (mut cpu, mut mem) = boot(&bin);
+    let sys = crate::sys();
+    sys.p.write(sys, 0x10001014, 4, 0x00070700);
+    sys.p.write(sys, 0x10001018, 4, 0x0007e000);
+    cpu.deliver_irqs = true;
+    let mut resets = 0;
+    let mut regptr: std::collections::HashMap<u8, u8> = Default::default();
+    let mut regfile: std::collections::HashMap<(u8, u8), u8> = Default::default();
+    regfile.insert((0x19, 0x0F), 0x33);
+    regfile.insert((0x19, 0x27), 0x0F);
+    regfile.insert((0x1E, 0x0F), 0x40);
+    regfile.insert((0x1E, 0x4F), 0x40);
+    for _ in 0..12 {
+        cpu.run(sys, &mut mem, 1_000_000);
+        sys.tick();
+        if crate::system::is_watchdog_reset_requested() {
+            resets += 1;
+            cpu.reset(mem.read32(0x0), mem.read32(0x4));
+            if resets > 5 { break; }
+        }
+        if let Some((addr, ptr, len)) = crate::peripherals::twim_nrf::take_txdma(sys, "TWIM1") {
+            let bytes: Vec<u8> = (0..len).map(|k| mem.read8(ptr.wrapping_add(k))).collect();
+            if bytes.len() == 1 { regptr.insert(addr, bytes[0] & 0x7F); }
+            else if bytes.len() > 1 {
+                let mut r = bytes[0] & 0x7F;
+                for &b in &bytes[1..] { regfile.insert((addr, r), b); r = r.wrapping_add(1); }
+            }
+            crate::peripherals::twim_nrf::complete_txdma(sys, "TWIM1", &bytes);
+            sys.p.write(sys, 0x40004014, 4, 1);
+        }
+        if let Some((addr, ptr, len)) = crate::peripherals::twim_nrf::take_rxdma(sys, "TWIM1") {
+            let reg = regptr.get(&addr).copied().unwrap_or(0);
+            for k in 0..len {
+                let r = reg.wrapping_add(k as u8) & 0x7F;
+                mem.write8(ptr.wrapping_add(k), regfile.get(&(addr, r)).copied().unwrap_or(0));
+            }
+            crate::peripherals::twim_nrf::complete_rxdma(sys, "TWIM1", len);
+            sys.p.write(sys, 0x40004014, 4, 1);
+        }
+    }
+    crate::system::set_readlog(true);
+    cpu.run(sys, &mut mem, 300_000);
+    crate::system::set_readlog(false);
+    for ((wr, addr), n) in crate::system::readlog_take().into_iter().take(30) {
+        eprintln!("{} {addr:#010x} x{n}", if wr { "W" } else { "R" });
+    }
+    panic!("rw dump");
+}
+
+#[test]
+fn nrf_ecb_aes128_fips_vector() {
+    // ECB encrypts driver-side (the model has no RAM handle): stage via
+    // registers, take dataptr, AES-128 in the driver, write back, complete.
+    // FIPS-197 B: key 00..0f, pt 001122..ff -> ct 69c4e0d8...
+    use aes::Aes128;
+    use cipher::{KeyInit, BlockEncryptMut};
+    use generic_array::GenericArray;
+    let _g = lock_boot();
+    let sys = WasmSystem::new();
+    crate::init_for_test(sys);
+    let sys = crate::sys();
+    let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+    let key: [u8; 16] = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15];
+    let pt: [u8; 16] = [0x00,0x11,0x22,0x33,0x44,0x55,0x66,0x77,0x88,0x99,0xaa,0xbb,0xcc,0xdd,0xee,0xff];
+    for (i, &b) in key.iter().chain(pt.iter()).enumerate() {
+        mem.write8(0x20001000 + i as u32, b);
+    }
+    sys.p.write(sys, 0x4000E504, 4, 0x20001000); // ECBDATAPTR
+    sys.p.write(sys, 0x4000E000, 4, 1);          // STARTECB
+    let ptr = crate::peripherals::misc_nrf::take_ecb(sys).expect("ecb staged");
+    assert_eq!(ptr, 0x20001000);
+    let mut k = [0u8; 16];
+    let mut blk = [0u8; 16];
+    for i in 0..16 {
+        k[i] = mem.read8(ptr.wrapping_add(i as u32));
+        blk[i] = mem.read8(ptr.wrapping_add(16 + i as u32));
+    }
+    let mut block = GenericArray::clone_from_slice(&blk);
+    Aes128::new(&GenericArray::clone_from_slice(&k)).encrypt_block_mut(&mut block);
+    for (i, &b) in block.iter().enumerate() {
+        mem.write8(ptr.wrapping_add(32 + i as u32), b);
+    }
+    crate::peripherals::misc_nrf::complete_ecb(sys);
+    assert_eq!(sys.p.read(sys, 0x4000E100, 4), 1, "ENDECB set");
+    let want: [u8; 16] = [0x69,0xc4,0xe0,0xd8,0x6a,0x7b,0x04,0x30,0xd8,0xcd,0xb7,0x80,0x70,0xb4,0xc5,0x5a];
+    for (i, &b) in want.iter().enumerate() {
+        assert_eq!(mem.read8(ptr.wrapping_add(32 + i as u32)), b, "ct byte {i}");
+    }
+}
+
 #[test]
 fn nrf_boot_flash_at_zero() {
     // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.

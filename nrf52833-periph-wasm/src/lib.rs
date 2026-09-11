@@ -163,6 +163,18 @@ pub fn uarte_complete_txdma(bytes: &[u8]) {
     crate::peripherals::uarte_nrf::complete_txdma(sys(), bytes);
 }
 
+/// Take a staged UARTE RX transfer [ptr, maxcnt]; driver writes bytes to
+/// guest RAM at ptr, then calls uarte_complete_rxdma(amount).
+#[wasm_bindgen]
+pub fn uarte_take_rxdma() -> Vec<u32> {
+    crate::peripherals::uarte_nrf::take_rxdma(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn uarte_complete_rxdma(amount: u32) {
+    crate::peripherals::uarte_nrf::complete_rxdma(sys(), amount);
+}
+
 #[wasm_bindgen]
 pub fn twim_take_txdma(peripheral: &str) -> Vec<u32> {
     crate::peripherals::twim_nrf::take_txdma(sys(), peripheral)
@@ -254,6 +266,41 @@ pub fn usbd_inject_setup(bytes: &[u8]) {
 }
 
 // ── NVMC erase driver API (driver applies 0xFF to guest flash, then completes)
+// ── QSPI external flash driver API ──
+#[wasm_bindgen]
+pub fn qspi_register_flash(name: &str, data: &[u8]) {
+    crate::peripherals::qspi_nrf::qspi_register_flash(name, data);
+}
+
+#[wasm_bindgen]
+pub fn qspi_take_read() -> Vec<u32> {
+    crate::peripherals::qspi_nrf::take_read(sys()).map(|(s, d, n)| vec![s, d, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn qspi_complete_read() {
+    crate::peripherals::qspi_nrf::complete_read(sys());
+}
+
+#[wasm_bindgen]
+pub fn qspi_take_write() -> Vec<u32> {
+    crate::peripherals::qspi_nrf::take_write(sys()).map(|(s, d, n)| vec![s, d, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn qspi_complete_write(dst: u32, data: &[u8]) {
+    crate::peripherals::qspi_nrf::complete_write(sys(), dst, data);
+}
+
+#[wasm_bindgen]
+pub fn qspi_take_erase() -> Vec<u32> {
+    crate::peripherals::qspi_nrf::take_erase(sys()).map(|(p, l)| vec![p, l]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn qspi_complete_erase(ptr: u32, len_code: u32) {
+    crate::peripherals::qspi_nrf::complete_erase(sys(), ptr, len_code);
+}
 #[wasm_bindgen]
 pub fn nvmc_take_erase() -> Vec<u32> {
     crate::peripherals::nvmc_nrf::take_erase(sys()).map(|a| vec![a]).unwrap_or_default()

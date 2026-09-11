@@ -165,8 +165,10 @@ name = "nrf52833-periph-wasm"
 version = "0.1.0"
 dependencies = [
  "aes",
+ "cipher",
  "console_error_panic_hook",
  "des",
+ "generic-array",
  "log",
  "md-5",
  "regex",

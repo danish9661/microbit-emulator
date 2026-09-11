@@ -33,11 +33,13 @@ _start:
     ldr r0, =0x4001D100
     bl spin_until_set
 
-    /* QSPI: ENABLE, ACTIVATE, poll READY event */
+    /* QSPI: ENABLE, ACTIVATE, zero-length READSTART, poll READY event */
     ldr r0, =0x40029500
     movs r1, #1
     str r1, [r0]
     ldr r0, =0x40029000
+    str r1, [r0]
+    ldr r0, =0x40029004
     str r1, [r0]
     ldr r0, =0x40029104
     bl spin_until_set

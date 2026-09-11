@@ -10,14 +10,13 @@ pub struct Ppi {
     chen: u32,
     eep: [u32; 20],
     tep: [u32; 20],
-    fork: [u32; 20],
-    chg_en: [u32; 6],
+    chg: [u32; 6],
     last: [bool; 20],
 }
 
 impl Default for Ppi {
     fn default() -> Self {
-        Self { chen: 0, eep: [0; 20], tep: [0; 20], fork: [0; 20], chg_en: [0; 6], last: [false; 20] }
+        Self { chen: 0, eep: [0; 20], tep: [0; 20], chg: [0; 6], last: [false; 20] }
     }
 }
 
@@ -41,17 +40,14 @@ impl Peripheral for Ppi {
                 self.last[ch] = false;
                 continue;
             }
-            let (eep, tep, fork) = (self.eep[ch], self.tep[ch], self.fork[ch]);
-            if eep == 0 || tep == 0 || in_ppi(eep) || in_ppi(tep) || (fork != 0 && in_ppi(fork)) {
+            let (eep, tep) = (self.eep[ch], self.tep[ch]);
+            if eep == 0 || tep == 0 || in_ppi(eep) || in_ppi(tep) {
                 continue;
             }
             if sys.p.read(sys, eep, 4) != 0 {
                 if !self.last[ch] {
                     self.last[ch] = true;
                     sys.p.write(sys, tep, 4, 1);
-                    if fork != 0 {
-                        sys.p.write(sys, fork, 4, 1);
-                    }
                 }
             } else {
                 self.last[ch] = false;
@@ -63,16 +59,25 @@ impl Peripheral for Ppi {
             0x500 => self.chen,
             0x510..=0x55C if ((offset - 0x510) % 8) == 0 => self.eep[((offset - 0x510) / 8) as usize],
             0x514..=0x560 if ((offset - 0x514) % 8) == 0 => self.tep[((offset - 0x514) / 8) as usize],
+            0x800..=0x814 => self.chg[((offset - 0x800) >> 2) as usize],
             _ => 0,
         }
     }
     fn write(&mut self, _sys: &System, offset: u32, value: u32) {
         match offset {
+            // TASKS_CHG[n].EN/DIS: enable/disable every channel in group n.
+            0x000..=0x02C if offset % 8 == 0 => {
+                self.chen |= self.chg[(offset >> 3) as usize];
+            }
+            0x004..=0x02C if offset % 8 == 4 => {
+                self.chen &= !self.chg[(offset >> 3) as usize];
+            }
             0x500 => self.chen = value & 0xF_FFFF,
             0x504 => self.chen |= value,
             0x508 => self.chen &= !value,
             0x510..=0x55C if ((offset - 0x510) % 8) == 0 => self.eep[((offset - 0x510) / 8) as usize] = value,
             0x514..=0x560 if ((offset - 0x514) % 8) == 0 => self.tep[((offset - 0x514) / 8) as usize] = value,
+            0x800..=0x814 => self.chg[((offset - 0x800) >> 2) as usize] = value & 0xF_FFFF,
             _ => {}
         }
     }
@@ -96,8 +101,7 @@ mod tests {
         assert_eq!(p.read(&sys, 0x500), 0);
     }
     #[test]
-    fn timer_compare_drives_gpiote_task() {
-        use crate::system::test_dummy_system;
+    fn timer_compare_drives_gpiote_task() {        use crate::system::test_dummy_system;
         let sys = test_dummy_system();
         // GPIOTE CH0 = task mode on P0.21
         sys.p.write(&sys, 0x40006510, 4, (3) | (21 << 8));
@@ -114,5 +118,16 @@ mod tests {
         crate::system::INSTRUCTION_COUNT.fetch_add(64, std::sync::atomic::Ordering::Relaxed);
         sys.tick();
         assert!(sys.p.gpio.borrow().read_output_pin(0, 21), "PPI dispatched COMPARE->OUT");
+    }
+    #[test]
+    fn group_enable_disable() {
+        let sys = test_dummy_system();
+        let mut p = Ppi::default();
+        p.write(&sys, 0x800, 0b101); // CHG0 = CH0 + CH2
+        assert_eq!(p.read(&sys, 0x800), 0b101);
+        p.write(&sys, 0x000, 1); // TASKS_CHG0.EN
+        assert_eq!(p.read(&sys, 0x500), 0b101, "group enabled");
+        p.write(&sys, 0x004, 1); // TASKS_CHG0.DIS
+        assert_eq!(p.read(&sys, 0x500), 0, "group disabled");
     }
 }

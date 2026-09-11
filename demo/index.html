@@ -28,6 +28,10 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
 </div>
 <h2>UART (UARTE0)</h2>
 <textarea id="uart" readonly></textarea>
+<div>
+  <input type="text" id="uartIn" placeholder="type + Enter to send" style="width:80%">
+  <button id="uartSend">Send</button>
+</div>
 <script type="module">
   import init, * as wasm from './pkg/nrf52833_periph_wasm.js';
 
@@ -41,7 +45,20 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     d.className = 'led'; grid.appendChild(d); leds.push(d);
   }
   const uartBox = document.getElementById('uart');
+  const uartIn = document.getElementById('uartIn');
   const status = document.getElementById('status');
+  // Bytes typed by the user. Drip-fed one per consumed event (silicon
+  // RXD holds a single byte; pushing faster would OVERRUN).
+  const uartOut = [];
+  function sendUart(text) {
+    const enc = new TextEncoder().encode(text + '\r');
+    for (const b of enc) uartOut.push(b);
+    uartIn.value = '';
+  }
+  document.getElementById('uartSend').addEventListener('click', () => sendUart(uartIn.value));
+  uartIn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendUart(uartIn.value);
+  });
 
   await init();
   wasm.reset_state();
@@ -108,10 +125,25 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   // EASYDMA pump: move staged transfers between guest RAM and hosts.
   function pumpDma() {
     if (!cpu) return;
+    if (wasm.is_watchdog_reset_requested()) {
+      // Firmware asked for a reboot (e.g. MicroPython's MBR/SD handoff):
+      // reload SP/PC from the vector table like the native test driver.
+      cpu.reset_cpu(cpu.read32(0), cpu.read32(4));
+      return;
+    }
     let t = wasm.uarte_take_txdma();
     if (t.length) {
       const bytes = cpu.mem_read(t[0], t[1]);
       wasm.uarte_complete_txdma(bytes);
+    }
+    t = wasm.uarte_take_rxdma();
+    if (t.length) {
+      // Serve typed bytes first, zero-fill the rest.
+      const n = Math.min(t[1], uartOut.length);
+      const fill = new Uint8Array(t[1]);
+      for (let i = 0; i < n; i++) fill[i] = uartOut.shift();
+      cpu.mem_write(t[0], fill);
+      wasm.uarte_complete_rxdma(n);
     }
     for (const name of ['TWIM0', 'TWIM1']) {
       t = wasm.twim_take_txdma(name);
@@ -122,6 +154,19 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
       t = wasm.twim_take_rxdma(name);
       if (t.length) {
         // No slave model bound in the demo: complete with 0xFF fill.
+        const fill = new Uint8Array(t[2]).fill(0xFF);
+        cpu.mem_write(t[1], fill);
+        wasm.twim_complete_rxdma(name, t[2]);
+      }
+    }
+    for (const name of ['SPIM2', 'SPIM3']) {
+      t = wasm.twim_take_txdma(name);
+      if (t.length) {
+        const bytes = cpu.mem_read(t[1], t[2]);
+        wasm.twim_complete_txdma(name, bytes);
+      }
+      t = wasm.twim_take_rxdma(name);
+      if (t.length) {
         const fill = new Uint8Array(t[2]).fill(0xFF);
         cpu.mem_write(t[1], fill);
         wasm.twim_complete_rxdma(name, t[2]);
@@ -139,6 +184,28 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
       cpu.mem_write(t[0], fill);
       wasm.pdm_complete_sample();
     }
+    // USB device: complete staged endpoints so enumeration proceeds.
+    t = wasm.usbd_take_epin();
+    if (t.length) {
+      const bytes = cpu.mem_read(t[1], t[2]);
+      wasm.usbd_complete_epin(t[0], bytes);
+    }
+    t = wasm.usbd_take_epout();
+    if (t.length) {
+      const fill = new Uint8Array(t[2]);
+      cpu.mem_write(t[1], fill);
+      wasm.usbd_complete_epout(t[0], t[2]);
+    }
+    // NVMC: apply staged erases to guest flash (0xFF), then complete.
+    t = wasm.nvmc_take_erase();
+    if (t.length) {
+      if (t[0] === 0xFFFFFFFF) {
+        cpu.mem_write(0, new Uint8Array(512 * 1024).fill(0xFF));
+      } else {
+        cpu.mem_write(t[0], new Uint8Array(4096).fill(0xFF));
+      }
+      wasm.nvmc_complete_erase();
+    }
     t = wasm.radio_take_tx();
     if (t.length) {
       // Demo air: loop straight back.
@@ -151,6 +218,10 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
       cpu.step(20000);
       wasm.tick_peripherals();
       pumpDma();
+      // Drip one typed byte per consumed RXDRDY (see above).
+      if (uartOut.length && wasm.periph_read(0x40002108, 4) === 0) {
+        wasm.uart_rx_byte(0x40002000, uartOut.shift());
+      }
       const out = wasm.get_uart_output();
       if (out) uartBox.value += out;
       for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) {
