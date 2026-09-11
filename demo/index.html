@@ -25,6 +25,7 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   <button id="btnA">A (P0.14)</button>
   <button id="btnB">B (P0.23)</button>
   <button id="reset">Reset</button>
+  <button id="mpyboot" title="Boot the app at 0x1C000 with MBR params (see plan.md P16)">Boot MicroPython app</button>
 </div>
 <h2>Motion (LSM303)</h2>
 <div>
@@ -92,46 +93,81 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
 
   let cpu = null, boot = null;
   function parseHex(text) {
-    // Minimal Intel HEX: data records only, up to 512KB from base 0.
-    const img = new Uint8Array(512 * 1024);
-    let high = 0, empty = true;
+    // Minimal Intel HEX: data records, segment(02)/linear(04) addressing,
+    // up to 512KB flash from base 0. UICR records (0x1000xxxx) are
+    // collected separately (applied via periph_write after boot).
+    const img = new Uint8Array(512 * 1024).fill(0xFF);
+    const uicr = [];
+    let base = 0, empty = true;
     for (const line of text.split(/\r?\n/)) {
       if (!line.startsWith(':')) continue;
       const n = parseInt(line.slice(1, 3), 16);
       const addr = parseInt(line.slice(3, 7), 16);
       const type = parseInt(line.slice(7, 9), 16);
-      if (type === 4) { high = parseInt(line.slice(9, 13), 16) << 16; continue; }
+      if (type === 4) { base = parseInt(line.slice(9, 13), 16) << 16; continue; }
+      if (type === 2) { base = parseInt(line.slice(9, 13), 16) << 4; continue; }
       if (type !== 0) continue;
       for (let i = 0; i < n; i++) {
-        const a = (high + addr + i) & 0x7FFFF;
-        img[a] = parseInt(line.slice(9 + i * 2, 11 + i * 2), 16);
+        const a = base + addr + i;
+        const b = parseInt(line.slice(9 + i * 2, 11 + i * 2), 16);
+        if (a >= 0x10000000 && a < 0x10002000) { uicr.push([a, b]); }
+        else if (a < 0x80000) { img[a] = b; }
         empty = false;
       }
     }
-    return empty ? null : img;
+    return empty ? null : { img, uicr };
   }
-  function bootImage(u8) {
+  // Pending UICR bytes from the last hex load (applied on boot).
+  let pendingUicr = [];
+  function bootImage(u8, uicr) {
     const dv = new DataView(u8.buffer);
     const sp = dv.getUint32(0, true), pc = dv.getUint32(4, true);
     initBoard(); // re-register taps: reset_state() clears them
     cpu = new wasm.WasmCpu(sp, pc, 512 * 1024, 128 * 1024);
     cpu.load_firmware(u8, 0);
+    // UICR (e.g. MicroPython BOOTLOADERADDR): pack bytes into words.
+    if (uicr) {
+      const words = new Map();
+      for (const [a, b] of uicr) {
+        const w = a & ~3, i = a & 3;
+        words.set(w, (words.get(w) || 0xFFFFFFFF) & ~(0xFF << (8 * i)) | (b << (8 * i)));
+      }
+      for (const [w, v] of words) wasm.periph_write(w, 4, v >>> 0);
+    }
     boot = { sp, pc };
     uartBox.value = '';
     status.textContent = `running (SP=${sp.toString(16)} PC=${pc.toString(16)})`;
+  }
+  // MicroPython direct-app boot (plan.md P16 recipe): the stock hex's MBR
+  // + bootloader reset-loop in emulation, so boot the app at 0x1C000 with
+  // the MBR parameter page hand-installed (a real MBR->SD boot installs
+  // these; our direct boot must do it by hand).
+  function bootMicroPythonApp() {
+    if (!cpu) { status.textContent = 'load a micro:bit MicroPython hex first'; return; }
+    const w = (a) => cpu.read32(a);
+    if (w(0x1C000) === 0xFFFFFFFF) { status.textContent = 'no app vector table at 0x1C000'; return; }
+    const u32 = (v) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v, true); return b; };
+    cpu.mem_write(0x20000000, u32(0x1000)); // MBR param: SoftDevice base
+    cpu.mem_write(0x20000004, u32(0x1C000)); // MBR param: app base
+    const sp = w(0x1C000), pc = w(0x1C004);
+    cpu.reset_cpu(sp, pc);
+    boot = { sp, pc };
+    uartBox.value = '';
+    status.textContent = `MicroPython app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}), banner follows`;
   }
   document.getElementById('fw').addEventListener('change', async (e) => {
     const f = e.target.files[0];
     if (!f) return;
     const buf = await f.arrayBuffer();
-    let img = null;
+    let img = null; pendingUicr = [];
     if (f.name.endsWith('.hex')) {
-      img = parseHex(new TextDecoder().decode(buf));
-      if (!img) { status.textContent = 'no data records in hex'; return; }
+      const parsed = parseHex(new TextDecoder().decode(buf));
+      if (!parsed) { status.textContent = 'no data records in hex'; return; }
+      img = parsed.img; pendingUicr = parsed.uicr;
     } else {
       img = new Uint8Array(buf);
     }
-    bootImage(img);
+    bootImage(img, pendingUicr);
   });
   document.getElementById('reset').addEventListener('click', () => {
     if (cpu && boot) {
@@ -140,11 +176,13 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
       status.textContent = 'reset';
     }
   });
+  document.getElementById('mpyboot').addEventListener('click', bootMicroPythonApp);
   for (const [id, port, pin] of [['btnA', ...INTERNAL.BTN_A], ['btnB', ...INTERNAL.BTN_B]]) {
     const b = document.getElementById(id);
-    b.addEventListener('pointerdown', () => wasm.gpio_set_input(port, pin, true));
-    b.addEventListener('pointerup', () => wasm.gpio_set_input(port, pin, false));
-    b.addEventListener('pointerleave', () => wasm.gpio_set_input(port, pin, false));
+    // Buttons are active-low with pull-ups: released=true, pressed=false.
+    b.addEventListener('pointerdown', () => wasm.gpio_set_input(port, pin, false));
+    b.addEventListener('pointerup', () => wasm.gpio_set_input(port, pin, true));
+    b.addEventListener('pointerleave', () => wasm.gpio_set_input(port, pin, true));
   }
   // EASYDMA pump: move staged transfers between guest RAM and hosts.
   function pumpDma() {
@@ -160,15 +198,11 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
       const bytes = cpu.mem_read(t[0], t[1]);
       wasm.uarte_complete_txdma(bytes);
     }
-    t = wasm.uarte_take_rxdma();
-    if (t.length) {
-      // Serve typed bytes first, zero-fill the rest.
-      const n = Math.min(t[1], uartOut.length);
-      const fill = new Uint8Array(t[1]);
-      for (let i = 0; i < n; i++) fill[i] = uartOut.shift();
-      cpu.mem_write(t[0], fill);
-      wasm.uarte_complete_rxdma(n);
-    }
+    // NOTE: no uarte_take_rxdma block here on purpose. RX bytes are
+    // dripped one per consumed RXDRDY below (frame): bulk-completing a
+    // staged 32B DMA transfer early fires ENDRX with no firmware re-arm
+    // and input stalls forever. The drip mirrors each byte into the DMA
+    // buffer too, so DMA-mode firmware (MicroPython) sees real data.
     // I2C buses are owned by virtual parts (see below), not the generic pump.
     for (const name of ['SPIM2', 'SPIM3']) {
       t = wasm.twim_take_txdma(name);
@@ -253,9 +287,14 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
         if (wasm.has_pending_interrupt()) cpu.wake();
       }
       pumpDma();
-      // Drip one typed byte per consumed RXDRDY (see above).
+      // Drip one typed byte per consumed RXDRDY (see above). The byte is
+      // mirrored into the DMA buffer (RXD.PTR+AMOUNT) so DMA-mode firmware
+      // (MicroPython reads exclusively from that ring) receives it too.
       if (uartOut.length && wasm.periph_read(0x40002108, 4) === 0) {
-        wasm.uart_rx_byte(0x40002000, uartOut.shift());
+        const b = uartOut.shift();
+        const ptr = wasm.periph_read(0x40002534, 4), amt = wasm.periph_read(0x4000253C, 4);
+        if (ptr >= 0x20000000 && amt < 4096) cpu.mem_write(ptr + amt, new Uint8Array([b]));
+        wasm.uart_rx_byte(0x40002000, b);
       }
       const out = wasm.get_uart_output();
       if (out) uartBox.value += out;

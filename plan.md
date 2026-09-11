@@ -293,3 +293,89 @@ Residual (bounded follow-ups, NOT blockers of this commit):
   confirm.
 - Bootloader reset-loop (full MBR->BL->SD->app chain) still open;
   direct-app boot + param seeds is the working recipe meanwhile.
+
+## 18. P17 REPL fault + browser demo + MakeCode status (2026-09-11)
+
+Post-banner NULL-dispatch fault (from P16) root-caused as far as
+possible without symbols, then parked; browser demo finished;
+MakeCode blocked on network, bootloader parked with a concrete next
+step. Temp probes reverted (suite file-free again, 163 green).
+
+Fault (`bx r3`, r3=0 at `0x4F75A`, `r3=*(*(r0+0x924)+0x28)`, r0=0):
+- Input-INDEPENDENT (fires with no input), tick-DELIVERED (vanishes
+  with TIMER1 IRQs stopped), deterministic ~179M instr post-boot.
+- Patching it to `bx lr` in a scratch image: no fault, system runs a
+  healthy UARTE-IRQ cycle (RX drain -> app SVC -> SD -> repeat), but
+  no prompt/echo/exec either (the skipped call is load-bearing for
+  progress, or a second stall follows it).
+- Entry path (10k sampling): wfe-idle -> `0x24BE0` -> `0x50312` ->
+  `0x57038` (memmove/memcmp) -> `0x322CA` (list walk) -> `0x2EEDA`
+  (0xFE-sentinel table) -> `0x3Axxx` (bfi event packing?) -> ring
+  reader `0x50F34` (serial RX ring drain) -> `0x50FAE` -> sleep-ret
+  `0x4D938` -> NULL call. All thread mode.
+- The prompt IS composed (`"...information.\r\n>>> "` in heap TX
+  buffer `0x200169A0`) but never DMA-staged; input bytes DO land in
+  the DMA buffer (`"print(1+2)\r"` observed at `RXD.PTR`); RX ring
+  (`rxBuffSize=129` @`0x20002BC8`) stays empty.
+- RX feed lesson (model contract!): NRF52Serial re-arms STARTRX only
+  via enableInterrupt; completing a staged 32B RXDMA early (ENDRX
+  after 1 byte) kills the transfer with no re-arm -> input stalls
+  after 1 byte. Correct trickle protocol: mirror each byte into
+  `RXD.PTR+AMOUNT` + `uart_rx_byte` (RXDRDY path), never
+  take/complete until full. Demo pump fixed accordingly.
+- TX drops (~3% single bytes) persist with slicetimed completion:
+  not a pump race; bytes missing from firmware buffers at DMA time
+  (heap/buffer reuse suspected, unproven).
+- Serial object hunt: CodalComponent id==12 scan hits the component
+  TABLE (24B entries, dynamic ids 110+), not uBit.serial; dynamic
+  stacks (`[502D7,1E5EF]`, fiber clusters) are stale slots, not
+  frames -- stack-scan heuristics need bl-preceded validation.
+- Prime suspects left: (a) RX_BUFF_INIT clear (setRxBufferSize malloc
+  failed at main:61 -- never verified: need Serial object base +
+  status bit read); (b) TX ring stall (prompt queued, is_tx state
+  unknown -- same layout block); (c) dangling messageBus/fiber
+  listener on the 6ms tick. Next step: compute NRF52Serial field
+  offsets from codal-core/codal-nrf52 headers (cloned to /tmp/src)
+  and read status/head/tail/is_tx directly. Image patch
+  (`0x4F75A: 0x4718->0x4770`) is DIAGNOSTIC ONLY, in /tmp, never
+  committed.
+
+Browser demo (demo/index.html, JS-checked + smoke green, no pkg
+rebuild needed -- all exports pre-existed):
+- parseHex: type-02 segment records + 0xFF fill (erased flash reads
+  as FF, old code zero-filled!) + UICR capture (applied via
+  periph_write words on boot; old code aliased UICR into flash!).
+- Buttons fixed to active-low (were inverted vs the pull-up model).
+- Sleep-aware frame (`tick_n` + wake on pending IRQ -- without this
+  the core naps forever at first MicroPython idle, proven in P16).
+- RX drip fixed (DMA-buffer mirror, no early ENDRX completion).
+- I2S RX-silence/TX-capture pump wired.
+- "Boot MicroPython app" button: app VT at 0x1C000 + MBR param
+  seeds (P16 recipe). Load any microbit-micropython-v2.x hex, boot
+  app, banner follows in the UART box.
+
+Bootloader: BL entered from MBR (UICR seed) but reset-loops; two
+NVIC_SystemReset sites (`0x77492` after NVMC waits + PSELRESET[1]=18
+write, `0x783F0`); MBR re-enters BL (BOOTLOADERADDR set). Only MBR
+param write observed: `*(0x20000000)=0x77000`. Hand disassembly past
+`0x782E8` is alignment-unreliable (literal pools decode as code).
+Next step: anchor disassembly at the BL reset vector (`0x77000`
+VT) and trace forward, or sample BL-window PCs densely and decode
+only true boundaries; capture r0 at the init-runner `cmp` to read
+the NRF_ERROR code (0x8502/0x8514 family seen statically).
+
+MakeCode: BLOCKED on network, not on depends. `npm i -g pxt` installs
+a 2018 squatter (0.5.1, useless); the real CLI is the `makecode`
+package (`makecode`/`mkc` bins, works). `makecode init microbit`
+fails fetching `cdn.makecode.com/.../target.json` (ECONNRESET;
+same host class as api.github.com). pxt-microbit cloned from
+github (reachable) for source comparison; test hexes present are
+v1 (nRF51, wrong arch). NOTE: shell reports `NotFound:
+FileSystem.access (<dir>)` when the bash workdir does not exist --
+several tool failures this session were that, not tool failures.
+Display finding (source-grounded): matrix GPIO configures ONLY on
+refresh/strobe (NRF52LedMatrix), constructor just wires TIMER4 --
+DIR=0 pre-first-show is CORRECT, not evidence of stuck init.
+Recipe when CDN returns: `makecode init microbit`, `makecode
+build`, boot `mbcodal-binary.hex` with the P16 recipe (it is also
+a CODAL+S140 image).
