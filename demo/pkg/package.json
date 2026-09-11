@@ -1,0 +1,15 @@
+{
+  "name": "nrf52833-periph-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "files": [
+    "nrf52833_periph_wasm_bg.wasm",
+    "nrf52833_periph_wasm.js",
+    "nrf52833_periph_wasm.d.ts"
+  ],
+  "main": "nrf52833_periph_wasm.js",
+  "types": "nrf52833_periph_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

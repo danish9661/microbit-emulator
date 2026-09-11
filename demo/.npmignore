@@ -1,0 +1,4 @@
+# NOTE: pkg/ ships its own .gitignore (wasm-pack default) that would hide
+# the built wasm from npm. This file overrides .gitignore entirely for
+# packaging, so keep it permissive: everything in files[] ships.
+node_modules

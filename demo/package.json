@@ -1,0 +1,19 @@
+{
+  "name": "microbit-v2-emulator",
+  "version": "0.1.0",
+  "description": "BBC micro:bit v2.2 emulator core (nRF52833 WASM) + virtual parts for Wokwi-style setups",
+  "type": "module",
+  "files": [
+    "pkg/",
+    "parts/",
+    "index.html",
+    "API.md",
+    "README.md"
+  ],
+  "scripts": {
+    "test:parts": "node parts/smoke.mjs",
+    "build:wasm": "wasm-pack build ../nrf52833-periph-wasm --target web --out-dir ./pkg",
+    "serve": "python3 -m http.server 8080"
+  },
+  "license": "MIT"
+}

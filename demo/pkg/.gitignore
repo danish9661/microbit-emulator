@@ -1,0 +1,5 @@
+# Kept intentionally: parent microbit-v2-emulator package ships this dir via npm.
+!*.wasm
+!*.js
+!*.ts
+!*.json

@@ -161,6 +161,9 @@ impl Peripheral for Twim {
                 self.rx_amount = 0;
                 self.rx_pending = self.rx_maxcnt > 0;
                 self.arm_nack();
+                // START boundary carries the 7-bit slave address in bits
+                // 6..0 (boundary detection via bits 31/30 is unaffected).
+                crate::system::i2c_tap_push_event(&self.name, (1 << 31) | (1 << 30) | (self.address as u32 & 0x7F));
             }
             0x008 => { // STARTTX
                 self.started_tx = true;
@@ -171,6 +174,7 @@ impl Peripheral for Twim {
                 self.tx_amount = 0;
                 self.tx_pending = self.tx_maxcnt > 0;
                 self.arm_nack();
+                crate::system::i2c_tap_push_event(&self.name, (1 << 31) | (1 << 30) | (self.address as u32 & 0x7F));
             }
             0x010 => { self.started_tx = true; self.ev_stopped = false; } // SPIM TASKS_START
             0x014 => { // STOP -> STOPPED event

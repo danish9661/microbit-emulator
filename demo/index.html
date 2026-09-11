@@ -26,6 +26,14 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   <button id="btnB">B (P0.23)</button>
   <button id="reset">Reset</button>
 </div>
+<h2>Motion (LSM303)</h2>
+<div>
+  <label>Tilt X <input type="range" id="tiltX" min="-1000" max="1000" value="0"></label>
+  <label>Tilt Y <input type="range" id="tiltY" min="-1000" max="1000" value="0"></label>
+  <button id="shake">Shake</button>
+</div>
+<h2>OLED (SSD1306, edge I2C)</h2>
+<canvas id="oled" style="width:256px;height:128px;background:#000"></canvas>
 <h2>UART (UARTE0)</h2>
 <textarea id="uart" readonly></textarea>
 <div>
@@ -34,10 +42,9 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
 </div>
 <script type="module">
   import init, * as wasm from './pkg/nrf52833_periph_wasm.js';
-
-  // Wiring map (micro:bit v2 schematic, rows sink / cols source):
-  const ROWS = [[0,21],[0,22],[0,15],[0,24],[0,19]];
-  const COLS = [[0,28],[0,11],[0,31],[1,5],[0,30]];
+  import { ROWS, COLS, INTERNAL } from './parts/pins.js';
+  import { LSM303 } from './parts/lsm303.js';
+  import { SSD1306 } from './parts/ssd1306.js';
   const grid = document.getElementById('matrix');
   const leds = [];
   for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) {
@@ -59,10 +66,28 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   uartIn.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') sendUart(uartIn.value);
   });
+  // Tilt sliders drive the virtual accelerometer (mg).
+  const tilt = { x: 0, y: 0 };
+  for (const [id, k] of [['tiltX', 'x'], ['tiltY', 'y']]) {
+    document.getElementById(id).addEventListener('input', (e) => {
+      tilt[k] = parseInt(e.target.value, 10);
+      parts[0].setAccel({ x: tilt.x, y: tilt.y, z: 1000 });
+    });
+  }
+  document.getElementById('shake').addEventListener('click', () => parts[0].shake());
 
   await init();
-  wasm.reset_state();
-  wasm.init();
+  // Virtual board: parts register BEFORE every init() (taps snapshot once).
+  const parts = [
+    new LSM303(wasm, 'TWIM1'),
+    new SSD1306(wasm, 'TWIM0', document.getElementById('oled')),
+  ];
+  function initBoard() {
+    wasm.reset_state();
+    for (const p of parts) p.register();
+    wasm.init();
+  }
+  initBoard();
   status.textContent = 'wasm ready — drop firmware.';
 
   let cpu = null, boot = null;
@@ -88,8 +113,7 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   function bootImage(u8) {
     const dv = new DataView(u8.buffer);
     const sp = dv.getUint32(0, true), pc = dv.getUint32(4, true);
-    wasm.reset_state();
-    wasm.init();
+    initBoard(); // re-register taps: reset_state() clears them
     cpu = new wasm.WasmCpu(sp, pc, 512 * 1024, 128 * 1024);
     cpu.load_firmware(u8, 0);
     boot = { sp, pc };
@@ -116,7 +140,7 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
       status.textContent = 'reset';
     }
   });
-  for (const [id, port, pin] of [['btnA', 0, 14], ['btnB', 0, 23]]) {
+  for (const [id, port, pin] of [['btnA', ...INTERNAL.BTN_A], ['btnB', ...INTERNAL.BTN_B]]) {
     const b = document.getElementById(id);
     b.addEventListener('pointerdown', () => wasm.gpio_set_input(port, pin, true));
     b.addEventListener('pointerup', () => wasm.gpio_set_input(port, pin, false));
@@ -145,20 +169,7 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
       cpu.mem_write(t[0], fill);
       wasm.uarte_complete_rxdma(n);
     }
-    for (const name of ['TWIM0', 'TWIM1']) {
-      t = wasm.twim_take_txdma(name);
-      if (t.length) {
-        const bytes = cpu.mem_read(t[1], t[2]);
-        wasm.twim_complete_txdma(name, bytes);
-      }
-      t = wasm.twim_take_rxdma(name);
-      if (t.length) {
-        // No slave model bound in the demo: complete with 0xFF fill.
-        const fill = new Uint8Array(t[2]).fill(0xFF);
-        cpu.mem_write(t[1], fill);
-        wasm.twim_complete_rxdma(name, t[2]);
-      }
-    }
+    // I2C buses are owned by virtual parts (see below), not the generic pump.
     for (const name of ['SPIM2', 'SPIM3']) {
       t = wasm.twim_take_txdma(name);
       if (t.length) {
@@ -172,6 +183,9 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
         wasm.twim_complete_rxdma(name, t[2]);
       }
     }
+    // I2C buses are owned by virtual parts (not the generic pump):
+    // TWIM1 = LSM303 motion sensor, TWIM0 = SSD1306 OLED (edge).
+    for (const p of parts) p.poll(cpu);
     t = wasm.saadc_take_result();
     if (t.length) {
       const fill = new Uint8Array(t[1] * 2).fill(0x80);
