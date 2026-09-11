@@ -7,7 +7,8 @@ and `pumpDma()` moves every staged EASYDMA transfer (UARTE/TWIM/SAADC/PDM)
 plus RADIO loopback. I2C buses belong to virtual parts (below), not the
 generic pump.
 
-Build + serve (pkg/ is generated, not committed):
+Build + serve (rebuild `pkg/` after Rust changes, then commit it — the
+npm tarball ships the built wasm):
 
 ```bash
 ~/.cargo/bin/wasm-pack build nrf52833-periph-wasm --target web --out-dir ../demo/pkg
