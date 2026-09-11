@@ -151,6 +151,14 @@ fn nrf_dma_driver_roundtrip() {
     let _u = crate::system::lock_uart();
     crate::system::get_uart_output().lock().unwrap().clear();
     let _g = lock_boot();
+    // Virtual accel so the TWIM RX DMA is ACKed (no slave -> NACK, by design).
+    {
+        use crate::ext_devices::i2c_tap::{I2cTap, I2cTapConfig};
+        crate::system::get_ext_devices().lock().unwrap().i2c_taps.push(
+            std::rc::Rc::new(std::cell::RefCell::new(I2cTap::new(I2cTapConfig {
+                peripheral: "TWIM0".to_string(), address: 0x19,
+            }))));
+    }
     let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/dma_nrf.bin"));
     let sys = crate::sys();
     // Phase 1: firmware stages UARTE TX DMA, spins on ENDTX.
@@ -291,6 +299,7 @@ fn nrf_usbep_setup_and_epin_dma() {
     assert!(out.contains("SETUP:OK"), "missing SETUP marker, got {out:?}");
     assert!(out.contains("USBEP:OK"), "missing USBEP marker, got {out:?}");
 }
+
 
 
 

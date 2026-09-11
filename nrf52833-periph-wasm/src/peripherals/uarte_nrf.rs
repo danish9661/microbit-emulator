@@ -20,7 +20,8 @@ pub struct Uarte {
     ev_rxdrdy: bool,
     ev_endrx: bool,
     ev_error: bool,
-    rx_buf: Vec<u8>,
+    errorsrc: u32,
+    rxd: u8,
     intenset: u32,
     rx_ptr: u32,
     rx_maxcnt: u32,
@@ -35,7 +36,7 @@ pub struct Uarte {
 impl Default for Uarte {
     fn default() -> Self {
         Self { irq: 2, enable: 0, baudrate: 0, ev_txdrdy: false, ev_endtx: false,
-               ev_rxdrdy: false, ev_endrx: false, ev_error: false, rx_buf: Vec::new(),
+               ev_rxdrdy: false, ev_endrx: false, ev_error: false, errorsrc: 0, rxd: 0,
                intenset: 0, rx_ptr: 0, rx_maxcnt: 0, rx_amount: 0, rx_pending: false,
                tx_ptr: 0, tx_maxcnt: 0, tx_amount: 0, tx_pending: false }
     }
@@ -67,8 +68,9 @@ impl Peripheral for Uarte {
             0x120 => self.ev_endtx as u32,
             0x124 => self.ev_error as u32,
             0x304 => self.intenset,
+            0x480 => self.errorsrc,
             0x500 => self.enable,
-            0x518 => self.rx_buf.first().copied().unwrap_or(0) as u32,
+            0x518 => self.rxd as u32,
             0x524 => self.baudrate,
             0x534 => self.rx_ptr,
             0x538 => self.rx_maxcnt,
@@ -113,6 +115,7 @@ impl Peripheral for Uarte {
                 if self.ev_rxdrdy && value & (1 << 2) != 0 { self.fire(sys, 1 << 2); }
             }
             0x308 => self.intenset &= !value,
+            0x480 => self.errorsrc &= !value, // write-1-clears
             0x500 => self.enable = value & 0xF,
             0x518 => {} // RXD read-only
             0x51C => {
@@ -134,10 +137,9 @@ impl Peripheral for Uarte {
         }
     }
     fn rx_byte(&mut self, sys: &System, byte: u8) {
-        self.rx_buf.push(byte);
         if self.rx_pending {
-            // DMA RX: stream into the staged buffer accounting; the driver
-            // drains it via take_rx_pending (RAM write happens driver-side).
+            // DMA RX accounting; the driver moves bytes into RAM and
+            // completes (take/complete_rxdma). Count only, like silicon.
             self.rx_amount += 1;
             if self.rx_amount >= self.rx_maxcnt.max(1) {
                 self.rx_pending = false;
@@ -145,10 +147,16 @@ impl Peripheral for Uarte {
                 self.fire(sys, 1 << 4);
             }
         }
-        if self.rx_buf.len() == 1 {
-            self.ev_rxdrdy = true;
-            self.fire(sys, 1 << 2);
+        // RXD holds one byte: a second arrival before firmware reads is an
+        // OVERRUN (real UARTE behavior, not a queue).
+        if self.ev_rxdrdy {
+            self.ev_error = true;
+            self.errorsrc |= 1 << 0;
+            self.fire(sys, 1 << 9);
         }
+        self.rxd = byte;
+        self.ev_rxdrdy = true;
+        self.fire(sys, 1 << 2);
     }
 }
 
@@ -226,6 +234,18 @@ mod tests {
         u.rx_byte(&sys, 0x41);
         assert_eq!(u.read(&sys, 0x108), 1);
         assert_eq!(u.read(&sys, 0x518), 0x41);
+    }
+    #[test]
+    fn rx_overrun_sets_error() {
+        let sys = test_dummy_system();
+        let mut u = Uarte::default();
+        u.rx_byte(&sys, 0x41);
+        u.rx_byte(&sys, 0x42); // unread: overrun, latest wins
+        assert_eq!(u.read(&sys, 0x518), 0x42);
+        assert_eq!(u.read(&sys, 0x124), 1, "ERROR event");
+        assert_eq!(u.read(&sys, 0x480) & 1, 1, "OVERRUN cause");
+        u.write(&sys, 0x480, 1);
+        assert_eq!(u.read(&sys, 0x480) & 1, 0, "cleared");
     }
     #[test]
     fn tx_dma_completion_irq_when_enabled() {

@@ -135,3 +135,22 @@ P9c left: EASYDMA completion IRQs (INTEN-gated), NVMC erase staging.
 Drive SETUP/DATA/STATUS against the P9a primitives until TinyUSB
 enumerates and the MicroPython banner appears on USB CDC. Pure driver
 work (test-side first, then demo pump); no new peripheral registers.
+
+## 12. P11a TWIM bus errors + UARTE RX truth (2026-09-11)
+
+- TWIM mistakes fixed from SVD ground truth: RXSTARTED/TXSTARTED were
+  SWAPPED (0x148=SUSPENDED, 0x14C=RXSTARTED, 0x150=TXSTARTED), LASTRX/
+  LASTTX/SUSPEND/RESUME/SHORTS/ERRORSRC missing. Added + SHORTS chains
+  (LASTTX_STOP/STARTRX/SUSPEND, LASTRX_*) and a NACK model: a DMA
+  transfer with no tap slave at ADDRESS fails after the address phase
+  (~6000 instr) with ERROR + ANACK + STOPPED, like silicon without ACK.
+  MicroPython's accel probe NACKs live without a slave and proceeds.
+- Virtual LSM303 (WHO_AM_I_A 0x33 / _M 0x40) answers MPY's probe:
+  periodic I2C traffic serviced, zero faults. Sensor-data path proven.
+- UARTE RXD is a single slot, not a queue: unread arrival = OVERRUN
+  (ERRORSRC bit 0, write-1-clear). Test drivers must pace input to
+  RXDRDY-cleared, like silicon.
+- MicroPython steady state: alive main loop (sensor reads + timer IRQs
+  live, zero faults over 850M+ instr), REPL input consumed on UARTE but
+  no output yet (no echo/prompt). Display never configured, USB never
+  started. Next: find what the REPL waits on (BLE-NUS vs USB-CDC binding).
