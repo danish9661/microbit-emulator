@@ -154,3 +154,23 @@ work (test-side first, then demo pump); no new peripheral registers.
   live, zero faults over 850M+ instr), REPL input consumed on UARTE but
   no output yet (no echo/prompt). Display never configured, USB never
   started. Next: find what the REPL waits on (BLE-NUS vs USB-CDC binding).
+
+## 13. P11b REPL forensics (2026-09-11, source-grounded)
+
+- The v2.1.1 firmware IS CODAL-based (MicroPython on micro:bit via
+  CODAL): REPL stdin/stdout = `uBit.serial` = UARTE0
+  (`src/codal_app/mphalport.cpp`), NOT USB. "MicroBitUART" is the
+  `microbit.uart` module type name, not BLE.
+- UIPM is I2C to the interface chip (addr 0x70, `MicroBitPowerManager`),
+  gated on the irq1 GPIO line — silent in emulation, correctly so;
+  its retries terminate on working time, not a stall.
+- Park anatomy: main fiber in a `delay_us` RAM leaf called from a
+  retry/parser path (0x209AA retry x20 + digit parser at 0x20A9A+),
+  with live sensor traffic and timer IRQs. I2C log shows clean sensor
+  init (WHO_AM_I, CTRL writes) — virtual LSM303 answers correctly.
+- Open: which init phase owns that retry loop, and what the REPL
+  thread waits on. Candidates: display init ordering, BLE-disabled
+  pairing check (`MICROBIT_BLE_PAIRING_MODE=1` in codal.json despite
+  `MICROBIT_BLE_ENABLED=0`), button polarity (our inputs default LOW;
+  real board pulls buttons HIGH — pressed reads LOW, so we may report
+  both buttons stuck pressed!). Button default polarity is next to verify.
