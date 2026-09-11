@@ -90,6 +90,14 @@ pub fn set_intr_pending(irq: i32) {
     sys().p.nvic.borrow_mut().set_intr_pending(irq);
 }
 
+/// True when firmware requested a reboot (AIRCR SYSRESETREQ / WDT).
+/// The JS driver must then reset the CPU from the vector table
+/// (MicroPython does this twice during boot).
+#[wasm_bindgen]
+pub fn is_watchdog_reset_requested() -> bool {
+    system::is_watchdog_reset_requested()
+}
+
 /// Clear all process-lifetime globals so a NEW emulator instance starts clean.
 #[wasm_bindgen]
 pub fn reset_state() {

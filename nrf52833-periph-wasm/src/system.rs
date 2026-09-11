@@ -159,7 +159,6 @@ pub fn latch_memmanage_fault(sys: &WasmSystem, mmfsr_bits: u32, mmfar: Option<u3
         sys.p.write(sys, 0xE000ED34, 4, a);
     }
 }
-pub fn get_sys_for_cpu() -> &'static WasmSystem { crate::sys() }
 pub fn is_watchdog_reset_requested() -> bool { WATCHDOG_RESET_EVENT.swap(false, Ordering::Acquire) }
 /// Latch a watchdog reset event (e.g. SCB AIRCR SYSRESETREQ). Consumed by
 /// the JS driver (is_watchdog_reset_requested) to reboot the instance.
