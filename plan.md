@@ -178,7 +178,6 @@ work (test-side first, then demo pump); no new peripheral registers.
   both buttons stuck pressed!). Button default polarity is next to verify.
 
 ## 14. P12 stub completions (2026-09-11)
-
 - ECB: real offsets (STARTECB/STOPECB/ENDECB/ERRORECB/INTEN, DATAPTR),
   take/complete driver flow, FIPS-197 AES-128 round-trip proof
   (`nrf_ecb_aes128_fips_vector`). Crypto itself runs driver-side
@@ -215,3 +214,24 @@ work (test-side first, then demo pump); no new peripheral registers.
   (sd_evt_get responses, BLE/RTC event pump) — the explicitly
   out-of-scope workstream from §0. Nothing further is actionable
   without it.
+
+## 16. P14 firmware breadth (2026-09-11): Espruino + MakeCode boot
+
+- CoreSight PID space mapped read-as-0 (`0xF0000000-0xF0001000`):
+  Espruino HardFaulted at boot on `BFAR=0xF0000FE0` (Nordic's own
+  `system_nrf52.c` reads `PID_REGS` there for errata checks — real
+  silicon answers, so faulting was an emulator hole, not correct
+  behavior). After the fix it boots with GPIO activity, no faults.
+- Espruino 2v29 (prebuilt hex) console is BIT-BANG serial on P0.06
+  (9600 8N1 per MICROBIT2.py), not UARTE — needs edge-decode to
+  observe; nothing transmitted in the first windows.
+- MakeCode TypeScript compiles LOCALLY: `npm i -g pxt` works (npm
+  registry open, unlike pip), `pxt target microbit` + `pxt build`
+  emits `mbcodal-binary.hex` (CODAL, SD-style table) with xpack GCC.
+  Both a full program (showString+forever) and a minimal one boot to
+  the same live-idle shape as MicroPython (RAM delay leaf, timer
+  IRQs, sensor-capable I2C): all three real runtimes share one init
+  gate, still unidentified, with zero faults everywhere.
+- UARTE RXDMA take/complete API added (NRF52Serial drains RX
+  exclusively through the DMA ring in RAM — bytes in RXD alone never
+  reach any consumer); demo pump + UART input box wired for it.

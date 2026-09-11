@@ -445,7 +445,6 @@ impl Peripherals {
             return (self.read(sys, addr, 1) >> bit_number) & 1;
         }
         let (addr, byte_offset) = Self::align_addr_4(addr);
-        crate::system::readlog_hit(false, addr);
         let value = if Self::NVIC_REGS_BASE <= addr && addr < Self::NVIC_REGS_END {
             self.nvic.borrow_mut().read(sys, addr - Self::NVIC_REGS_BASE)
         } else if let Some(p) = Self::get_peripheral(&self.peripherals, addr) {
@@ -462,7 +461,6 @@ impl Peripherals {
             return self.write(sys, addr, 1, v);
         }
         let (addr, byte_offset) = Self::align_addr_4(addr);
-        crate::system::readlog_hit(true, addr);
         if byte_offset != 0 {
             let v = self.read(sys, addr, 4);
             value = (value << 8 * byte_offset) | (v & (0xFFFF_FFFF >> (32 - 8 * byte_offset)));

@@ -30,6 +30,12 @@ fn is_periph(addr: u32) -> bool {
         || (addr >= 0x10000000 && addr < 0x10002000)
         // nRF52833: GPIO P0/P1 live above the classic 0x40000000 window
         || (addr >= 0x50000000 && addr < 0x50001000)
+        // ARM CoreSight PID/CID space (0xF0000FE0+): Nordic's own
+        // system_nrf52.c reads PID_REGS there at boot (part/rev errata
+        // checks). Real silicon answers; holes read-as-0 like the
+        // documented-reserved peripheral gaps. Found 2026-09-11 via
+        // Espruino boot (BFAR 0xF0000FE0 -> HardFault without it).
+        || (addr >= 0xF0000000 && addr < 0xF0001000)
         // Full FSMC window (banks 1-4 every 0x10000000 up to 0xA0000000):
         // untapped banks must reach the model (inert 0), not the bus-fault
         // arms — the fsmc_test BANK4 probe depends on it.

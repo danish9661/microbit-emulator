@@ -47,23 +47,6 @@ pub fn get_ext_devices() -> &'static Mutex<ExtDevices> {
 pub static INSTRUCTION_COUNT: AtomicU64 = AtomicU64::new(0);
 pub fn instruction_count() -> u64 { INSTRUCTION_COUNT.load(Ordering::Relaxed) }
 
-// Probe-only access histogram (temporary, P11 MPY forensics).
-static READLOG_ON: AtomicBool = AtomicBool::new(false);
-static READHIST: OnceLock<Mutex<std::collections::BTreeMap<(bool, u32), u64>>> = OnceLock::new();
-pub fn set_readlog(v: bool) { READLOG_ON.store(v, Ordering::Relaxed); }
-pub fn readlog_hit(wr: bool, addr: u32) {
-    if READLOG_ON.load(Ordering::Relaxed) {
-        *READHIST.get_or_init(|| Mutex::new(Default::default())).lock().unwrap()
-            .entry((wr, addr)).or_insert(0) += 1;
-    }
-}
-pub fn readlog_take() -> Vec<((bool, u32), u64)> {
-    let m = std::mem::take(&mut *READHIST.get_or_init(|| Mutex::new(Default::default())).lock().unwrap());
-    let mut v: Vec<_> = m.into_iter().collect();
-    v.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
-    v
-}
-
 static WATCHDOG_RESET_EVENT: AtomicBool = AtomicBool::new(false);
 // RESETREAS latch (POWER 0x40000400): bit 2 SREQ is set on an AIRCR
 // SYSRESETREQ / watchdog reboot so post-reset firmware (MBR/SD) sees a

@@ -1,6 +1,7 @@
 use crate::system::System;
 use super::Peripheral;
 
+
 /// nRF GPIO: P0 @ 0x50000000 (32 pins) + P1 @ 0x50000300 (10 pins on 52833).
 /// Nordic layout per port (offsets from port base):
 ///   0x504 OUT, 0x508 OUTSET, 0x50C OUTCLR, 0x510 IN, 0x514 DIR, 0x518 DIRSET,

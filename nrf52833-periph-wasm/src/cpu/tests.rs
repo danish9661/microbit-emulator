@@ -348,6 +348,7 @@ fn nrf_ecb_aes128_fips_vector() {
     }
 }
 
+
 #[test]
 fn nrf_boot_flash_at_zero() {
     // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.
