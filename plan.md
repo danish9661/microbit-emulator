@@ -429,3 +429,32 @@ TX ring drain->Event->fault causation by stuffing the ring (never
 empty -> no Event -> no fault?); (3) identify the N+1 stager via
 is_tx/ENDTX event timeline around a hole (log ev_endtx transitions
 per slice near banner mid-point).
+
+## 20. P19 MakeCode boots: display refreshes blank (2026-09-11)
+
+Real MakeCode build locally (`makecode` CLI from the `makecode` npm
+package -- NOT the squatter `pxt@0.5.1`; `makecode init microbit`
+needs `cdn.makecode.com`, fails ECONNRESET when that host class is
+down). `basic.showString("A")` -> `built/mbcodal-binary.hex` =
+MBR + S140 + CODAL app @`0x1C000` (VT SP=`0x20020000`,
+Reset=`0x37F25`) + bootloader + settings + UICR, same shape as MPY.
+Boots with the P16 recipe (app VT + UICR seeds + MBR params
+`0x1000`/`0x1C000`, reset-honoring, sleep-aware pump): zero faults
+over 400M instr, 2 SD-handshake resets, scheduler idles in RAM
+(`0x20002078`), then app-flash sleep leaf (`0x37AF8: wfe; bx lr`).
+
+Display finding: TIMER4 armed (INTEN COMPARE0, CC0=`0xD055` ~107ms
+period) and P0 OUT latch strobes rows {22,24,15,...} on that period
+(TIMER4-tick-driven NRF52LedMatrix refresh, CONFIRMED running), but
+cols never set and P0/P1 DIR stay 0 -> renders BLANK (also true on
+silicon: no DIR, no light). showString content never reaches the
+matrix; no radio attempts (RADIO state 0), SD canary 0, same as MPY
+pre-banner. A `codal.json` BLE-disabled rebuild behaves IDENTICALLY
+(BLE is not the gate). Constant OUT bits {8,16,20} are idle I2C/mic
+latches, not display. Next: why the animation/frame never advances
+(fiber/event-gated scroll? needs the TX_EMPTY-class answer from P18
+applied to the display path?).
+
+Demo correctness fix (same commit): matrix LEDs now AND DIR with OUT
+(a toggling latch on an input pin stays dark, as on silicon;
+previously OUT-only, which would ghost on pre-show refresh).
