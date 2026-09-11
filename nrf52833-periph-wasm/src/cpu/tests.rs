@@ -233,7 +233,6 @@ fn nrf_air_usb_radio_ppi() {
     assert!(out.contains("PPI:OK"), "missing PPI marker, got {out:?}");
 }
 
-
 #[test]
 fn nrf_c_irq_timer_uart() {
     // P8a firmware (c_irq_nrf.c, GCC -O2): C vector table, TIMER0 IRQ via
@@ -253,7 +252,6 @@ fn nrf_c_irq_timer_uart() {
     assert!(out.contains("TICK:3"), "missing TICK:3, got {out:?}");
     assert!(out.contains("DONE"), "missing DONE, got {out:?}");
 }
-
 
 #[test]
 fn sysresetreq_latches_reboot_request() {
@@ -302,7 +300,6 @@ fn nrf_usbep_setup_and_epin_dma() {
     assert!(out.contains("USBEP:OK"), "missing USBEP marker, got {out:?}");
 }
 
-
 #[test]
 fn nrf_usbdev_c_setup_and_epin_flash_dma() {
     // usbdev_nrf.c (GCC -O2, same recipe as c_irq_nrf.c, verified
@@ -332,11 +329,6 @@ fn nrf_usbdev_c_setup_and_epin_flash_dma() {
     assert!(out.contains("SETUP:OK"), "missing SETUP marker, got {out:?}");
     assert!(out.contains("USBEP:OK"), "missing USBEP marker, got {out:?}");
 }
-
-
-
-
-
 
 #[test]
 fn nrf_ecb_aes128_fips_vector() {
@@ -378,9 +370,6 @@ fn nrf_ecb_aes128_fips_vector() {
         assert_eq!(mem.read8(ptr.wrapping_add(32 + i as u32)), b, "ct byte {i}");
     }
 }
-
-
-
 
 #[test]
 fn nrf_wdt_resets_unpetted_firmware() {
@@ -516,7 +505,6 @@ fn exception_svc_roundtrip() {
     assert_eq!(cpu.regs.r[15] & !1, 0x00000102, "did not resume after SVC");
     assert_eq!(cpu.ipsr, 0, "still in handler mode");
 }
-
 
 fn run_snippet(code: &[u16], regs: &[(usize, u32)]) -> (Cpu, FlatMemory) {
     let _g = lock_boot();
@@ -957,9 +945,6 @@ fn t3_reg_no_writeback() {
     assert_eq!(cpu.regs.r[3], 5);
 }
 
-
-
-
 #[test]
 fn it_pred_mov_preserves() {
     // D_PageTicker: cmp sets N=1; itt lt; movlt (taken) must preserve N
@@ -1282,7 +1267,6 @@ fn fpu_rejects() {
     }
 }
 
-
 #[test]
 fn fpu_arith_basic() {
     // GAS: vadd s4,s5,s6=EE32 2A83; vsub=EE32 2AC3; vmul s4,s5,s6=EE22
@@ -1473,7 +1457,6 @@ fn fpu_vcvt_f16() {
     assert_eq!((cpu.regs.s[0] >> 10) & 0x1F, 0x1F, "narrowed NaN exp all-ones");
     assert_ne!(cpu.regs.s[0] & 0x3FF, 0, "narrowed NaN keeps payload");
 }
-
 
 #[test]
 fn fpu_fma_fused() {
@@ -2928,7 +2911,4 @@ fn dwt_foldcnt_counts_skipped_slots() {
     assert_eq!(cpu.regs.r[0], 1, "taken slot executed");
     assert_eq!(mem.read32(0xE0001018), 1, "one folded slot counted");
 }
-
-
-
 

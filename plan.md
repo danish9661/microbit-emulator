@@ -379,3 +379,53 @@ DIR=0 pre-first-show is CORRECT, not evidence of stuck init.
 Recipe when CDN returns: `makecode init microbit`, `makecode
 build`, boot `mbcodal-binary.hex` with the P16 recipe (it is also
 a CODAL+S140 image).
+
+## 19. P18 REPL serial deep-dive: layout solved, TX_EMPTY prime suspect (2026-09-11)
+
+NRF52Serial/Serial/CodalComponent/PinPeripheral layouts computed from
+cloned sources (codal-core, codal-nrf52) and VERIFIED against live RAM
+(id==12 at the predicted offset, rxBuffSize==129, rxBuff/txBuff heap
+ptrs, bytesProcessed==11, dmaBuffer content). uBit.serial base =
+`0x20002BA4`: id@+12, status@+14 (`0x402C`: RX+TX BUFF_INIT BOTH SET),
+rxBuff@+32, rxBuffSize@+36, rxBuffHead@+38, rxBuffTail@+40, txBuff@+44,
+txBuffSize@+48, txBuffHead@+50, txBuffTail@+52, baudrate@+56,
+is_tx@+60, bytesProcessed@+64, dmaBuffer[32]@+68. Temp probes fully
+reverted (163 green, suite file-free again).
+
+Settled facts:
+- Banner+help print via 1-byte TXDMAs from ONE stack slot
+  (`0x2001FEC7`, putc `&c`), all len=1. TX drops are STAGED-wrong
+  (isolated N+1 substitutions, self-correcting, no shift), NOT pump
+  read-timing (eager per-slice reads) or completion-timing (delayed
+  ENDTX) artifacts. STOPTX model arm completes (ENDTX) so no loss
+  there; no stack/heap collision (min SP `0x2001FD98`, heap top
+  `0x20016xxx`). Mechanism of N+1 staging still open (is_tx gating
+  audited sound in every path examined).
+- Input bytes land in dmaBuffer (`"print(1+2)\r"` observed) and
+  bytesProcessed counts them (11); RX ring stays empty, readline
+  never consumes (tail frozen). RX feed MUST use the RXDRDY path
+  (mirror byte to `RXD.PTR+AMOUNT` + `uart_rx_byte`); bulk
+  take/complete_rxdma ends the 32B transfer with no firmware re-arm
+  (input stalls after 1 byte -- demo pump fixed for this).
+- Prompt composed in TX ring (`"...information.\r\n>>> "`) but never
+  DMA-staged; TX ring empty at end (head==tail); is_tx false.
+- Unpatched fault correlates with TX RING DRAIN-COMPLETION:
+  txHead==txTail exactly when it fires (~179M, after help text).
+  Prime suspect: `Serial::dataTransmitted` fires
+  `Event(DEVICE_ID_NOTIFY, CODAL_SERIAL_EVT_TX_EMPTY)` when the ring
+  empties (source line confirmed) into a NULL/dangling bus listener
+  (fault is a C++ virtual through NULL, serial/MP region). Patching
+  the dispatch to `bx lr` neutralizes survival but progress still
+  stalls (call load-bearing or second stall follows).
+- Display DIR=0 is CORRECT pre-first-show (matrix GPIO configures
+  only on refresh/strobe per NRF52LedMatrix source), not stuck init.
+- Sleep coma resolved for harnesses (plain run() breaks on sleeping;
+  silicon-faithful pump = run slice + tick + advance time in sleep +
+  wake-on-pending; demo frame() fixed the same way).
+
+Next moves (ordered): (1) walk messageBus listeners at fault for the
+NULL TX_EMPTY recipient (listener list head is the prize); (2) verify
+TX ring drain->Event->fault causation by stuffing the ring (never
+empty -> no Event -> no fault?); (3) identify the N+1 stager via
+is_tx/ENDTX event timeline around a hole (log ev_endtx transitions
+per slice near banner mid-point).
