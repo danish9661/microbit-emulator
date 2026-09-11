@@ -106,3 +106,32 @@ P9b MicroPython steady-state forensics (2026-09-11, read-histogram probe):
   separate project per scope lock, NOT faked).
 
 P9c left: EASYDMA completion IRQs (INTEN-gated), NVMC erase staging.
+
+## 10. P10: POWER/USB readiness + MPY steady state (2026-09-11)
+
+- POWER model completed from SVD ground truth: USBDETECTED/USBPWRRDY
+  (gated on USBD ENABLE), USBREGSTATUS VBUS+OUTPUTRDY, RESETREAS with
+  SREQ latched on AIRCR reboot (write-1-clear), GPREGRET retention,
+  RAMSTATUS/MAINREGSTATUS, LFCLKSTAT/SRC, INTEN. Fixes a real boot
+  hazard class (TinyUSB gates attach on USBPWRRDY).
+- MicroPython steady state after the CAPTURE fix: RAM execution,
+  matrix live, TIMER1/3/4 IRQs delivering (VECTACTIVE-proven), zero
+  faults over 700M+ instr. It never enables USBD in that window, so no
+  host traffic exists to drive: REPL needs a USB *host* stack
+  (enumeration against TinyUSB) — that is P11, and it is bounded work
+  (SETUP/DATA/STATUS stages on the P9a endpoint primitives), not a
+  peripheral gap.
+- SoftDevice event pump: NOT needed for REPL-idle (300k-PC trace shows
+  zero SVCs in steady state). Stays out of scope per §0; RADIO loopback
+  covers bare-metal BLE.
+- CODAL full build: blocked on orchestration, not sources. Needs the
+  `codal` python tool (pip offline here), codal-core + nRF5-SDK deps,
+  and era GCC (repo targets ~GCC 9/10; ours is 14.2.1/7-2017q4).
+  Recipe: pip install codal, clone codal-microbit-v2 + build profile,
+  `codal build`. Our GCC IRQ/C++ path is already proven by P8a's C demo.
+
+## 11. Next (P11): USB host enumeration -> REPL banner
+
+Drive SETUP/DATA/STATUS against the P9a primitives until TinyUSB
+enumerates and the MicroPython banner appears on USB CDC. Pure driver
+work (test-side first, then demo pump); no new peripheral registers.

@@ -39,6 +39,12 @@ pub static INSTRUCTION_COUNT: AtomicU64 = AtomicU64::new(0);
 pub fn instruction_count() -> u64 { INSTRUCTION_COUNT.load(Ordering::Relaxed) }
 
 static WATCHDOG_RESET_EVENT: AtomicBool = AtomicBool::new(false);
+// RESETREAS latch (POWER 0x40000400): bit 2 SREQ is set on an AIRCR
+// SYSRESETREQ / watchdog reboot so post-reset firmware (MBR/SD) sees a
+// software-reset cause instead of power-on. Write-1-clears via resetreas_clear.
+static RESETREAS_LATCH: AtomicU32 = AtomicU32::new(0);
+pub fn resetreas() -> u32 { RESETREAS_LATCH.load(Ordering::Acquire) }
+pub fn resetreas_clear(mask: u32) { RESETREAS_LATCH.fetch_and(!mask, Ordering::Release); }
 // MPU master-enable latch (MPU_CTRL.ENABLE write). Level semantics follow
 // the register: clearing ENABLE clears this. The driver halts while set —
 // protection is not enforced, so running on would be silently wrong.
@@ -157,8 +163,10 @@ pub fn get_sys_for_cpu() -> &'static WasmSystem { crate::sys() }
 pub fn is_watchdog_reset_requested() -> bool { WATCHDOG_RESET_EVENT.swap(false, Ordering::Acquire) }
 /// Latch a watchdog reset event (e.g. SCB AIRCR SYSRESETREQ). Consumed by
 /// the JS driver (is_watchdog_reset_requested) to reboot the instance.
+/// Also latches RESETREAS.SREQ for the rebooted firmware to observe.
 pub fn request_watchdog_reset(_cause: u8) {
     WATCHDOG_RESET_EVENT.store(true, Ordering::Release);
+    RESETREAS_LATCH.fetch_or(1 << 2, Ordering::Release);
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmaDir { Read, Write, MemCopy }
@@ -370,6 +378,7 @@ pub fn reset_globals() {
     if let Some(m) = I2C_TAP_TX.get() { m.lock().unwrap().clear(); }
     if let Some(m) = I2C_TAP_RX.get() { m.lock().unwrap().clear(); }
     WATCHDOG_RESET_EVENT.store(false, Relaxed);
+    RESETREAS_LATCH.store(0, Relaxed);
     MPU_ENABLED.store(false, Relaxed);
     MPU_FAULT_VALID.store(false, Relaxed);
     ALIGN_FAULT_VALID.store(false, Relaxed);
