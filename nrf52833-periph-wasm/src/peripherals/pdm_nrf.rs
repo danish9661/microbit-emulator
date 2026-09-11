@@ -12,6 +12,7 @@ pub struct PdmNrf {
     ev_started: bool,
     ev_stopped: bool,
     ev_end: bool,
+    intenset: u32,
     sample_ptr: u32,
     sample_maxcnt: u32,
     sample_pending: bool,
@@ -20,7 +21,7 @@ pub struct PdmNrf {
 impl Default for PdmNrf {
     fn default() -> Self {
         Self { enabled: false, ev_started: false, ev_stopped: false, ev_end: false,
-               sample_ptr: 0, sample_maxcnt: 0, sample_pending: false }
+               intenset: 0, sample_ptr: 0, sample_maxcnt: 0, sample_pending: false }
     }
 }
 
@@ -37,6 +38,7 @@ impl Peripheral for PdmNrf {
             0x100 => self.ev_started as u32,
             0x104 => self.ev_stopped as u32,
             0x108 => self.ev_end as u32,
+            0x304 => self.intenset,
             0x500 => self.enabled as u32,
             0x52C => self.sample_ptr,
             0x530 => self.sample_maxcnt,
@@ -56,6 +58,8 @@ impl Peripheral for PdmNrf {
             0x100 => if value == 0 { self.ev_started = false; }
             0x104 => if value == 0 { self.ev_stopped = false; }
             0x108 => if value == 0 { self.ev_end = false; }
+            0x304 => self.intenset |= value,
+            0x308 => self.intenset &= !value,
             0x500 => self.enabled = value & 1 == 1,
             0x52C => self.sample_ptr = value,
             0x530 => self.sample_maxcnt = value & 0x7FFF,
@@ -83,12 +87,16 @@ pub fn take_sample(sys: &System) -> Option<(u32, u32)> {
 }
 
 /// Complete SAMPLE: driver wrote samples to RAM at PTR.
+/// END (bit 2) IRQ pended per INTEN (SVD ground truth).
 pub fn complete_sample(sys: &System) {
     for slot in &sys.p.peripherals {
         if slot.start == 0x4001_D000 {
             let mut b = slot.peripheral.borrow_mut();
             if let Some(p) = b.as_any_mut().downcast_mut::<PdmNrf>() {
                 p.ev_end = true;
+                if p.intenset & (1 << 2) != 0 {
+                    sys.p.nvic.borrow_mut().set_intr_pending(29);
+                }
             }
             return;
         }

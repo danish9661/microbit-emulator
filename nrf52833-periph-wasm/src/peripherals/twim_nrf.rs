@@ -176,18 +176,25 @@ pub fn take_txdma(sys: &System, name: &str) -> Option<(u8, u32, u32)> {
 }
 
 /// Complete TX DMA: bytes go to the tapped slave, AMOUNT + ENDTX + STOPPED.
+/// STOPPED IRQ pended when INTEN bit 1 is set (SVD ground truth).
 pub fn complete_txdma(sys: &System, name: &str, data: &[u8]) {
     let Some(base) = base_of(name) else { return };
-    with_twim(sys, base, |t| {
+    let fire = with_twim(sys, base, |t| {
         for &b in data {
-            crate::system::i2c_tap_push_tx(&t.name, b);
+            if t.name.starts_with("TWI") {
+                crate::system::i2c_tap_push_tx(&t.name, b);
+            }
         }
         t.tx_amount = data.len() as u32;
         t.ev_endtx = true;
         t.ev_stopped = true;
         (t.irq, t.intenset)
     });
-    // (IRQ fire omitted: polling firmware is the P6 gate; INTEN path is P7.)
+    if let Some((irq, en)) = fire {
+        if en & (1 << 1) != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(irq);
+        }
+    }
 }
 
 /// Take a staged RX DMA transfer (addr, ptr, maxcnt); None when idle.
@@ -205,13 +212,20 @@ pub fn take_rxdma(sys: &System, name: &str) -> Option<(u8, u32, u32)> {
 }
 
 /// Complete RX DMA: driver already wrote `amount` bytes to RAM at PTR.
+/// STOPPED IRQ pended when INTEN bit 1 is set.
 pub fn complete_rxdma(sys: &System, name: &str, amount: u32) {
     let Some(base) = base_of(name) else { return };
-    with_twim(sys, base, |t| {
+    let fire = with_twim(sys, base, |t| {
         t.rx_amount = amount;
         t.ev_endrx = true;
         t.ev_stopped = true;
+        (t.irq, t.intenset)
     });
+    if let Some((irq, en)) = fire {
+        if en & (1 << 1) != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(irq);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -265,5 +279,17 @@ mod tests {
         complete_rxdma(&sys, "TWIM1", 6);
         assert_eq!(sys.p.read(&sys, 0x4000410C, 4), 1, "ENDRX after complete");
         assert_eq!(sys.p.read(&sys, 0x4000453C, 4), 6, "AMOUNT");
+    }
+    #[test]
+    fn tx_completion_irq_when_enabled() {
+        use crate::system::test_dummy_system;
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 4); // NVIC ISER: SERIAL1
+        sys.p.write(&sys, 0x40004304, 4, 1 << 1); // INTEN: STOPPED
+        sys.p.write(&sys, 0x40004544, 4, 0x20001000);
+        sys.p.write(&sys, 0x40004548, 4, 1);
+        sys.p.write(&sys, 0x40004008, 4, 1); // STARTTX
+        complete_txdma(&sys, "TWIM1", &[0x55]);
+        assert!(sys.p.nvic.borrow().has_pending(), "STOPPED IRQ pends");
     }
 }

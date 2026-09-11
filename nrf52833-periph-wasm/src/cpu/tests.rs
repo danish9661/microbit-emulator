@@ -267,6 +267,33 @@ fn sysresetreq_latches_reboot_request() {
 }
 
 #[test]
+fn nrf_usbep_setup_and_epin_dma() {
+    // P9a firmware (usbep_nrf.s, GCC): EP0SETUP (host pre-injects
+    // GET_DESCRIPTOR) + EPIN0 DMA completed driver-side.
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/usbep_nrf.bin"));
+    let sys = crate::sys();
+    crate::peripherals::usbd_nrf::signal_usbreset(sys);
+    crate::peripherals::usbd_nrf::inject_setup(sys, [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x40, 0x00]);
+    // Phase 1: firmware consumes SETUP, stages EPIN0, spins on ENDEPIN0.
+    cpu.run(sys, &mut mem, 60_000);
+    let (ep, ptr, len) = crate::peripherals::usbd_nrf::take_epin(sys).expect("epin staged");
+    assert_eq!((ep, len), (0, 8));
+    let bytes: Vec<u8> = (0..len).map(|i| mem.read8(ptr.wrapping_add(i))).collect();
+    assert_eq!(bytes, vec![0x12, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x40], "descriptor bytes");
+    crate::peripherals::usbd_nrf::complete_epin(sys, ep, &bytes);
+    // Phase 2: drain to done loop.
+    cpu.run(sys, &mut mem, 2_000_000);
+    assert!(cpu.fault.is_none(), "usbep faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("SETUP:OK"), "missing SETUP marker, got {out:?}");
+    assert!(out.contains("USBEP:OK"), "missing USBEP marker, got {out:?}");
+}
+
+
+#[test]
 fn nrf_boot_flash_at_zero() {
     // nRF52833 prove-out: flash at 0x0, FICR constants, CLOCK HFCLK, P0 GPIO.
     // Boot marker + functional marker + 2nd run (no state leak).

@@ -86,7 +86,7 @@ impl Peripheral for Uarte {
                 self.rx_amount = 0;
                 self.rx_pending = self.rx_maxcnt > 0;
             }
-            0x004 => { self.rx_pending = false; self.ev_endrx = true; self.fire(sys, 1 << 3); }
+            0x004 => { self.rx_pending = false; self.ev_endrx = true; self.fire(sys, 1 << 4); }
             0x008 => { // TASKS_STARTTX
                 self.ev_endtx = false;
                 self.tx_amount = 0;
@@ -142,7 +142,7 @@ impl Peripheral for Uarte {
             if self.rx_amount >= self.rx_maxcnt.max(1) {
                 self.rx_pending = false;
                 self.ev_endrx = true;
-                self.fire(sys, 1 << 3);
+                self.fire(sys, 1 << 4);
             }
         }
         if self.rx_buf.len() == 1 {
@@ -226,6 +226,17 @@ mod tests {
         u.rx_byte(&sys, 0x41);
         assert_eq!(u.read(&sys, 0x108), 1);
         assert_eq!(u.read(&sys, 0x518), 0x41);
+    }
+    #[test]
+    fn tx_dma_completion_irq_when_enabled() {
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 2); // NVIC ISER: UARTE0
+        sys.p.write(&sys, 0x40002304, 4, 1 << 8); // INTEN: ENDTX
+        sys.p.write(&sys, 0x40002544, 4, 0x20001000);
+        sys.p.write(&sys, 0x40002548, 4, 1);
+        sys.p.write(&sys, 0x40002008, 4, 1);
+        complete_txdma(&sys, b"Z");
+        assert!(sys.p.nvic.borrow().has_pending(), "ENDTX IRQ pends");
     }
     #[test]
     fn tx_dma_stages_and_completes() {

@@ -105,6 +105,7 @@ pub fn take_result(sys: &System) -> Option<(u32, u32)> {
 }
 
 /// Complete RESULT: driver wrote `amount` samples to RAM at PTR.
+/// END (bit 1) + DONE (bit 2) IRQs pended per INTEN (SVD ground truth).
 pub fn complete_result(sys: &System, amount: u32) {
     for slot in &sys.p.peripherals {
         if slot.start == 0x4000_7000 {
@@ -113,6 +114,9 @@ pub fn complete_result(sys: &System, amount: u32) {
                 s.res_amount = amount;
                 s.ev_end = true;
                 s.ev_done = true;
+                if s.intenset & 0x6 != 0 {
+                    sys.p.nvic.borrow_mut().set_intr_pending(7);
+                }
             }
             return;
         }
@@ -149,5 +153,19 @@ mod tests {
         complete_result(&sys, 2);
         assert_eq!(sys.p.read(&sys, 0x40007104, 4), 1, "END after complete");
         assert_eq!(sys.p.read(&sys, 0x40007634, 4), 2, "AMOUNT");
+    }
+    #[test]
+    fn result_completion_irq_when_enabled() {
+        use crate::system::test_dummy_system;
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 7); // NVIC ISER: SAADC
+        sys.p.write(&sys, 0x40007304, 4, 1 << 1); // INTEN: END
+        sys.p.write(&sys, 0x4000762C, 4, 0x20002000);
+        sys.p.write(&sys, 0x40007630, 4, 1);
+        sys.p.write(&sys, 0x40007500, 4, 1);
+        sys.p.write(&sys, 0x40007000, 4, 1);
+        sys.p.write(&sys, 0x40007004, 4, 1);
+        complete_result(&sys, 1);
+        assert!(sys.p.nvic.borrow().has_pending(), "END IRQ pends");
     }
 }

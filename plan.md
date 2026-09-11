@@ -84,9 +84,25 @@ Verdict: boot chain works; REPL + scheduler progress are gated on P9.
 
 ## 9. Next (P9): SoftDevice-event + USB endpoint modeling
 
-- USBD endpoint DMA (ENDEPIN/EPDATASTATUS, descriptors at known RAM) so
-  TinyUSB enumerates and the MicroPython REPL banner appears on USB.
-- SoftDevice event pump: `sd_evt_get` must eventually return events
-  (BLE/RTC), else the app SVC-spins forever; RADIO air already loops back.
-- Then CODAL full build (`/tmp/codal` clone exists; needs the codal-core
-  orchestrator + era-appropriate GCC, out of scope for P8).
+P9a USBD endpoint DMA: DONE (EPIN/EPOUT take-complete, SETUP inject,
+`usbep_nrf` firmware proof). MicroPython never pulls USB up that far,
+so no live traffic yet — expected until the app reaches USB init.
+
+P9b MicroPython steady-state forensics (2026-09-11, read-histogram probe):
+- The 0x26048 loop is a 64-bit deadline busy-wait fed by TIMER0
+  CAPTURE-then-read-CC3 (no COUNTER register exists). Our CAPTURE stub
+  was a no-op -> frozen time -> infinite wait. FIXED (TimerNrf captures
+  `counter` now; `capture_snapshots_counter` regression test).
+- Same class of bug fixed in SysTick: VAL never counted, COUNTFLAG
+  missing. Now a real down-counter (INSTRUCTION_COUNT-partitioned).
+- After the CAPTURE fix the firmware advances to RAM execution
+  (0x200021BA), matrix rows live, NVIC IRQs managed (UARTE0/GPIOTE/
+  SAADC/TIMER1/TIMER3), zero faults over 700M+ instructions.
+- VECTACTIVE sampling proves live IRQ delivery: TIMER1 handler
+  (vector 25) entered ×27 per window, TIMER3/4 firing. The main thread
+  idles;BUTTON/USB/UART stimuli don't advance it further yet.
+- Remaining gate for REPL: USB stack start (pullup never asserted that
+  far) + SoftDevice event pump (`sd_evt_get` has nothing to return —
+  separate project per scope lock, NOT faked).
+
+P9c left: EASYDMA completion IRQs (INTEN-gated), NVMC erase staging.

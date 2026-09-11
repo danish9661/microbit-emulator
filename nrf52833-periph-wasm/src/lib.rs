@@ -213,6 +213,49 @@ pub fn radio_inject_rx(bytes: &[u8]) {
     crate::peripherals::radio_nrf::inject_rx(sys(), bytes.to_vec());
 }
 
+// ── USBD endpoint driver API ──
+#[wasm_bindgen]
+pub fn usbd_take_epin() -> Vec<u32> {
+    crate::peripherals::usbd_nrf::take_epin(sys())
+        .map(|(e, p, n)| vec![e as u32, p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn usbd_complete_epin(ep: usize, bytes: &[u8]) {
+    crate::peripherals::usbd_nrf::complete_epin(sys(), ep, bytes);
+}
+
+#[wasm_bindgen]
+pub fn usbd_take_epout() -> Vec<u32> {
+    crate::peripherals::usbd_nrf::take_epout(sys())
+        .map(|(e, p, n)| vec![e as u32, p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn usbd_complete_epout(ep: usize, amount: u32) {
+    crate::peripherals::usbd_nrf::complete_epout(sys(), ep, amount);
+}
+
+#[wasm_bindgen]
+pub fn usbd_inject_setup(bytes: &[u8]) {
+    let mut pkt = [0u8; 8];
+    for (i, &b) in bytes.iter().take(8).enumerate() {
+        pkt[i] = b;
+    }
+    crate::peripherals::usbd_nrf::inject_setup(sys(), pkt);
+}
+
+// ── NVMC erase driver API (driver applies 0xFF to guest flash, then completes)
+#[wasm_bindgen]
+pub fn nvmc_take_erase() -> Vec<u32> {
+    crate::peripherals::nvmc_nrf::take_erase(sys()).map(|a| vec![a]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn nvmc_complete_erase() {
+    crate::peripherals::nvmc_nrf::complete_erase(sys());
+}
+
 // ── I2C bus taps (JS hardware layer: LSM303 accel/mag) ──
 #[wasm_bindgen]
 pub fn i2c_register_slave(peripheral: &str, address: u8) {

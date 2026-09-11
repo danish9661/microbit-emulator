@@ -20,6 +20,7 @@ pub struct RadioNrf {
     ev_end: bool,
     ev_disabled: bool,
     crcstatus: u32,
+    intenset: u32,
     packetptr: u32,
     frequency: u32,
     txpower: u32,
@@ -31,8 +32,9 @@ pub struct RadioNrf {
 impl Default for RadioNrf {
     fn default() -> Self {
         Self { state: 0, ev_ready: false, ev_address: false, ev_payload: false,
-               ev_end: false, ev_disabled: false, crcstatus: 0, packetptr: 0,
-               frequency: 0, txpower: 0, mode: 0, tx_pending: None, rx_queue: Vec::new() }
+               ev_end: false, ev_disabled: false, crcstatus: 0, intenset: 0,
+               packetptr: 0, frequency: 0, txpower: 0, mode: 0,
+               tx_pending: None, rx_queue: Vec::new() }
     }
 }
 
@@ -40,8 +42,12 @@ impl RadioNrf {
     pub fn new(name: &str) -> Option<Box<dyn Peripheral>> {
         if name == "RADIO" { Some(Box::new(Self::default())) } else { None }
     }
+    fn fire(&self, sys: &System, bit: u32) {
+        if self.intenset & bit != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(1);
+        }
+    }
 }
-
 impl Peripheral for RadioNrf {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     fn read(&mut self, _sys: &System, offset: u32) -> u32 {
@@ -51,6 +57,7 @@ impl Peripheral for RadioNrf {
             0x108 => self.ev_payload as u32,
             0x10C => self.ev_end as u32,
             0x110 => self.ev_disabled as u32,
+            0x304 => self.intenset,
             0x400 => self.crcstatus,
             0x504 => self.packetptr,
             0x508 => self.frequency,
@@ -60,14 +67,14 @@ impl Peripheral for RadioNrf {
             _ => 0,
         }
     }
-    fn write(&mut self, _sys: &System, offset: u32, value: u32) {
+    fn write(&mut self, sys: &System, offset: u32, value: u32) {
         match offset {
-            0x000 => { self.state = 9; self.ev_ready = true; } // TXEN -> TxRu
-            0x004 => { self.state = 1; self.ev_ready = true; } // RXEN -> RxRu
+            0x000 => { self.state = 9; self.ev_ready = true; self.fire(sys, 1 << 0); }
+            0x004 => { self.state = 1; self.ev_ready = true; self.fire(sys, 1 << 0); }
             0x008 => { // START
                 if self.state == 9 {
                     self.state = 11; // Tx
-                    self.tx_pending = Some((self.packetptr, 32)); // len via PCNF in P7
+                    self.tx_pending = Some((self.packetptr, 32)); // len via PCNF in P10
                 } else if self.state == 1 {
                     self.state = 3; // Rx
                     if let Some(pkt) = self.rx_queue.first().cloned() {
@@ -77,6 +84,7 @@ impl Peripheral for RadioNrf {
                         self.ev_payload = true;
                         self.ev_end = true;
                         self.crcstatus = 1;
+                        self.fire(sys, 1 << 3);
                     }
                 }
             }
@@ -86,6 +94,8 @@ impl Peripheral for RadioNrf {
             0x108 => if value == 0 { self.ev_payload = false; }
             0x10C => if value == 0 { self.ev_end = false; self.crcstatus = 0; }
             0x110 => if value == 0 { self.ev_disabled = false; }
+            0x304 => self.intenset |= value,
+            0x308 => self.intenset &= !value,
             0x504 => self.packetptr = value,
             0x508 => self.frequency = value & 0x7F,
             0x50C => self.txpower = value,
@@ -149,5 +159,16 @@ mod tests {
         sys.p.write(&sys, 0x40001008, 4, 1);          // START (Rx)
         assert_eq!(sys.p.read(&sys, 0x4000110C, 4), 1, "END after RX packet");
         assert_eq!(sys.p.read(&sys, 0x40001400, 4), 1, "CRCSTATUS ok");
+    }
+    #[test]
+    fn rx_end_irq_when_enabled() {
+        use crate::system::test_dummy_system;
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 1); // NVIC ISER: RADIO
+        sys.p.write(&sys, 0x40001304, 4, 1 << 3); // INTEN: END
+        inject_rx(&sys, vec![0x01]);
+        sys.p.write(&sys, 0x40001004, 4, 1); // RXEN
+        sys.p.write(&sys, 0x40001008, 4, 1); // START
+        assert!(sys.p.nvic.borrow().has_pending(), "END IRQ pends");
     }
 }

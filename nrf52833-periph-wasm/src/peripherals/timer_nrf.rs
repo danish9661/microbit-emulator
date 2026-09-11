@@ -84,7 +84,13 @@ impl Peripheral for TimerNrf {
             0x000 => { self.running = true; self.last_tick = instruction_count(); } // START
             0x004 => self.running = false, // STOP
             0x00C => { self.counter = 0; } // CLEAR
-            0x040..=0x054 => {} // CAPTURE: P2 stub
+            0x040..=0x054 => {
+                // TASKS_CAPTURE[n]: snapshot COUNTER into CC[n]. This is how
+                // firmware READS a running timer (no COUNTER register exists);
+                // MicroPython's tick hangs forever without it (found 2026-09-11).
+                let n = ((offset - 0x040) >> 2) as usize;
+                self.cc[n] = self.counter;
+            }
             0x140..=0x154 => if value == 0 { self.ev_compare[((offset - 0x140) >> 2) as usize] = false; }
             0x200 => self.shorts = value & 0x3F,
             0x304 => self.intenset |= value,
@@ -116,5 +122,20 @@ mod tests {
         assert_eq!(t.read(&sys, 0x140), 1, "COMPARE0 set");
         t.write(&sys, 0x140, 0);
         assert_eq!(t.read(&sys, 0x140), 0, "clear by write-0");
+    }
+    #[test]
+    fn capture_snapshots_counter() {
+        let sys = test_dummy_system();
+        let mut t = TimerNrf::new("TIMER0").unwrap();
+        t.write(&sys, 0x510, 0);
+        t.write(&sys, 0x508, 3);
+        t.write(&sys, 0x000, 1); // START
+        crate::system::INSTRUCTION_COUNT.fetch_add(64, std::sync::atomic::Ordering::Relaxed);
+        t.write(&sys, 0x04C, 1); // CAPTURE[3]
+        let c3 = t.read(&sys, 0x54C);
+        assert!(c3 > 0, "captured running counter, got {c3}");
+        crate::system::INSTRUCTION_COUNT.fetch_add(64, std::sync::atomic::Ordering::Relaxed);
+        t.write(&sys, 0x04C, 1);
+        assert!(t.read(&sys, 0x54C) > c3, "counter advances between captures");
     }
 }
