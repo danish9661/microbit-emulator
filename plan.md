@@ -494,3 +494,33 @@ persists -- stager unidentified. Prompt bytes sit composed-but-unstaged
 in the TX ring with head==tail and is_tx false (no kick source found).
 RX trickle protocol (mirror byte to `RXD.PTR+AMOUNT` + `uart_rx_byte`,
 never early-complete) is validated: 11/11 bytes land and count.
+
+## 22. P21 serial layout map + readline stall (2026-09-11)
+
+uBit.serial object map (computed from codal-core/codal-nrf52 headers,
+VERIFIED field-by-field against live RAM; base `0x20002BA4`): tx@+16,
+rx@+20, delimeters@+24, rxBuffHeadMatch@+28 (`-1`), rxBuff@+32,
+rxBuffSize@+36 (`129`), rxBuffHead@+38, rxBuffTail@+40, txBuff@+44,
+txBuffSize@+48 (`21`), txBuffHead@+50, txBuffTail@+52, baudrate@+56,
+is_tx@+60, bytesProcessed@+64, dmaBuffer[32]@+68, p_uarte_@+100
+(`0x40002000`). CodalComponent id@+12 (`12` = DEVICE_ID_SERIAL),
+status@+14 (`0x402C`: RX+TX BUFF_INIT both set).
+
+Readline stall, nailed down: 11/11 input bytes reach dmaBuffer and
+the codal ring (head=11) with correct content (`"print(1+2)\r"`),
+tail frozen at 0, no echo, no exec, thread sleeps cleanly, no fault
+(patched image). readline never reads despite `isReadable()` being
+true by the book (`tail != head`). Post-feed thread sampling:
+100% UARTE-IRQ cycling (closed handler loop, never returns to
+thread) in native runs. `isReadable`/`read` source-audited clean;
+`mp_hal_stdin_rx_chr` would consume instantly. Conclusion: the main
+thread is NOT in readline (stuck before it, or main fiber dead after
+the patched-over NULL call). Prime suspects left: (a) audio fetcher
+(`modaudio.c:129` schedules `audio_data_fetcher_wrapper`; speaker
+enabled with NO pin selected; fetcher with no source may call NULL
+-- fits the MP-call-shaped faultchain entry at `0x518E6`); (b) TX
+kick gap (queued prompt + is_tx false + no ENDTX pending + no
+enableInterrupt coming = nothing starts the transfer; the first-byte
+kick source for an idle ring is unidentified in the sources read so
+far); (c) dangling messageBus/fiber listener on the 6ms tick (fault
+vanishes with TIMER1 stopped).
