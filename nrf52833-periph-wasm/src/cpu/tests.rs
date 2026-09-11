@@ -303,6 +303,37 @@ fn nrf_usbep_setup_and_epin_dma() {
 }
 
 
+#[test]
+fn nrf_usbdev_c_setup_and_epin_flash_dma() {
+    // usbdev_nrf.c (GCC -O2, same recipe as c_irq_nrf.c, verified
+    // bit-identical rebuild): USBD ENABLE+PULLUP, EP0SETUP consume,
+    // EPIN0 DMA sourced from a .rodata descriptor (flash-to-host path),
+    // timeout-bounded polls. Same driver phasing as the asm usbep proof.
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/usbdev_nrf.bin"));
+    let sys = crate::sys();
+    crate::peripherals::usbd_nrf::signal_usbreset(sys);
+    crate::peripherals::usbd_nrf::inject_setup(sys, [0x80, 0x06, 0x00, 0x01, 0x00, 0x00, 0x40, 0x00]);
+    // Phase 1: firmware consumes SETUP, stages EPIN0, spins on ENDEPIN0.
+    cpu.run(sys, &mut mem, 60_000);
+    let (ep, ptr, len) = crate::peripherals::usbd_nrf::take_epin(sys).expect("epin staged");
+    assert_eq!((ep, len), (0, 8));
+    assert!(ptr < 0x2000_0000, "descriptor must come from flash .rodata, got {ptr:#x}");
+    let bytes: Vec<u8> = (0..len).map(|i| mem.read8(ptr.wrapping_add(i))).collect();
+    assert_eq!(bytes, vec![0x12, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x40], "descriptor bytes");
+    crate::peripherals::usbd_nrf::complete_epin(sys, ep, &bytes);
+    // Phase 2: drain to done loop.
+    cpu.run(sys, &mut mem, 2_000_000);
+    assert!(cpu.fault.is_none(), "usbdev faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("UBOOT"), "missing UBOOT, got {out:?}");
+    assert!(out.contains("SETUP:OK"), "missing SETUP marker, got {out:?}");
+    assert!(out.contains("USBEP:OK"), "missing USBEP marker, got {out:?}");
+}
+
+
 
 
 
@@ -2897,3 +2928,7 @@ fn dwt_foldcnt_counts_skipped_slots() {
     assert_eq!(cpu.regs.r[0], 1, "taken slot executed");
     assert_eq!(mem.read32(0xE0001018), 1, "one folded slot counted");
 }
+
+
+
+

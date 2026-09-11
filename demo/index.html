@@ -198,6 +198,19 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
       cpu.mem_write(t[0], fill);
       wasm.pdm_complete_sample();
     }
+    // I2S audio streaming: RX gets silence, TX bytes go to the capture
+    // FIFO (drained below; TODO: route to WebAudio for real playback).
+    t = wasm.i2s_take_rx();
+    if (t.length) {
+      cpu.mem_write(t[0], new Uint8Array(t[1]));
+      wasm.i2s_complete_rx();
+    }
+    t = wasm.i2s_take_tx();
+    if (t.length) {
+      const bytes = cpu.mem_read(t[0], t[1]);
+      wasm.i2s_complete_tx(bytes);
+    }
+    if (wasm.i2s_take_capture().length) { /* drained; see TODO above */ }
     // USB device: complete staged endpoints so enumeration proceeds.
     t = wasm.usbd_take_epin();
     if (t.length) {
@@ -231,6 +244,14 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     if (cpu) {
       cpu.step(20000);
       wasm.tick_peripherals();
+      if (cpu.sleeping()) {
+        // Firmware idles in WFE/WFI (the MicroPython scheduler does this
+        // constantly): advance virtual time so a future peripheral IRQ can
+        // pend, then wake on one. Without this the core naps forever the
+        // first time it idles (found via MicroPython REPL bring-up).
+        wasm.tick_n(20000);
+        if (wasm.has_pending_interrupt()) cpu.wake();
+      }
       pumpDma();
       // Drip one typed byte per consumed RXDRDY (see above).
       if (uartOut.length && wasm.periph_read(0x40002108, 4) === 0) {

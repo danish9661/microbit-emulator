@@ -12,6 +12,39 @@ ${TC}as -march=armv7e-m -mfloat-abi=hard -mfpu=fpv4-sp-d16 -o /tmp/x.o <file>.s 
 
 (DSP-only probes omit the float flags; the FPU probes need them.)
 
+## Bare-metal C firmware (`blinky/*_nrf.c`)
+
+Same toolchain, GCC driver + `blinky/link_c_nrf.ld` (verified by
+bit-identical rebuild of `c_irq_nrf.bin`):
+
+```bash
+TC="$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-arm-none-eabi-gcc/14.2.1-1.1/bin/arm-none-eabi-"
+${TC}gcc -mcpu=cortex-m4 -mthumb -mfloat-abi=hard -mfpu=fpv4-sp-d16 \
+  -O2 -nostdlib -ffreestanding -T blinky/link_c_nrf.ld \
+  -o /tmp/x.elf blinky/<name>_nrf.c \
+  && ${TC}objcopy -O binary /tmp/x.elf blinky/<name>_nrf.bin
+```
+
+(The `RWX LOAD segment` ld warning comes from the script's combined
+segments and is harmless for a flat binary.)
+
+## arduino-cli (nRF52 toolchain proof)
+
+`arduino-cli` 1.5.1 with the `arduino:nrf52` core compiles nRF5x
+firmware from source (closest board: Primo/nRF52832 — no 52833 board
+in the core; our 52833 firmware uses the core's xpack GCC directly,
+see above):
+
+```bash
+arduino-cli core install arduino:nrf52
+arduino-cli compile --fqbn arduino:nrf52:primo <sketch>/
+```
+
+Note: the Primo blinky binary does NOT boot in this emulator (resets
+into a jump to `0x80000` — the Arduino core startup expects nRF52832
+bootloader/SD layout, out of scope). Third-party-framework boot is
+not a project goal; the compile path is what we rely on.
+
 ## FPU (`cpu/thumb.rs` FPU dispatch, AGENTS.md §25)
 
 | File | What it pins |

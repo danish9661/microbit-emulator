@@ -317,6 +317,8 @@ export function gpio_read_output(port, pin) {
 }
 
 /**
+ * Drive a raw input level. Buttons are active-low: released = true
+ * (idle pull-up default), pressed = false. JS button layer maps to this.
  * @param {number} port
  * @param {number} pin
  * @param {boolean} value
@@ -370,6 +372,70 @@ export function i2c_take_events(peripheral) {
         var v2 = getArrayU32FromWasm0(r0, r1).slice();
         wasm.__wbindgen_export(r0, r1 * 4, 4);
         return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+export function i2s_complete_rx() {
+    wasm.i2s_complete_rx();
+}
+
+/**
+ * @param {Uint8Array} bytes
+ */
+export function i2s_complete_tx(bytes) {
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.i2s_complete_tx(ptr0, len0);
+}
+
+/**
+ * @returns {Uint8Array}
+ */
+export function i2s_take_capture() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.i2s_take_capture(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * @returns {Uint32Array}
+ */
+export function i2s_take_rx() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.i2s_take_rx(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * @returns {Uint32Array}
+ */
+export function i2s_take_tx() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.i2s_take_tx(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }

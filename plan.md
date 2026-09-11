@@ -235,3 +235,61 @@ work (test-side first, then demo pump); no new peripheral registers.
 - UARTE RXDMA take/complete API added (NRF52Serial drains RX
   exclusively through the DMA ring in RAM — bytes in RXD alone never
   reach any consumer); demo pump + UART input box wired for it.
+
+## 17. P16 MicroPython REPL: banner live (2026-09-11)
+
+MicroPython v2.1.2 (`micropython-microbit-v2.1.2.hex`, GitHub release
+asset) boots and PRINTS (`uart="MicroPython v1.18 o[n] 2023-10-30;
+micro:[b]it v2.1.2 with nRF5[2]833\r\nType "help()" [f]or more
+information"` — a few single-byte TX drops, pump-side, cosmetic).
+This SUPERSEDES the §15 verdict (uBit.init() DOES complete now).
+
+Image layout (Intel HEX, seg+linear records): MBR `0x0-0xAFF`,
+S140 SD `0x1000-0x1B3FF`, app `0x1C000-0x67A4B` (VT SP=`0x20020000`,
+Reset=`0x29C51`), layout table `0x67FC0`, bootloader `0x77000-0x7D3EB`,
+settings `0x7E000`, UICR `BOOTLOADERADDR=0x77000` + settings=`0x7E000`.
+Bootloader entered from MBR but reset-loops (`NVIC_SystemReset` at
+`0x77492` after NVMC waits + `PSELRESET[1]=18` write at `0x10001204`,
+and a second site at `0x783F0`); MBR re-enters BL instead of SD —
+bootloader-logic puzzle, bypassed by booting the app at `0x1C000`
+directly (as in prior forensics).
+
+Harness facts (all required, all minimal stubs per AGENTS.md):
+- UICR seeds (`0x10001014/0x18`), `deliver_irqs=true` (SVCs
+  everywhere: bootloader `SVC 24` at `0x7A278`, app `SVC 0x13`
+  = sd init at `0x550F8`), honor 2 SYSRESETREQs (SD-enable handshake).
+- MBR param page hand-install (a real MBR->SD boot installs these):
+  `*(0x20000000)=0x1000` (SD base; without it non-24 SVCs forward to
+  `*(0)+44` = self-loop storm, thread 0%) and `*(0x20000004)=0x1C000`
+  (app base for SD chained dispatch at `0xB07C`; without it TIMER1
+  IRQ ping-pongs MBR<->SD forever). MBR SVC dispatcher at `0xAA4`
+  (`cmp #24`: `==24` -> MBR `sd_mbr_command` at `0x377`, else SD).
+- Sleep-aware driver pump (REAL EMULATOR/HARNESS GAP FOUND): plain
+  `run()` breaks on `sleeping` and nothing wakes it — firmware that
+  WFE-idles naps forever in harness (all "stable park" readings
+  before this were the coma, not firmware). Silicon advances time in
+  sleep and wakes on pending IRQ: `run slice + tick + (asleep ?
+  bump INSTRUCTION_COUNT + tick + wake-if-pending)`. Demo `frame()`
+  fixed the same way (`tick_n` + `has_pending_interrupt` + `wake()`).
+- Driver duties per slice: UARTE TXDMA take/read/complete (banner
+  bytes!), RXDMA fill+complete (input), NVMC erase apply+complete
+  (`eraseUserStorage` stages `0x74000`).
+
+Healthy-state evidence: thread 100% (`4000/4000`), TIMER1 time flows
+(`CAPTURE[3]` delta `15580`/1M), radio vector repointed to app
+(`0x2E44D` = main() line 57 ran), serial RXDMA armed
+(`RXD.PTR=0x20002BE8`, 32B, baud set), SD dispatch chain live
+(MBR fwd `0x7B4` -> SD `0xB064` -> app SVC handler `0x29AF0`).
+
+Residual (bounded follow-ups, NOT blockers of this commit):
+- Deterministic post-banner NULL-dispatch fault ~179M instr (input-
+  independent): `bx r3` with `r3=0` at `0x4F75A` (`r3=*(*(r0+0x924)
+  +0x28)`, `r0=0`), chain `...51A61->51A3D->51921->4F6E7->fault`
+  (nested `blx r4` virtual/interface calls, serial region). Between
+  help-text and `>>>` prompt. Needs CODAL-DAL source matching.
+- TX drops (~3% single bytes): firmware SYNC_SPINWAITs on ENDTX so
+  overrun is impossible; cause not yet isolated (suspect DMA buffer
+  reuse vs take/complete interleave). Fine-grained demo pump should
+  confirm.
+- Bootloader reset-loop (full MBR->BL->SD->app chain) still open;
+  direct-app boot + param seeds is the working recipe meanwhile.

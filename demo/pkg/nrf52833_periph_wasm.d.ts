@@ -48,6 +48,10 @@ export function gpio_read_input(port: number, pin: number): boolean;
 
 export function gpio_read_output(port: number, pin: number): boolean;
 
+/**
+ * Drive a raw input level. Buttons are active-low: released = true
+ * (idle pull-up default), pressed = false. JS button layer maps to this.
+ */
 export function gpio_set_input(port: number, pin: number, value: boolean): void;
 
 export function has_pending_interrupt(): boolean;
@@ -57,6 +61,16 @@ export function i2c_push_rx(peripheral: string, bytes: Uint8Array): void;
 export function i2c_register_slave(peripheral: string, address: number): void;
 
 export function i2c_take_events(peripheral: string): Uint32Array;
+
+export function i2s_complete_rx(): void;
+
+export function i2s_complete_tx(bytes: Uint8Array): void;
+
+export function i2s_take_capture(): Uint8Array;
+
+export function i2s_take_rx(): Uint32Array;
+
+export function i2s_take_tx(): Uint32Array;
 
 /**
  * Initialize the emulator with the nRF52833 hardcoded peripheral map.
@@ -179,6 +193,11 @@ export interface InitOutput {
     readonly i2c_push_rx: (a: number, b: number, c: number, d: number) => void;
     readonly i2c_register_slave: (a: number, b: number, c: number) => void;
     readonly i2c_take_events: (a: number, b: number, c: number) => void;
+    readonly i2s_complete_rx: () => void;
+    readonly i2s_complete_tx: (a: number, b: number) => void;
+    readonly i2s_take_capture: (a: number) => void;
+    readonly i2s_take_rx: (a: number) => void;
+    readonly i2s_take_tx: (a: number) => void;
     readonly init: () => void;
     readonly init_svd: (a: number, b: number) => void;
     readonly is_watchdog_reset_requested: () => number;
