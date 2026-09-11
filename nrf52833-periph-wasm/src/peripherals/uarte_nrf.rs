@@ -17,6 +17,7 @@ pub struct Uarte {
     baudrate: u32,
     ev_txdrdy: bool,
     ev_endtx: bool,
+    ev_txstopped: bool,
     ev_rxdrdy: bool,
     ev_endrx: bool,
     ev_error: bool,
@@ -36,6 +37,7 @@ pub struct Uarte {
 impl Default for Uarte {
     fn default() -> Self {
         Self { irq: 2, enable: 0, baudrate: 0, ev_txdrdy: false, ev_endtx: false,
+               ev_txstopped: false,
                ev_rxdrdy: false, ev_endrx: false, ev_error: false, errorsrc: 0, rxd: 0,
                intenset: 0, rx_ptr: 0, rx_maxcnt: 0, rx_amount: 0, rx_pending: false,
                tx_ptr: 0, tx_maxcnt: 0, tx_amount: 0, tx_pending: false }
@@ -66,6 +68,7 @@ impl Peripheral for Uarte {
             0x10C => self.ev_endrx as u32,
             0x11C => self.ev_txdrdy as u32,
             0x120 => self.ev_endtx as u32,
+            0x158 => self.ev_txstopped as u32, // EVENTS_TXSTOPPED (SVD)
             0x124 => self.ev_error as u32,
             0x304 => self.intenset,
             0x480 => self.errorsrc,
@@ -101,11 +104,15 @@ impl Peripheral for Uarte {
                     self.fire(sys, 1 << 8);
                 }
             }
-            0x00C => { self.tx_pending = false; self.ev_endtx = true; self.fire(sys, 1 << 8); }
+            // TASKS_STOPTX aborts the transfer: TXSTOPPED only (silicon
+            // never raises ENDTX here; doing so self-triggers an ENDTX
+            // ISR loop -- MicroPython stalled exactly this way).
+            0x00C => { self.tx_pending = false; self.ev_txstopped = true; self.fire(sys, 1 << 22); }
             0x108 => if value == 0 { self.ev_rxdrdy = false; }
             0x10C => if value == 0 { self.ev_endrx = false; }
             0x11C => if value == 0 { self.ev_txdrdy = false; }
             0x120 => if value == 0 { self.ev_endtx = false; }
+            0x158 => if value == 0 { self.ev_txstopped = false; }
             0x124 => if value == 0 { self.ev_error = false; }
             0x304 => {
                 self.intenset |= value;
@@ -113,6 +120,7 @@ impl Peripheral for Uarte {
                 if self.ev_txdrdy && value & (1 << 7) != 0 { self.fire(sys, 1 << 7); }
                 if self.ev_endtx && value & (1 << 8) != 0 { self.fire(sys, 1 << 8); }
                 if self.ev_rxdrdy && value & (1 << 2) != 0 { self.fire(sys, 1 << 2); }
+                if self.ev_txstopped && value & (1 << 22) != 0 { self.fire(sys, 1 << 22); }
             }
             0x308 => self.intenset &= !value,
             0x480 => self.errorsrc &= !value, // write-1-clears
@@ -269,6 +277,27 @@ mod tests {
         assert!(sys.p.rx_byte(&sys, 0x40002000, 0x41), "route exists");
         assert_eq!(sys.p.read(&sys, 0x40002108, 4), 1, "RXDRDY via map");
         assert_eq!(sys.p.read(&sys, 0x40002518, 4), 0x41, "RXD via map");
+    }
+    #[test]
+    fn stoptx_raises_txstopped_not_endtx() {
+        // TASKS_STOPTX must raise EVENTS_TXSTOPPED (0x158, INTEN 22) and
+        // must NOT raise ENDTX: ENDTX-on-STOPTX self-triggers an ENDTX
+        // ISR loop (firmware re-enters on its own event forever).
+        use crate::system::test_dummy_system;
+        let sys = test_dummy_system();
+        let mut u = Uarte::default();
+        u.write(&sys, 0x500, 8); // enable
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 2); // NVIC ISER: UARTE0
+        u.write(&sys, 0x304, 1 << 22); // INTEN TXSTOPPED
+        u.write(&sys, 0x544, 0x20001000); // TXD.PTR
+        u.write(&sys, 0x548, 4); // TXD.MAXCNT
+        u.write(&sys, 0x008, 1); // STARTTX stages
+        u.write(&sys, 0x00C, 1); // STOPTX aborts
+        assert_eq!(u.read(&sys, 0x158), 1, "TXSTOPPED set");
+        assert_eq!(u.read(&sys, 0x120), 0, "ENDTX must stay clear");
+        assert!(sys.p.nvic.borrow().has_pending(), "TXSTOPPED IRQ pends");
+        u.write(&sys, 0x158, 0);
+        assert_eq!(u.read(&sys, 0x158), 0, "clear by write-0");
     }
     #[test]
     fn rx_overrun_sets_error() {        let sys = test_dummy_system();

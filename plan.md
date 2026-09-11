@@ -458,3 +458,39 @@ applied to the display path?).
 Demo correctness fix (same commit): matrix LEDs now AND DIR with OUT
 (a toggling latch on an input pin stays dark, as on silicon;
 previously OUT-only, which would ghost on pre-show refresh).
+
+## 21. P20 REPL in real Chrome: banner+prompt, no fault (2026-09-11)
+
+Headless Chrome (cached Playwright chromium-1234 + playwright-core
+over system Chrome/Firefox present) drives demo/index.html end to
+end: MicroPython hex loads, "Boot MicroPython app" boots, and at
+~150s the UART box shows the banner, help text AND the `>>> ` prompt
+-- with NO CPU fault over 240s+. The native NULL fault does not fire
+in the browser (pump-timing dependent, see below). Input typed in
+`#uartIn` does not yet echo/execute (same pre-readline stall as
+native; ring holds bytes unconsumed).
+
+Demo bugs fixed same commit (all required for the above):
+- `set_deliver_irqs(true)` was never called: first SVC faulted
+  silently (no fault surfacing existed). Added the call + fault line
+  in status via `fault_pc/fault_op1`.
+- Watchdog reboots reloaded MBR vectors, losing a direct-app boot
+  back to the bootloader loop; pumpDma now resets to the app table
+  when an app boot is active (`appBoot`, cleared on fresh load).
+
+Model fix (SVD-grounded, regression-tested): TASKS_STOPTX raised
+ENDTX; silicon raises only TXSTOPPED (`0x158`, INTEN 22). The old
+behavior self-triggers an ENDTX ISR loop. New unit test
+`stoptx_raises_txstopped_not_endtx`. (Did not by itself kill the
+native NULL fault -- that fault is timing-sensitive, see P18.)
+
+TX-drop forensics (cosmetic, open): full per-transfer log (ptr, len,
+bytes) shows isolated N+1 substitutions, self-correcting, no shift.
+DMA source is putc's 1B stack slot (`0x2001FEC7` constant across 60+
+transfers): putc returns immediately after STARTTX (IRQs on: no post
+wait), so the slot is reusable before slow pumps take; is_tx gating
+was audited sound in every firmware path examined, yet substitution
+persists -- stager unidentified. Prompt bytes sit composed-but-unstaged
+in the TX ring with head==tail and is_tx false (no kick source found).
+RX trickle protocol (mirror byte to `RXD.PTR+AMOUNT` + `uart_rx_byte`,
+never early-complete) is validated: 11/11 bytes land and count.

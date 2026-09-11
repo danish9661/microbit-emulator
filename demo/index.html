@@ -119,12 +119,18 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   }
   // Pending UICR bytes from the last hex load (applied on boot).
   let pendingUicr = [];
+  // Direct-app boot target (e.g. MicroPython at 0x1C000): SYSRESETREQ
+  // reboots must return here, not to the MBR vector table.
+  let appBoot = null;
   function bootImage(u8, uicr) {
     const dv = new DataView(u8.buffer);
     const sp = dv.getUint32(0, true), pc = dv.getUint32(4, true);
     initBoard(); // re-register taps: reset_state() clears them
     cpu = new wasm.WasmCpu(sp, pc, 512 * 1024, 128 * 1024);
     cpu.load_firmware(u8, 0);
+    // Real firmware (SoftDevice, CODAL, MicroPython) uses SVCs and IRQs
+    // throughout; without delivery the first SVC faults silently.
+    cpu.set_deliver_irqs(true);
     // UICR (e.g. MicroPython BOOTLOADERADDR): pack bytes into words.
     if (uicr) {
       const words = new Map();
@@ -135,6 +141,7 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
       for (const [w, v] of words) wasm.periph_write(w, 4, v >>> 0);
     }
     boot = { sp, pc };
+    appBoot = null;
     uartBox.value = '';
     status.textContent = `running (SP=${sp.toString(16)} PC=${pc.toString(16)})`;
   }
@@ -152,6 +159,7 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     const sp = w(0x1C000), pc = w(0x1C004);
     cpu.reset_cpu(sp, pc);
     boot = { sp, pc };
+    appBoot = { sp, pc };
     uartBox.value = '';
     status.textContent = `MicroPython app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}), banner follows`;
   }
@@ -189,8 +197,11 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     if (!cpu) return;
     if (wasm.is_watchdog_reset_requested()) {
       // Firmware asked for a reboot (e.g. MicroPython's MBR/SD handoff):
-      // reload SP/PC from the vector table like the native test driver.
-      cpu.reset_cpu(cpu.read32(0), cpu.read32(4));
+      // reload SP/PC from the vector table like the native test driver --
+      // or from the app table after a direct-app boot (else we lose the
+      // app back to the MBR/bootloader loop).
+      const b = appBoot || boot;
+      cpu.reset_cpu(b.sp, b.pc);
       return;
     }
     let t = wasm.uarte_take_txdma();
@@ -278,7 +289,10 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     if (cpu) {
       cpu.step(20000);
       wasm.tick_peripherals();
-      if (cpu.sleeping()) {
+      const fpc = cpu.fault_pc();
+      if (fpc !== 0xFFFFFFFF) {
+        status.textContent = `CPU fault pc=${(fpc >>> 0).toString(16)} op=${cpu.fault_op1().toString(16)} (see console-style UART above)`;
+      } else if (cpu.sleeping()) {
         // Firmware idles in WFE/WFI (the MicroPython scheduler does this
         // constantly): advance virtual time so a future peripheral IRQ can
         // pend, then wake on one. Without this the core naps forever the
