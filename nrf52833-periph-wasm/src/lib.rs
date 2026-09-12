@@ -330,6 +330,12 @@ pub fn saadc_check_limits(ch: usize, value: i16) {
     crate::peripherals::saadc_nrf::check_limits(sys(), ch, value);
 }
 
+// ── TEMP thermometer driver API ──
+#[wasm_bindgen]
+pub fn temp_set_celsius(c: i32) {
+    crate::peripherals::temp_nrf::temp_set_celsius(sys(), c);
+}
+
 // ── COMP/QDEC host driver API ──
 #[wasm_bindgen]
 pub fn comp_set_input_mv(mv: u32) {

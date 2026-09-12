@@ -22,6 +22,26 @@ impl TempNrf {
     }
 }
 
+fn with_temp<R>(sys: &System, f: impl FnOnce(&mut TempNrf) -> R) -> Option<R> {
+    for slot in &sys.p.peripherals {
+        if slot.start == 0x4000_C000 {
+            let mut b = slot.peripheral.borrow_mut();
+            if let Some(t) = b.as_any_mut().downcast_mut::<TempNrf>() {
+                return Some(f(t));
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// Drive the die temperature in whole degrees C (quarter-degree TEMP
+/// register reads back `c * 4`, reset default 21 C). Test/JS side of
+/// the thermometer: firmware STARTs, polls DATARDY, reads TEMP.
+pub fn temp_set_celsius(sys: &System, c: i32) {
+    with_temp(sys, |t| t.temp = c.clamp(-40, 85) * 4);
+}
+
 impl Peripheral for TempNrf {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     fn read(&mut self, _sys: &System, offset: u32) -> u32 {
@@ -60,5 +80,18 @@ mod tests {
         t.write(&sys, 0x000, 1);
         assert_eq!(t.read(&sys, 0x100), 1);
         assert_eq!(t.read(&sys, 0x508) as i32, 84);
+    }
+    #[test]
+    fn host_driven_temperature() {
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x4000C500, 4, 1); // ENABLE
+        temp_set_celsius(&sys, 27);
+        sys.p.write(&sys, 0x4000C000, 4, 1); // START
+        assert_eq!(sys.p.read(&sys, 0x4000C100, 4), 1, "DATARDY");
+        assert_eq!(sys.p.read(&sys, 0x4000C508, 4) as i32, 108, "27C in quarters");
+        temp_set_celsius(&sys, -40);
+        sys.p.write(&sys, 0x4000C000, 4, 1);
+        assert_eq!(sys.p.read(&sys, 0x4000C508, 4) as i32, -160);
+        assert_eq!(TempNrf::default().temp, 84, "fresh default 21C");
     }
 }

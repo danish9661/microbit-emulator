@@ -28,10 +28,12 @@ pub struct Uarte {
     rx_maxcnt: u32,
     rx_amount: u32,
     rx_pending: bool,
+    rx_taken: bool,
     tx_ptr: u32,
     tx_maxcnt: u32,
     tx_amount: u32,
     tx_pending: bool,
+    tx_taken: bool,
 }
 
 impl Default for Uarte {
@@ -39,8 +41,8 @@ impl Default for Uarte {
         Self { irq: 2, enable: 0, baudrate: 0, ev_txdrdy: false, ev_endtx: false,
                ev_txstopped: false,
                ev_rxdrdy: false, ev_endrx: false, ev_error: false, errorsrc: 0, rxd: 0,
-               intenset: 0, rx_ptr: 0, rx_maxcnt: 0, rx_amount: 0, rx_pending: false,
-               tx_ptr: 0, tx_maxcnt: 0, tx_amount: 0, tx_pending: false }
+               intenset: 0, rx_ptr: 0, rx_maxcnt: 0, rx_amount: 0, rx_pending: false, rx_taken: false,
+               tx_ptr: 0, tx_maxcnt: 0, tx_amount: 0, tx_pending: false, tx_taken: false }
     }
 }
 
@@ -170,8 +172,14 @@ impl Peripheral for Uarte {
 
 /// Driver-side EASYDMA: find the UARTE0 slot and run `f` on it.
 pub fn with_uarte<R>(sys: &System, f: impl FnOnce(&mut Uarte) -> R) -> Option<R> {
+    with_uarte_at(sys, 0x4000_2000, f)
+}
+
+/// Same for an explicit instance base (UARTE1 lives at 0x40028000 and
+/// stages transfers exactly like UARTE0).
+pub fn with_uarte_at<R>(sys: &System, base: u32, f: impl FnOnce(&mut Uarte) -> R) -> Option<R> {
     for slot in &sys.p.peripherals {
-        if slot.start == 0x4000_2000 {
+        if slot.start == base {
             let mut b = slot.peripheral.borrow_mut();
             if let Some(u) = b.as_any_mut().downcast_mut::<Uarte>() {
                 return Some(f(u));
@@ -183,26 +191,49 @@ pub fn with_uarte<R>(sys: &System, f: impl FnOnce(&mut Uarte) -> R) -> Option<R>
 }
 
 /// Take a staged RX DMA transfer (PTR, MAXCNT); None when idle.
+/// Checks UARTE0 then UARTE1.
 pub fn take_rxdma(sys: &System) -> Option<(u32, u32)> {
     with_uarte(sys, |u| {
         if u.rx_pending {
             u.rx_pending = false;
+            u.rx_taken = true;
             Some((u.rx_ptr, u.rx_maxcnt))
         } else {
             None
         }
     })
     .flatten()
+    .or_else(|| {
+        with_uarte_at(sys, 0x4002_8000, |u| {
+            if u.rx_pending {
+                u.rx_pending = false;
+                u.rx_taken = true;
+                Some((u.rx_ptr, u.rx_maxcnt))
+            } else {
+                None
+            }
+        })
+        .flatten()
+    })
 }
 
 /// Complete an RX DMA transfer: driver already wrote `amount` bytes to RAM
-/// at PTR. Sets ENDRX (+ IRQ when INTEN bit 4 is set).
+/// at PTR. Sets ENDRX (+ IRQ when INTEN bit 4 is set) on the taken
+/// instance (UARTE0 on ties / legacy direct completes).
 pub fn complete_rxdma(sys: &System, amount: u32) {
-    let fire = with_uarte(sys, |u| {
+    let taken0 = with_uarte(sys, |u| u.rx_taken).unwrap_or(false);
+    let taken1 = with_uarte_at(sys, 0x4002_8000, |u| u.rx_taken).unwrap_or(false);
+    let complete_on = |sys: &System, u: &mut Uarte| {
         u.rx_amount = amount;
+        u.rx_taken = false;
         u.ev_endrx = true;
         (u.irq, u.intenset)
-    });
+    };
+    let fire = if taken0 || !taken1 {
+        with_uarte(sys, |u| complete_on(sys, u))
+    } else {
+        with_uarte_at(sys, 0x4002_8000, |u| complete_on(sys, u))
+    };
     if let Some((irq, en)) = fire {
         if en & (1 << 4) != 0 {
             sys.p.nvic.borrow_mut().set_intr_pending(irq);
@@ -210,31 +241,54 @@ pub fn complete_rxdma(sys: &System, amount: u32) {
     }
 }
 /// Take a staged TX DMA transfer (PTR, MAXCNT); None when idle.
+/// Checks UARTE0 then UARTE1 (both stage identically).
 pub fn take_txdma(sys: &System) -> Option<(u32, u32)> {
     with_uarte(sys, |u| {
         if u.tx_pending {
             u.tx_pending = false;
+            u.tx_taken = true;
             Some((u.tx_ptr, u.tx_maxcnt))
         } else {
             None
         }
     })
     .flatten()
+    .or_else(|| {
+        with_uarte_at(sys, 0x4002_8000, |u| {
+            if u.tx_pending {
+                u.tx_pending = false;
+                u.tx_taken = true;
+                Some((u.tx_ptr, u.tx_maxcnt))
+            } else {
+                None
+            }
+        })
+        .flatten()
+    })
 }
 
 /// Complete a TX DMA transfer: bytes hit the console, AMOUNT + ENDTX set.
+/// Completes whichever instance was taken (UARTE0 on ties or when
+/// completing without a prior take, preserving legacy behavior).
 pub fn complete_txdma(sys: &System, data: &[u8]) {
-    if let Some(n) = with_uarte(sys, |u| {
+    let taken0 = with_uarte(sys, |u| u.tx_taken).unwrap_or(false);
+    let taken1 = with_uarte_at(sys, 0x4002_8000, |u| u.tx_taken).unwrap_or(false);
+    let complete_on = |sys: &System, u: &mut Uarte| {
         for &b in data {
             get_uart_output().lock().unwrap().push(b as char);
         }
         u.tx_amount = data.len() as u32;
+        u.tx_taken = false;
         u.ev_txdrdy = true;
         u.ev_endtx = true;
-        let irq = u.irq;
-        let en = u.intenset;
-        (irq, en)
-    }) {
+        (u.irq, u.intenset)
+    };
+    let n = if taken0 || !taken1 {
+        with_uarte(sys, |u| complete_on(sys, u))
+    } else {
+        with_uarte_at(sys, 0x4002_8000, |u| complete_on(sys, u))
+    };
+    if let Some(n) = n {
         if n.1 & (1 << 7) != 0 {
             sys.p.nvic.borrow_mut().set_intr_pending(n.0);
         }
@@ -352,5 +406,36 @@ mod tests {
         complete_rxdma(&sys, 4);
         assert_eq!(sys.p.read(&sys, 0x4000210C, 4), 1, "ENDRX after complete");
         assert_eq!(sys.p.read(&sys, 0x4000253C, 4), 4, "AMOUNT");
+    }
+    #[test]
+    fn uarte1_txdma_roundtrip_targets_instance_1() {
+        // UARTE1 (0x40028000, IRQ 40) stages and completes exactly like
+        // UARTE0; completion lands on instance 1, not instance 0.
+        use crate::system::test_dummy_system;
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E104, 4, 1 << 8); // NVIC ISER word1: IRQ 40
+        sys.p.write(&sys, 0x40028304, 4, 1 << 8); // UARTE1 INTEN: ENDTX
+        sys.p.write(&sys, 0x40028500, 4, 8); // UARTE1 ENABLE
+        sys.p.write(&sys, 0x40028544, 4, 0x20003000); // TXD.PTR
+        sys.p.write(&sys, 0x40028548, 4, 3); // TXD.MAXCNT
+        sys.p.write(&sys, 0x40028008, 4, 1); // STARTTX
+        let t = take_txdma(&sys).expect("uarte1 staged");
+        assert_eq!(t, (0x20003000, 3));
+        // UARTE0 must NOT show completion.
+        assert_eq!(sys.p.read(&sys, 0x40002120, 4), 0, "UARTE0 ENDTX stays clear");
+        complete_txdma(&sys, b"Hi!");
+        assert_eq!(sys.p.read(&sys, 0x40028120, 4), 1, "UARTE1 ENDTX set");
+        assert!(sys.p.nvic.borrow().has_pending(), "IRQ 40 pends");
+        // 2nd run: fresh default has nothing staged.
+        assert_eq!(Uarte::default().tx_taken, false);
+        // RX direction too.
+        sys.p.write(&sys, 0x40028534, 4, 0x20003000); // RXD.PTR
+        sys.p.write(&sys, 0x40028538, 4, 2); // RXD.MAXCNT
+        sys.p.write(&sys, 0x40028000, 4, 1); // STARTRX
+        let r = take_rxdma(&sys).expect("uarte1 rx staged");
+        assert_eq!(r, (0x20003000, 2));
+        complete_rxdma(&sys, 2);
+        assert_eq!(sys.p.read(&sys, 0x4002810C, 4), 1, "UARTE1 ENDRX set");
+        assert_eq!(sys.p.read(&sys, 0x4000210C, 4), 0, "UARTE0 ENDRX stays clear");
     }
 }
