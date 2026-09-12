@@ -557,3 +557,31 @@ UICR/FICR semantics (faithful), MBRPARAM content (only SD base).
 The reset decision reads NVIC IPR22 (=0, takes the `r0=0x2002`
 path into a memcpy-ish routine, then resets). Artifacts (scratch
 image patch, all temp probes) reverted, never committed.
+
+## 24. P23 no-BL path + reset-persistence finding (2026-09-11)
+
+No-bootloader MBR boot (BOOTLOADERADDR erased) routes MBR -> SD-Reset
+(`0x1AE20`) -> APP directly (traced region samples; SD validates
+bases, sets a flag word, runs two init calls, `svc 255`). The APP
+then issues its own handshake resets and, on the 3rd attempt, faults
+in `memcmp` (`0x56FF4`, BFAR `0xFFFFCFFF`) on a garbage SD-struct
+pointer -- same signature as the early direct-app fault, but the
+direct-app recipe banners while no-BL faults. MBRPARAM words intact,
+timers healthy, NVIC/VTOR clean, UICR seeded, clocks assumed (not the
+differentiator checked last).
+
+Key negative result: reinstalling FRESH peripherals (+NVIC/VTOR
+clear) on every reboot makes it WORSE (instant reset storm), while
+dirty-peripheral continuity lets attempts progress. Evidence that
+nRF SYSRESETREQ preserves peripheral state and the SD handshake
+depends on it (timers keep running so later boots short-circuit).
+Consequence: `cpu.reset` staying CPU-only is CORRECT-ish, not a gap;
+do NOT "fix" it by resetting peripherals (would break the working
+handshake). Open sub-question: exact VTOR/NVIC reset semantics of
+SYSRESETREQ on nRF52833 (ARM core says clear; whether Nordic's
+reset controller clears NVIC enables is unverified -- self-heals in
+practice since firmware re-inits).
+
+npm: `microbit-v2-emulator@0.1.0` publish BLOCKED (registry 401, no
+credentials in this environment; `npm publish` from demo/ when
+authenticated).
