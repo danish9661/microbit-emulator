@@ -210,8 +210,10 @@ impl Peripheral for Twim {
             0x500 => self.enable = value & 0xF,
             0x51C => {
                 // TXD byte -> tapped I2C slave matching ADDRESS. SPIM-only
-                // instances (SPIM2/3) skip the I2C tap (TODO P8: route them
-                // to spi_taps with CS/DC like the JS display layer expects).
+                // instances (SPIM2/3) skip the I2C tap; routing their frames
+                // to spi_taps (with CS/DC like the JS display layer expects)
+                // is still open -- the DMA take/complete path works, only
+                // slave-side observability is missing.
                 self.tx_byte = (value & 0xFF) as u8;
                 if self.name.starts_with("TWI") {
                     crate::system::i2c_tap_push_tx(&self.name, self.tx_byte);

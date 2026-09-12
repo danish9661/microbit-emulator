@@ -67,4 +67,17 @@ mod tests {
         assert_eq!(e.read(&sys, 0x100), 1);
         assert!(sys.p.nvic.borrow().has_pending());
     }
+    #[test]
+    fn all_instances_live_in_map() {
+        // EGU1-5 slots exist in new_wasm (were missing); SWI aliases share
+        // the same bases. Highest instance exercises the full path.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 25);
+        sys.p.write(&sys, 0x40019304, 4, 1 << 3);
+        sys.p.write(&sys, 0x4001900C, 4, 1); // EGU5 TASKS_TRIGGER[3]
+        assert_eq!(sys.p.read(&sys, 0x4001910C, 4), 1, "EGU5 TRIGGERED[3]");
+        assert!(sys.p.nvic.borrow().has_pending(), "EGU5 IRQ 25 pends");
+        sys.p.write(&sys, 0x4001910C, 4, 0);
+        assert_eq!(sys.p.read(&sys, 0x4001910C, 4), 0, "clear by write-0");
+    }
 }
