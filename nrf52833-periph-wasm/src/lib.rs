@@ -324,6 +324,12 @@ pub fn nfct_complete_rx(amount: u32) {
     crate::peripherals::nfct_nrf::complete_nfct_rx(sys(), amount);
 }
 
+// ── SAADC limit-monitor driver API ──
+#[wasm_bindgen]
+pub fn saadc_check_limits(ch: usize, value: i16) {
+    crate::peripherals::saadc_nrf::check_limits(sys(), ch, value);
+}
+
 // ── COMP/QDEC host driver API ──
 #[wasm_bindgen]
 pub fn comp_set_input_mv(mv: u32) {
