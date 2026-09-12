@@ -2983,3 +2983,11 @@ fn dwt_foldcnt_counts_skipped_slots() {
     assert_eq!(mem.read32(0xE0001018), 1, "one folded slot counted");
 }
 
+
+
+
+
+
+
+
+
