@@ -189,8 +189,9 @@ yet): ECB/AAR take-complete, NFCT beyond proof, MWU beyond proof.
 
 ## 7. Deliberately out of scope
 
-SoftDevice event synthesis (`sd_evt_get` pump — the one explicitly
-deferred workstream), STM32/UNO R4/M0+/DAPLink targets (deleted, only
+SoftDevice event synthesis (full BLE pump — still out of scope; but a
+scoped flash-events-only `sd_evt_get` transport is drafted, unimplemented,
+in `docs/sd_evt_design.md`), STM32/UNO R4/M0+/DAPLink targets (deleted, only
 comment references remain), third-party-framework boot quirks (Arduino
 Primo binary needs an nRF52832 bootloader), lazy FPU stacking, ACL/SPU
 protection, publish to npm.

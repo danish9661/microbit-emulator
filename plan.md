@@ -687,3 +687,29 @@ Demo-vs-native, settled findings:
   identical in this wasm-pack setup (single profile); browser speed
   (~300K/s-1.5M/s here) is environmental. Banner needs ~150-260M:
   600s+ wall in this Chromium; P20 = faster machine.
+
+## 27. P27 entry-fault + waiter-caller + sd_evt design (2026-09-12)
+
+Entry fault (`0x29C7A`/`op=0xDEAD`, browser-only): narrowed to a
+HardFault-sled double-fault lockup (raise_sync overwrites the first
+fault; the sled at app entry IS the Default_Handler). Never
+reproduced natively across ~8 configurations (pristine, pre-rolls,
+dirty NVIC incl. matured TIMER1/2/4 + pending bits, sensor-answered
+pre-roll, exact demo pump order). deliver_irqs has no runtime clearer
+— writer audit done. Correlation found but unproven: fault runs all
+carried heavy status instrumentation; needs a clean multi-run
+classification + first-fault-preserving hook before any pump change.
+The 20x5K revert stands.
+
+Waiter caller: demo stack gives waiter ← … ← `0x25633` (heap
+free-list/`0x502F8` subtree, i.e. malloc inside the fds path) ←
+`0x263FD` (virtual slot-6 call) ← `0x23775`, r4=`0x74000`,
+no-SVC16/18/40 anywhere (SVC hook pkg verified live, then reverted).
+The fds path calls the completion-waiter directly (not via the
+0x21578/SVC18 gate). NEXT: 2048B backtrace on a spin-lottery run.
+
+sd_evt transport designed (`docs/sd_evt_design.md`, phase 1 =
+flash events only, no new wasm exports, proof spec included).
+SVC/event numbers resolved from S132 headers (SD_EVT_GET=82,
+FLASH_SUCCESS=2; verify against S140 binary before implementing).
+STATUS §7 updated accordingly.
