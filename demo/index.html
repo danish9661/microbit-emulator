@@ -126,6 +126,15 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   }
   // Pending UICR bytes from the last hex load (applied on boot).
   let pendingUicr = [];
+  function applyUicr(uicr) {
+    if (!uicr) return;
+    const words = new Map();
+    for (const [a, b] of uicr) {
+      const w = a & ~3, i = a & 3;
+      words.set(w, (words.get(w) || 0xFFFFFFFF) & ~(0xFF << (8 * i)) | (b << (8 * i)));
+    }
+    for (const [w, v] of words) wasm.periph_write(w, 4, v >>> 0);
+  }
   // Built-in preset firmware (blinky/*.bin proofs, base64). Same boot
   // path as a dropped file: MBR vectors at 0x0, no UICR records.
   const PRESETS = {
@@ -167,20 +176,14 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     const dv = new DataView(u8.buffer);
     const sp = dv.getUint32(0, true), pc = dv.getUint32(4, true);
     initBoard(); // re-register taps: reset_state() clears them
+    pendingUicr = uicr || [];
     cpu = new wasm.WasmCpu(sp, pc, 512 * 1024, 128 * 1024);
     cpu.load_firmware(u8, 0);
     // Real firmware (SoftDevice, CODAL, MicroPython) uses SVCs and IRQs
     // throughout; without delivery the first SVC faults silently.
     cpu.set_deliver_irqs(true);
     // UICR (e.g. MicroPython BOOTLOADERADDR): pack bytes into words.
-    if (uicr) {
-      const words = new Map();
-      for (const [a, b] of uicr) {
-        const w = a & ~3, i = a & 3;
-        words.set(w, (words.get(w) || 0xFFFFFFFF) & ~(0xFF << (8 * i)) | (b << (8 * i)));
-      }
-      for (const [w, v] of words) wasm.periph_write(w, 4, v >>> 0);
-    }
+    applyUicr(uicr);
     boot = { sp, pc };
     appBoot = null;
     uartBox.value = '';
@@ -195,6 +198,14 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     if (!cpu) { status.textContent = 'load a micro:bit MicroPython hex first'; return; }
     const w = (a) => cpu.read32(a);
     if (w(0x1C000) === 0xFFFFFFFF) { status.textContent = 'no app vector table at 0x1C000'; return; }
+    // Start pristine (native-probe equivalent): the frames between hex
+    // load and this click executed MBR/BL and left dirty model state
+    // (timers/NVIC/RAM) that steers the app into the SVC-wait path;
+    // native boots that banner run pristine. Re-init the model (the
+    // firmware image stays loaded in WasmCpu memory), then re-apply
+    // UICR + params + vectors.
+    initBoard();
+    applyUicr(pendingUicr);
     const u32 = (v) => { const b = new Uint8Array(4); new DataView(b.buffer).setUint32(0, v, true); return b; };
     cpu.mem_write(0x20000000, u32(0x1000)); // MBR param: SoftDevice base
     cpu.mem_write(0x20000004, u32(0x1C000)); // MBR param: app base
@@ -396,7 +407,7 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
         leds[r * 5 + c].classList.toggle('on', isOut(ROWS[r]) && !row && isOut(COLS[c]) && col);
       }
     }
-    requestAnimationFrame(frame);
+  requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 </script>
