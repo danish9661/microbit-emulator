@@ -524,3 +524,36 @@ enableInterrupt coming = nothing starts the transfer; the first-byte
 kick source for an idle ring is unidentified in the sources read so
 far); (c) dangling messageBus/fiber listener on the 6ms tick (fault
 vanishes with TIMER1 stopped).
+
+## 23. P22 bootloader breakthrough: stacked-PC + subword fixes, SD runs (2026-09-11)
+
+Two REAL emulator bugs found via the reset loop, both fixed with
+regression tests (suite 167 green):
+
+1. **Stacked return PC leaked the Thumb bit** (`cpu/mod.rs` stacked
+   raw `r[15]`; fix: `& !1`; test
+   `exception_svc_stacks_even_return_pc`, cpu_bug.md §2). The MBR SVC
+   dispatcher reads `[stackedPC-2]` for the SVC number: for
+   `svc 24` at `0x7A278` it needs stacked `0x7A27A`
+   (`[0x7A278]` = `0x18`); we stacked `0x7A27B`, it read `[0x7A279]`
+   (`0xDF`=223), took the unknown-SVC path, `sd_mbr_command`
+   "failed" with 1, and the bootloader reset-looped forever
+   (MBR -> BL -> failed `sd_mbr_command` -> reset). With the fix the
+   SVC returns `NRF_SUCCESS` (0) and the SoftDevice INITIALIZES
+   (canary `0xCAFEBABE` at `0x20000058`, SD base registered): SD code
+   executes, multiple SVCs dispatch, BL<->SD interoperate.
+2. **Subword peripheral reads shifted the wrong way**
+   (`Peripherals::read` did `value << 8*off`; callers truncate, so
+   every byte/halfword read past offset 0 returned 0; fix: `>>`;
+   test `subword_reads_shift_down`). Caught via the BL's `ldrb` of
+   NVIC IPR22 (`0xE000E416`); the write path was already correct.
+   (Did not unblock the BL by itself -- IPR22 is genuinely 0.)
+
+Full chain NOT yet closed: post-success the BL still resets
+(`0x783FE` park) and MBR still prefers the valid bootloader
+(empirically both directions; no-BL boots direct to APP). Ruled out:
+WDT (never started), BL I2C/UIPM traffic (none), RESETREAS/GPREGRET/
+UICR/FICR semantics (faithful), MBRPARAM content (only SD base).
+The reset decision reads NVIC IPR22 (=0, takes the `r0=0x2002`
+path into a memcpy-ish routine, then resets). Artifacts (scratch
+image patch, all temp probes) reverted, never committed.
