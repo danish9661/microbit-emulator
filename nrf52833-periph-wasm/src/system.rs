@@ -257,8 +257,19 @@ fn spi_tap_miso() -> &'static Mutex<std::collections::HashMap<String, Vec<u8>>> 
     SPI_TAP_MISO.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
+/// Tap event queues are lossy observer channels: cap each peripheral at
+/// 4096 entries (drop oldest) so bulk DMA traffic without a drainer
+/// (e.g. display frames) cannot grow memory unboundedly in long runs.
+fn tap_push_capped(map: &mut std::collections::HashMap<String, Vec<u32>>, peri: &str, v: u32) {
+    let q = map.entry(peri.to_string()).or_default();
+    q.push(v);
+    let over = q.len().saturating_sub(4096);
+    if over > 0 {
+        q.drain(..over);
+    }
+}
 pub fn spi_tap_push_byte(peri: &str, v: u32) {
-    spi_tap_events().lock().unwrap().entry(peri.to_string()).or_default().push(v & 0x2FF);
+    tap_push_capped(&mut spi_tap_events().lock().unwrap(), peri, v & 0x2FF);
 }
 pub fn spi_tap_push_cs(peri: &str, asserted: bool) {
     let e = 0x8000_0000u32 | (if asserted { 1 << 30 } else { 0 });
@@ -290,10 +301,10 @@ fn i2c_tap_rx() -> &'static Mutex<std::collections::HashMap<String, Vec<u8>>> {
 }
 
 pub fn i2c_tap_push_tx(peri: &str, v: u8) {
-    i2c_tap_tx().lock().unwrap().entry(peri.to_string()).or_default().push(v as u32);
+    tap_push_capped(&mut i2c_tap_tx().lock().unwrap(), peri, v as u32);
 }
 pub fn i2c_tap_push_event(peri: &str, ev: u32) {
-    i2c_tap_tx().lock().unwrap().entry(peri.to_string()).or_default().push(ev);
+    tap_push_capped(&mut i2c_tap_tx().lock().unwrap(), peri, ev);
 }
 pub fn i2c_tap_take_tx(peri: &str) -> Vec<u32> {
     i2c_tap_tx().lock().unwrap().get_mut(peri).map(std::mem::take).unwrap_or_default()

@@ -462,6 +462,19 @@ impl WasmCpu {
     pub fn mem_write(&mut self, addr: u32, data: &[u8]) {
         for (i, &b) in data.iter().enumerate() { self.mem.write8(addr.wrapping_add(i as u32), b); }
     }
+    /// External-master I2C write to our TWIS slave at `base`/`addr7`.
+    /// Returns bytes accepted (0 on NACK/overflow; see error events).
+    pub fn twis_master_write(&mut self, base: u32, addr: u8, data: &[u8]) -> u32 {
+        crate::peripherals::twim_nrf::twis_master_write(sys(), &mut self.mem, base, addr, data)
+    }
+    /// External-master I2C read from our TWIS slave (ORC-padded).
+    pub fn twis_master_read(&mut self, base: u32, addr: u8, len: u32) -> Vec<u8> {
+        crate::peripherals::twim_nrf::twis_master_read(sys(), &mut self.mem, base, addr, len)
+    }
+    /// External-master SPI exchange with our SPIS slave (MISO bytes out).
+    pub fn spis_exchange(&mut self, base: u32, mosi: &[u8]) -> Vec<u8> {
+        crate::peripherals::twim_nrf::spis_exchange(sys(), &mut self.mem, base, mosi)
+    }
     pub fn reset_cpu(&mut self, sp: u32, pc: u32) { self.cpu.reset(sp, pc); }
     pub fn set_deliver_irqs(&mut self, v: bool) { self.cpu.deliver_irqs = v; }
     pub fn sleeping(&self) -> bool { self.cpu.sleeping }

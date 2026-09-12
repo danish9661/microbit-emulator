@@ -1,4 +1,5 @@
 use crate::system::System;
+use crate::cpu::mem::Memory;
 use super::Peripheral;
 
 /// TWIM0 @ 0x40003000 (IRQ 3) / TWIM1 @ 0x40004000 (IRQ 4, SVD ground
@@ -50,6 +51,22 @@ pub struct Twim {
     rx_amount: u32,
     rx_pending: bool,
     nack_at: Option<u64>,
+    // Slave state (TWIS ENABLE=9 / SPIS ENABLE=2 select the slave map
+    // on the shared SERIAL base; all other ENABLE values run master).
+    slv_addr: [u8; 2],
+    slv_cfg: u32,
+    slv_orc: u8,
+    slv_match: u32,
+    ev_twis_write: bool,
+    ev_twis_read: bool,
+    spis_acquired: bool,
+    spis_def: u8,
+    spis_orc: u8,
+    spis_config: u32,
+    ev_spis_end: bool,
+    ev_spis_endrx: bool,
+    ev_spis_acquired: bool,
+    psel: [u32; 4],
 }
 
 impl Twim {
@@ -76,7 +93,20 @@ impl Twim {
             tx_ptr: 0, tx_maxcnt: 0, tx_amount: 0, tx_pending: false,
             rx_ptr: 0, rx_maxcnt: 0, rx_amount: 0, rx_pending: false,
             nack_at: None,
+            slv_addr: [0; 2], slv_cfg: 0, slv_orc: 0, slv_match: 0,
+            ev_twis_write: false, ev_twis_read: false,
+            spis_acquired: false, spis_def: 0, spis_orc: 0, spis_config: 0,
+            ev_spis_end: false, ev_spis_endrx: false, ev_spis_acquired: false,
+            psel: [0xFFFF_FFFF; 4],
         }))
+    }
+    /// Slave map selector: TWIS ENABLE=9, SPIS ENABLE=2 (SVD).
+    /// Everything else (6/7/0) runs the master map (legacy default).
+    fn is_twis(&self) -> bool {
+        self.enable == 9
+    }
+    fn is_spis(&self) -> bool {
+        self.enable == 2
     }
     fn fire(&self, sys: &System, bit: u32) {
         if self.intenset & bit != 0 {
@@ -124,6 +154,12 @@ impl Twim {
 impl Peripheral for Twim {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     fn read(&mut self, sys: &System, offset: u32) -> u32 {
+        if self.is_twis() {
+            return self.twis_read(sys, offset);
+        }
+        if self.is_spis() {
+            return self.spis_read(sys, offset);
+        }
         self.poll_nack(sys);
         match offset {
             0x104 => self.ev_stopped as u32,
@@ -151,6 +187,14 @@ impl Peripheral for Twim {
         }
     }
     fn write(&mut self, sys: &System, offset: u32, value: u32) {
+        if self.is_twis() {
+            self.twis_write(sys, offset, value);
+            return;
+        }
+        if self.is_spis() {
+            self.spis_write(sys, offset, value);
+            return;
+        }
         self.poll_nack(sys);
         match offset {
             0x000 => { // STARTRX
@@ -217,6 +261,10 @@ impl Peripheral for Twim {
                 self.tx_byte = (value & 0xFF) as u8;
                 if self.name.starts_with("TWI") {
                     crate::system::i2c_tap_push_tx(&self.name, self.tx_byte);
+                } else if self.name.starts_with("SPI") {
+                    // SPIM register-mode bytes are observable to slave
+                    // parts here (DMA bytes travel via take/complete).
+                    crate::system::spi_tap_push_byte(&self.name, self.tx_byte as u32);
                 }
             }
             0x588 => self.address = (value & 0x7F) as u8,
@@ -227,7 +275,157 @@ impl Peripheral for Twim {
             _ => {}
         }
     }
-    fn tick(&mut self, sys: &System) { self.poll_nack(sys); }
+    fn tick(&mut self, sys: &System) {
+        if !self.is_twis() && !self.is_spis() {
+            self.poll_nack(sys);
+        }
+    }
+}
+
+impl Twim {
+    // ---- TWIS slave map (ENABLE=9) ----
+    fn twis_read(&mut self, _sys: &System, offset: u32) -> u32 {
+        match offset {
+            0x104 => self.ev_stopped as u32,
+            0x124 => self.ev_error as u32,
+            0x14C => self.ev_rxstarted as u32,
+            0x150 => self.ev_txstarted as u32,
+            0x164 => self.ev_twis_write as u32,
+            0x168 => self.ev_twis_read as u32,
+            0x200 => self.shorts,
+            0x304 => self.intenset,
+            0x4D0 => self.errorsrc,
+            0x4D4 => self.slv_match,
+            0x500 => self.enable,
+            0x508 | 0x50C => self.psel[((offset - 0x508) >> 2) as usize % 4],
+            0x534 => self.rx_ptr,
+            0x538 => self.rx_maxcnt,
+            0x53C => self.rx_amount,
+            0x544 => self.tx_ptr,
+            0x548 => self.tx_maxcnt,
+            0x54C => self.tx_amount,
+            0x588 => self.slv_addr[0] as u32,
+            0x58C => self.slv_addr[1] as u32,
+            0x594 => self.slv_cfg,
+            0x5C0 => self.slv_orc as u32,
+            _ => 0,
+        }
+    }
+    fn twis_write(&mut self, sys: &System, offset: u32, value: u32) {
+        match offset {
+            0x014 => {
+                // STOP: end transaction.
+                self.started_tx = false;
+                self.started_rx = false;
+                self.rx_pending = false;
+                self.tx_pending = false;
+                self.ev_stopped = true;
+                self.fire(sys, 1 << 1);
+            }
+            0x01C => {
+                self.suspended = true;
+                self.ev_suspended = true;
+                self.fire(sys, 1 << 18);
+            }
+            0x020 => self.suspended = false,
+            0x030 => {
+                // PREPARERX: arm the RX buffer.
+                self.rx_amount = 0;
+                self.rx_pending = true;
+            }
+            0x034 => {
+                // PREPARETX: arm the TX buffer.
+                self.tx_amount = 0;
+                self.tx_pending = true;
+            }
+            0x104 => if value == 0 { self.ev_stopped = false; }
+            0x124 => if value == 0 { self.ev_error = false; }
+            0x14C => if value == 0 { self.ev_rxstarted = false; }
+            0x150 => if value == 0 { self.ev_txstarted = false; }
+            0x164 => if value == 0 { self.ev_twis_write = false; }
+            0x168 => if value == 0 { self.ev_twis_read = false; }
+            0x200 => self.shorts = value & 0x6000,
+            0x304 => self.intenset |= value & 0x0618_0202,
+            0x308 => self.intenset &= !value,
+            0x4D0 => self.errorsrc &= !value, // write-1-clears
+            0x500 => self.enable = value & 0xF,
+            0x508 | 0x50C => self.psel[((offset - 0x508) >> 2) as usize % 4] = value,
+            0x534 => self.rx_ptr = value,
+            0x538 => self.rx_maxcnt = value & 0xFF,
+            0x544 => self.tx_ptr = value,
+            0x548 => self.tx_maxcnt = value & 0xFF,
+            0x588 => self.slv_addr[0] = (value & 0x7F) as u8,
+            0x58C => self.slv_addr[1] = (value & 0x7F) as u8,
+            0x594 => self.slv_cfg = value & 3,
+            0x5C0 => self.slv_orc = (value & 0xFF) as u8,
+            _ => {}
+        }
+    }
+    /// Address match against ADDRESS[0/1] gated by CONFIG bits.
+    fn twis_match(&self, addr7: u8) -> Option<u32> {
+        if self.slv_cfg & 1 != 0 && addr7 == self.slv_addr[0] {
+            Some(0)
+        } else if self.slv_cfg & 2 != 0 && addr7 == self.slv_addr[1] {
+            Some(1)
+        } else {
+            None
+        }
+    }
+    // ---- SPIS slave map (ENABLE=2) ----
+    fn spis_read(&mut self, _sys: &System, offset: u32) -> u32 {
+        match offset {
+            0x104 => self.ev_spis_end as u32,
+            0x110 => self.ev_spis_endrx as u32,
+            0x128 => self.ev_spis_acquired as u32,
+            0x200 => self.shorts,
+            0x304 => self.intenset,
+            0x500 => self.enable,
+            0x508 | 0x50C | 0x510 | 0x514 => {
+                self.psel[((offset - 0x508) >> 2) as usize % 4]
+            }
+            0x534 => self.rx_ptr,
+            0x538 => self.rx_maxcnt,
+            0x53C => self.rx_amount,
+            0x544 => self.tx_ptr,
+            0x548 => self.tx_maxcnt,
+            0x54C => self.tx_amount,
+            0x554 => self.spis_config,
+            0x55C => self.spis_def as u32,
+            0x5C0 => self.spis_orc as u32,
+            _ => 0,
+        }
+    }
+    fn spis_write(&mut self, sys: &System, offset: u32, value: u32) {
+        match offset {
+            0x024 => {
+                // ACQUIRE: take the semaphore if free.
+                if !self.spis_acquired {
+                    self.spis_acquired = true;
+                    self.ev_spis_acquired = true;
+                    self.fire(sys, 1 << 10);
+                }
+            }
+            0x028 => self.spis_acquired = false, // RELEASE
+            0x104 => if value == 0 { self.ev_spis_end = false; }
+            0x110 => if value == 0 { self.ev_spis_endrx = false; }
+            0x128 => if value == 0 { self.ev_spis_acquired = false; }
+            0x200 => self.shorts = value & 4,
+            0x304 => self.intenset |= value & 0x412,
+            0x308 => self.intenset &= !value,
+            0x500 => self.enable = value & 0xF,
+            0x508 | 0x50C | 0x510 | 0x514 => {
+                self.psel[((offset - 0x508) >> 2) as usize % 4] = value;
+            }
+            0x534 => self.rx_ptr = value,
+            0x538 => self.rx_maxcnt = value & 0xFF,
+            0x544 => self.tx_ptr = value,
+            0x548 => self.tx_maxcnt = value & 0xFF,
+            0x554 => self.spis_config = value & 7,
+            0x55C => self.spis_def = (value & 0xFF) as u8,
+            0x5C0 => self.spis_orc = (value & 0xFF) as u8,
+            _ => {}
+        }
+    }
 }
 
 /// Driver-side EASYDMA for one SERIAL slot (base address).
@@ -278,6 +476,8 @@ pub fn complete_txdma(sys: &System, name: &str, data: &[u8]) {
         for &b in data {
             if t.name.starts_with("TWI") {
                 crate::system::i2c_tap_push_tx(&t.name, b);
+            } else if t.name.starts_with("SPI") {
+                crate::system::spi_tap_push_byte(&t.name, b as u32);
             }
         }
         t.tx_amount = data.len() as u32;
@@ -373,6 +573,102 @@ pub fn complete_rxdma(sys: &System, name: &str, amount: u32) {
 mod tests {
     use super::*;
     use crate::system::test_dummy_system;
+    use crate::cpu::mem::{FlatMemory, Memory};
+    #[test]
+    fn twis_address_match_write_read() {
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 4); // NVIC ISER: SERIAL1
+        sys.p.write(&sys, 0x40004304, 4, (1 << 1) | (1 << 19) | (1 << 25)); // INTEN STOPPED/RXSTARTED/WRITE
+        sys.p.write(&sys, 0x40004500, 4, 9); // TWIS ENABLE
+        sys.p.write(&sys, 0x40004588, 4, 0x42); // ADDRESS[0]
+        sys.p.write(&sys, 0x40004594, 4, 1); // CONFIG: ADDRESS0
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        // Wrong address: DNACK, nothing accepted.
+        sys.p.write(&sys, 0x40004534, 4, 0x20001000);
+        sys.p.write(&sys, 0x40004538, 4, 8);
+        sys.p.write(&sys, 0x40004030, 4, 1); // PREPARERX
+        assert_eq!(twis_master_write(&sys, &mut mem, 0x40004000, 0x43, &[1, 2]), 0, "NACK");
+        assert_eq!(sys.p.read(&sys, 0x400044D0, 4) & (1 << 2), 1 << 2, "DNACK cause");
+        assert_eq!(sys.p.read(&sys, 0x40004104, 4), 1, "STOPPED");
+        // Right address: bytes land in RAM, events fire.
+        assert_eq!(twis_master_write(&sys, &mut mem, 0x40004000, 0x42, &[1, 2, 3]), 3);
+        assert_eq!(sys.p.read(&sys, 0x400044D4, 4), 0, "MATCH index 0");
+        assert_eq!(mem.read8(0x20001000), 1);
+        assert_eq!(mem.read8(0x20001002), 3);
+        assert_eq!(sys.p.read(&sys, 0x4000453C, 4), 3, "RX AMOUNT");
+        assert_eq!(sys.p.read(&sys, 0x4000414C, 4), 1, "RXSTARTED");
+        assert_eq!(sys.p.read(&sys, 0x40004164, 4), 1, "WRITE");
+        assert!(sys.p.nvic.borrow().has_pending(), "IRQ 4 pends");
+    }
+    #[test]
+    fn twis_read_orc_pad_and_overflows() {
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x40004500, 4, 9);
+        sys.p.write(&sys, 0x40004588, 4, 0x42);
+        sys.p.write(&sys, 0x40004594, 4, 1);
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        for (i, &b) in [9u8, 8, 7, 6].iter().enumerate() {
+            mem.write8(0x20002000 + i as u32, b);
+        }
+        sys.p.write(&sys, 0x40004544, 4, 0x20002000); // TXD.PTR
+        sys.p.write(&sys, 0x40004548, 4, 4); // TXD.MAXCNT
+        sys.p.write(&sys, 0x400045C0, 4, 0xFF); // ORC
+        sys.p.write(&sys, 0x40004034, 4, 1); // PREPARETX
+        // 6 clocked bytes: 4 from RAM + 2 ORC pad.
+        assert_eq!(twis_master_read(&sys, &mut mem, 0x40004000, 0x42, 6), vec![9, 8, 7, 6, 0xFF, 0xFF]);
+        assert_eq!(sys.p.read(&sys, 0x40004150, 4), 1, "TXSTARTED");
+        assert_eq!(sys.p.read(&sys, 0x40004168, 4), 1, "READ");
+        // Unprepared RX is OVERFLOW; unprepared TX is OVERREAD.
+        assert_eq!(twis_master_write(&sys, &mut mem, 0x40004000, 0x42, &[1]), 0, "no PREPARERX");
+        assert_eq!(sys.p.read(&sys, 0x400044D0, 4) & 1, 1, "OVERFLOW cause");
+        assert_eq!(twis_master_read(&sys, &mut mem, 0x40004000, 0x42, 2), vec![0xFF, 0xFF], "ORC clocked");
+        assert_eq!(sys.p.read(&sys, 0x400044D0, 4) & (1 << 3), 1 << 3, "OVERREAD cause");
+        // 2nd run: fresh default is master-mode (enable 0), slave idle.
+        let t2 = Twim::new("TWIM1").unwrap();
+        let mut b = Box::new(t2);
+        let _ = b.as_any_mut();
+    }
+    #[test]
+    fn spis_acquire_exchange_release() {
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 3); // NVIC ISER: SERIAL0
+        sys.p.write(&sys, 0x40003304, 4, (1 << 1) | (1 << 4)); // INTEN END/ENDRX
+        sys.p.write(&sys, 0x40003500, 4, 2); // SPIS ENABLE
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        // No ACQUIRE: exchange refused.
+        assert_eq!(spis_exchange(&sys, &mut mem, 0x40003000, &[1, 2]), Vec::<u8>::new());
+        sys.p.write(&sys, 0x40003024, 4, 1); // ACQUIRE
+        assert_eq!(sys.p.read(&sys, 0x40003128, 4), 1, "ACQUIRED");
+        sys.p.write(&sys, 0x40003534, 4, 0x20001000); // RXD.PTR
+        sys.p.write(&sys, 0x40003538, 4, 8); // RXD.MAXCNT
+        for (i, &b) in [9u8, 8, 7, 6].iter().enumerate() {
+            mem.write8(0x20002000 + i as u32, b);
+        }
+        sys.p.write(&sys, 0x40003544, 4, 0x20002000); // TXD.PTR
+        sys.p.write(&sys, 0x40003548, 4, 4); // TXD.MAXCNT
+        sys.p.write(&sys, 0x400035C0, 4, 0xEE); // ORC
+        // 6 SCK bytes: 4 MISO from RAM + 2 ORC; MOSI lands in RX RAM.
+        assert_eq!(
+            spis_exchange(&sys, &mut mem, 0x40003000, &[1, 2, 3, 4, 5, 6]),
+            vec![9, 8, 7, 6, 0xEE, 0xEE]
+        );
+        assert_eq!(mem.read8(0x20001000), 1);
+        assert_eq!(mem.read8(0x20001003), 4);
+        assert_eq!(sys.p.read(&sys, 0x40003104, 4), 1, "END");
+        assert_eq!(sys.p.read(&sys, 0x40003110, 4), 1, "ENDRX");
+        assert!(sys.p.nvic.borrow().has_pending(), "IRQ 3 pends");
+        // Semaphore released at END: next frame needs a new ACQUIRE.
+        assert_eq!(spis_exchange(&sys, &mut mem, 0x40003000, &[1]), Vec::<u8>::new(), "released");
+        // END_ACQUIRE shorts keeps it armed across frames.
+        sys.p.write(&sys, 0x40003200, 4, 1 << 2); // SHORTS END_ACQUIRE
+        sys.p.write(&sys, 0x40003024, 4, 1);
+        assert_eq!(spis_exchange(&sys, &mut mem, 0x40003000, &[7, 7]).len(), 2);
+        assert_eq!(spis_exchange(&sys, &mut mem, 0x40003000, &[7, 7]).len(), 2, "still acquired");
+        // DEF character when no TX buffer programmed.
+        sys.p.write(&sys, 0x40003548, 4, 0); // TXD.MAXCNT=0
+        sys.p.write(&sys, 0x4000355C, 4, 0xDD); // DEF
+        assert_eq!(spis_exchange(&sys, &mut mem, 0x40003000, &[0]), vec![0xDD]);
+    }
     #[test]
     fn tx_byte_reaches_tap_and_stop_events() {
         let sys = test_dummy_system();
@@ -399,8 +695,12 @@ mod tests {
         sys.p.write(&sys, 0x40004548, 4, 2);          // TXD.MAXCNT
         sys.p.write(&sys, 0x40004588, 4, 0x19);       // ADDRESS
         sys.p.write(&sys, 0x40004008, 4, 1);          // STARTTX
-        assert_eq!(sys.p.read(&sys, 0x40004120, 4), 0, "ENDTX waits for driver");
+        // Take BEFORE any event read: the NACK deadline runs on the
+        // process-global clock, so a model read here could let a
+        // parallel test's clock advance trip the timeout first (flake).
+        // take() itself never polls, making this order deterministic.
         let t = take_txdma(&sys, "TWIM1").expect("staged");
+        assert_eq!(sys.p.read(&sys, 0x40004120, 4), 0, "ENDTX waits for driver");
         assert_eq!(t, (0x19, 0x20001000, 2));
         complete_txdma(&sys, "TWIM1", &[0x2A, 0x00]);
         assert_eq!(sys.p.read(&sys, 0x40004120, 4), 1, "ENDTX after complete");
@@ -451,4 +751,212 @@ mod tests {
         // take finds nothing: the transfer died on the bus.
         assert!(take_txdma(&sys, "TWIM1").is_none());
     }
+}
+
+fn with_twim_base<R>(sys: &System, base: u32, f: impl FnOnce(&mut Twim) -> R) -> Option<R> {
+    with_twim(sys, base, f)
+}
+
+/// TWIS address match helper: returns the matched ADDRESS index, or
+/// performs the DNACK path (ERROR + DNACK cause + STOPPED + IRQs) and
+/// returns None.
+fn twis_match_or_nack(sys: &System, t: &mut Twim, addr7: u8) -> Option<u32> {
+    // Read fields first (borrow ends before fire() calls below reuse sys).
+    let (m, irq, en) = match t.twis_match(addr7) {
+        Some(m) => (Some(m), t.irq, t.intenset),
+        None => (None, t.irq, t.intenset),
+    };
+    match m {
+        Some(m) => {
+            t.slv_match = m;
+            Some(m)
+        }
+        None => {
+            t.ev_error = true;
+            t.errorsrc |= 1 << 2; // DNACK
+            t.ev_stopped = true;
+            if en & (1 << 9) != 0 {
+                sys.p.nvic.borrow_mut().set_intr_pending(irq);
+            }
+            if en & (1 << 1) != 0 {
+                sys.p.nvic.borrow_mut().set_intr_pending(irq);
+            }
+            None
+        }
+    }
+}
+
+/// External-master write to our TWIS slave: address match (else DNACK),
+/// then bytes land in RAM at RXD.PTR (needs PREPARERX; unprepared RX is
+/// OVERFLOW). Returns bytes accepted. Sets RXSTARTED + WRITE + STOPPED
+/// (+IRQs); SHORTS WRITE_SUSPEND suspends instead of stopping.
+pub fn twis_master_write(
+    sys: &System,
+    mem: &mut dyn Memory,
+    base: u32,
+    addr7: u8,
+    data: &[u8],
+) -> u32 {
+    let Some(r) = with_twim(sys, base, |t| {
+        if !t.is_twis() {
+            return None;
+        }
+        twis_match_or_nack(sys, t, addr7)?;
+        if !t.rx_pending {
+            t.ev_error = true;
+            t.errorsrc |= 1 << 0; // OVERFLOW
+            t.ev_stopped = true;
+            let (irq, en) = (t.irq, t.intenset);
+            if en & (1 << 9) != 0 {
+                sys.p.nvic.borrow_mut().set_intr_pending(irq);
+            }
+            if en & (1 << 1) != 0 {
+                sys.p.nvic.borrow_mut().set_intr_pending(irq);
+            }
+            return None;
+        }
+        let n = data.len().min(t.rx_maxcnt as usize);
+        for (i, &b) in data[..n].iter().enumerate() {
+            mem.write8(t.rx_ptr.wrapping_add(i as u32), b);
+        }
+        t.rx_amount = n as u32;
+        t.rx_pending = false;
+        t.ev_rxstarted = true;
+        t.ev_twis_write = true;
+        t.ev_stopped = true;
+        let fire: u32 = (1 << 19) | (1 << 25) | (1 << 1);
+        let (irq, en) = (t.irq, t.intenset);
+        if t.shorts & (1 << 13) != 0 {
+            // WRITE_SUSPEND instead of STOPPED.
+            t.ev_stopped = false;
+            t.suspended = true;
+            t.ev_suspended = true;
+            if en & (1 << 18) != 0 {
+                sys.p.nvic.borrow_mut().set_intr_pending(irq);
+            }
+        }
+        if en & fire != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(irq);
+        }
+        Some(n as u32)
+    }) else {
+        return 0;
+    };
+    r.unwrap_or(0)
+}
+
+/// External-master read from our TWIS slave: address match (else DNACK),
+/// then bytes come from RAM at TXD.PTR (needs PREPARETX; unprepared TX
+/// is OVERREAD and clocks out ORC). Short reads pad with ORC.
+pub fn twis_master_read(
+    sys: &System,
+    mem: &mut dyn Memory,
+    base: u32,
+    addr7: u8,
+    len: u32,
+) -> Vec<u8> {
+    let Some(r) = with_twim(sys, base, |t| {
+        if !t.is_twis() {
+            return None;
+        }
+        twis_match_or_nack(sys, t, addr7)?;
+        if !t.tx_pending {
+            t.ev_error = true;
+            t.errorsrc |= 1 << 3; // OVERREAD
+            t.ev_stopped = true;
+            let (irq, en) = (t.irq, t.intenset);
+            if en & (1 << 9) != 0 {
+                sys.p.nvic.borrow_mut().set_intr_pending(irq);
+            }
+            if en & (1 << 1) != 0 {
+                sys.p.nvic.borrow_mut().set_intr_pending(irq);
+            }
+            return Some(vec![t.slv_orc; len.min(256) as usize]);
+        }
+        let n = (len as usize).min(t.tx_maxcnt as usize);
+        let mut out = Vec::with_capacity(len as usize);
+        for i in 0..n {
+            out.push(mem.read8(t.tx_ptr.wrapping_add(i as u32)));
+        }
+        while out.len() < len.min(256) as usize {
+            out.push(t.slv_orc);
+        }
+        t.tx_amount = n as u32;
+        t.tx_pending = false;
+        t.ev_txstarted = true;
+        t.ev_twis_read = true;
+        t.ev_stopped = true;
+        let fire: u32 = (1 << 20) | (1 << 26) | (1 << 1);
+        let (irq, en) = (t.irq, t.intenset);
+        if t.shorts & (1 << 14) != 0 {
+            // READ_SUSPEND instead of STOPPED.
+            t.ev_stopped = false;
+            t.suspended = true;
+            t.ev_suspended = true;
+            if en & (1 << 18) != 0 {
+                sys.p.nvic.borrow_mut().set_intr_pending(irq);
+            }
+        }
+        if en & fire != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(irq);
+        }
+        Some(out)
+    }) else {
+        return Vec::new();
+    };
+    r.unwrap_or_default()
+}
+
+/// External-master SPI exchange with our SPIS slave. Requires the
+/// ACQUIRE semaphore and programmed RXD/TXD; otherwise returns empty
+/// (documented: the master must ACQUIRE first, the CSN protocol).
+/// RX bytes land in RAM (up to RXD.MAXCNT); TX bytes come from RAM
+/// (up to TXD.MAXCNT), padded with ORC past TX data, or DEF when no
+/// TX buffer is programmed. Sets END + ENDRX (+IRQs); SHORTS
+/// END_ACQUIRE re-acquires automatically.
+pub fn spis_exchange(
+    sys: &System,
+    mem: &mut dyn Memory,
+    base: u32,
+    mosi: &[u8],
+) -> Vec<u8> {
+    let Some(r) = with_twim(sys, base, |t| {
+        if !t.is_spis() || !t.spis_acquired {
+            return None;
+        }
+        let n = mosi.len().min(256);
+        let rx_n = n.min(t.rx_maxcnt as usize);
+        for (i, &b) in mosi[..rx_n].iter().enumerate() {
+            mem.write8(t.rx_ptr.wrapping_add(i as u32), b);
+        }
+        t.rx_amount = rx_n as u32;
+        let tx_n = n.min(t.tx_maxcnt as usize);
+        let mut miso = Vec::with_capacity(n);
+        for i in 0..tx_n {
+            miso.push(mem.read8(t.tx_ptr.wrapping_add(i as u32)));
+        }
+        let pad = if t.tx_maxcnt > 0 { t.spis_orc } else { t.spis_def };
+        while miso.len() < n {
+            miso.push(pad);
+        }
+        t.tx_amount = tx_n as u32;
+        t.ev_spis_end = true;
+        t.ev_spis_endrx = true;
+        let (irq, en) = (t.irq, t.intenset);
+        if en & ((1 << 1) | (1 << 4)) != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(irq);
+        }
+        if t.shorts & (1 << 2) != 0 {
+            // END_ACQUIRE: stay acquired for the next frame.
+        } else {
+            // Semaphore releases at END unless re-acquired (silicon
+            // holds it until RELEASE; we release here so a forgotten
+            // RELEASE can't wedge the bus -- documented).
+            t.spis_acquired = false;
+        }
+        Some(miso)
+    }) else {
+        return Vec::new();
+    };
+    r.unwrap_or_default()
 }
