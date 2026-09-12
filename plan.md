@@ -585,3 +585,61 @@ practice since firmware re-inits).
 npm: `microbit-v2-emulator@0.1.0` publish BLOCKED (registry 401, no
 credentials in this environment; `npm publish` from demo/ when
 authenticated).
+
+## 25. P24 fault-path narrowing + browser-stall rooting (2026-09-12)
+
+Listener walk (tasks 1+2), all verified against fresh
+lancaster-university/codal-core + codal-microbit-v2 checkouts:
+- `0x52C2E` = MemberFunctionCallback::fire (`ldr r5,[r4,#20]` is the
+  `invoke` ptr: object@0, method[4]@4, invoke@20 — exact match), called
+  from the queue-drain loop (`bl 0x52C2E` @`0x51976`, ret `0x5197B`).
+  The bus/listener machinery is HEALTHY; the NULL is born downstream.
+- Fault fn `0x4F74C`: `ldr r0,[r0,#2340]; ldr r3,[r0]; ldr r3,[r3,#40];
+  bx r3` (C++ virtual, slot 10). At fault r0=0: the OBJECT is NULL
+  (reads alias flash `0x924`/`0x28`, dies on the null slot).
+- Caller `0x4F690` = mp_call_function-shaped (`blx r4` @`0x4F6C8`).
+- Below the fault, repeating dispatch records for a GPIO pin-TOGGLE
+  virtual (`0x28744`: pin# @obj+16, toggles `GPIO->OUT`): obj
+  `0x20002D94`, vtable `0x57A1C`, pin# 0 (= P0.00 = speaker), nested x2.
+  Tick fan-out drives speaker toggles; MP NULL-call sits above. P21
+  suspect (a) (audio fetcher, no source) still fits best.
+- Listener-shape RAM scan was too loose (false positives); frame-math
+  unwinding needs exact prologues — both documented dead ends. NEXT:
+  capture SVC40 args / identify the firing (id,value) at the drain.
+
+Prompt-first (task 3): tick-pause can't work (TX staging needs the
+tick); eager same-call TX completion changes nothing (fault ~177M,
+no prompt on wire either way). The NULL call always wins natively.
+
+Browser stall (task 3 fallout), ROOTED though not yet fixed:
+- Measured only ~300K instr/s in this Chromium (both old and fresh
+  pkg stall identically; parts-off stalls too; image/UICR/params all
+  byte-verified identical to native). Native banner threshold is
+  ~150-260M, so 480s runs (~144M) simply never arrive. P20's 150s
+  banner = faster environment, not a different build.
+- Coarse quanta genuinely slow progress per instruction (5K: banner
+  ~180M; 20K: "Mic"@200M; 100K: nothing@260M) — tick-starved waits
+  burn instructions spinning. Demo pump changed to 20x5K+tick
+  (matches validated native quantum; duties once per frame).
+- Demo dwells at an NVMC-op spin (`0x215AC`, waits `*0x20004A9E`;
+  NVMC idle/READY=1/CONFIG=0, flag never sets) while native dwells
+  at `0x200021B9` then banners. The spin entry calls SVC40
+  (`0x4EBEC` = `svc 40` + return): SD returns 0 in-demo (wait path)
+  vs nonzero natively (delay+retry path, eventually banners).
+  Pre-roll (2M MBR/BL), TX policy, drip, parts, UICR, image all
+  EXCLUDED as the differentiator. NEXT: capture SVC40's r0 sequence
+  natively (100K sampling too coarse — needs an SVC hook or finer
+  quanta) and identify SD SVC#40's gating state; then read that
+  state in-demo.
+- OPEN perf item: verify pkg profile (dev vs --release; both builds
+  sized ~1.55MB, inconclusive) — release WASM should be several x
+  faster and would bring the banner into comfortable wall time.
+
+BL entry anchored (4a, 2026-09-12): BL VT @`0x77000` (SP=`0x20020000`,
+reset `0x772F9`). Entry copies .data `0x7D320`->`0x20002AE8..B4`,
+calls `0x77354` (BL main) + `0x77290`. Main head: `bl 0x77334` check;
+on nonzero clears `0x4000010C/110/538`; on second nonzero copies
+FICR `0x10000404-444` (DEVICEID/ER/IR/DEVICEADDR) to RAM struct
+(`*(0x774B0)`+`0x520`…). Continues at `0x77404` toward the IPR22
+check / `0x783FE` park (P22). NEXT: trace `0x77404`→IPR22→park,
+capture r0 at the init-runner cmp.

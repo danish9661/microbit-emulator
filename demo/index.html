@@ -300,18 +300,26 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   }
   function frame() {
     if (cpu) {
-      cpu.step(20000);
-      wasm.tick_peripherals();
+      // Fine-grained pump (20x5K + tick each): matches the validated
+      // native driver quantum. Coarse single steps measurably slow
+      // tick-starved boot handshakes (native 100K-quantum runs never
+      // reach the banner in 260M); duties stay once per frame below.
+      for (let k = 0; k < 20; k++) {
+        cpu.step(5000);
+        wasm.tick_peripherals();
+        if (cpu.fault_pc() !== 0xFFFFFFFF) break;
+        if (cpu.sleeping()) {
+          // Firmware idles in WFE/WFI (the MicroPython scheduler does this
+          // constantly): advance virtual time so a future peripheral IRQ can
+          // pend, then wake on one. Without this the core naps forever the
+          // first time it idles (found via MicroPython REPL bring-up).
+          wasm.tick_n(5000);
+          if (wasm.has_pending_interrupt()) cpu.wake();
+        }
+      }
       const fpc = cpu.fault_pc();
       if (fpc !== 0xFFFFFFFF) {
         status.textContent = `CPU fault pc=${(fpc >>> 0).toString(16)} op=${cpu.fault_op1().toString(16)} (see console-style UART above)`;
-      } else if (cpu.sleeping()) {
-        // Firmware idles in WFE/WFI (the MicroPython scheduler does this
-        // constantly): advance virtual time so a future peripheral IRQ can
-        // pend, then wake on one. Without this the core naps forever the
-        // first time it idles (found via MicroPython REPL bring-up).
-        wasm.tick_n(20000);
-        if (wasm.has_pending_interrupt()) cpu.wake();
       }
       pumpDma();
       // Drip one typed byte per consumed RXDRDY (see above). The byte is

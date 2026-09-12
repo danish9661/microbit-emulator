@@ -86,11 +86,38 @@ yet): ECB/AAR take-complete, NFCT beyond proof, MWU beyond proof.
 ## 5. Real-firmware results (all executed, zero CPU faults except MPY §6.1)
 
 - MicroPython v2.1.2: boots (MBR-param seeds + sleep-aware pump),
-  uBit.init() completes, **banner body prints** (native and headless
-  Chrome); headless-Chrome run (P20) also showed the `>>>` prompt with
-  no fault over 240s+. Natively the prompt is composed in the TX ring
+  uBit.init() completes, **banner body prints** natively; the
+  headless-Chrome P20 run (banner+prompt, no fault) does NOT
+  reproduce in the current environment — old and fresh pkgs stall
+  identically pre-banner (measured ~300K instr/s vs a ~150–260M
+  threshold; 480s runs ≈144M never arrive). P20 = faster machine,
+  not a different build. Demo pump switched to 20x5K+tick (matches
+  the validated native quantum; coarse quanta measurably slow
+  tick-starved waits). Natively the prompt is composed in the TX ring
   but never DMA-staged (queued + `is_tx` false, no kick source found);
   input bytes land in the DMA buffer but the ring stays empty.
+  Post-banner NULL fault narrowed (Sept-12, plan P24–P25): C++ virtual
+  through NULL `this` (`bx r3 @0x4F75A`, r0=0) via mp_call_function;
+  tick-scheduled (TIMER1-only suffices; all-IRQ-cut parks clean);
+  RX/TX IRQ paths, TX pacing, drip, parts, UICR, image, MBR pre-roll
+  all excluded. Prime suspect: audio/speaker tick path (pin-toggle
+  virtuals @`0x28744`, P0.00) into an MP call with no source.
+- MakeCode (`basic.showString("A")`, rebuilt 2026-09-12 with makecode
+  1.3.6, recipe in plan P19; project in `mc/`, gitignored): boots to
+  scheduler idle (decoded as the normal CODAL idle fiber, not a
+  hang), but the display never enables — TIMER4 COUNTER stays 0 over
+  620M (CC0 armed, IRQ27 enabled), matrix DIR ever 0. Stuck-or-slow
+  settled as stuck: uBit.init parks in scheduler idle with main's
+  print never driving refresh. NEXT: fiber walk (did main's scroll
+  fiber run?) + who calls NRF52LEDMatrix::enable.
+- Espruino 2v29: boots (needed the CoreSight PID map); console is
+  P0.06 bit-bang serial, nothing transmitted in early windows.
+- Bootloader chain (P22–P23 + Sept-12 anchor): entry decoded at BL
+  VT `0x77000` (reset `0x772F9`: .data copy + BL-main call); main
+  head gathers FICR DEVICEID/ER/IR/DEVICEADDR to RAM. SD initializes
+  after the two core fixes (canary `0xCAFEBABE`); MBR→SD→app path
+  still open, no-BL MBR-param→SD→app path used instead. NEXT: trace
+  `0x77404`→IPR22 check→`0x783FE` park, capture r0 at the cmp.
 - MakeCode (`basic.showString`, locally built): boots to scheduler,
   TIMER4 display refresh runs (rows strobe, blank — content never
   drawn, DIR stays 0 which is correct pre-first-show).
@@ -104,24 +131,26 @@ yet): ECB/AAR take-complete, NFCT beyond proof, MWU beyond proof.
 ## 6. LEFT — prioritized
 
 1. **REPL exec (`print(1+2)` → `3`)**. Deterministic post-banner NULL
-   fault, now narrowed hard (Sept-12 probe series, all native):
+   fault, narrowed hard (plan P24–P25; all native):
    - `bx r3` with r3=0 @`0x4F75A` (`ldr r0,[r0,#2340]; ldr r3,[r0];
      ldr r3,[r3,#40]; bx r3` — C++ virtual call, vtable slot 10).
    - **The object pointer itself is NULL** (r0=0 on entry; reads alias
      flash `0x924`/`0x28`, dies on the null slot). Caller is
-     `mp_call_function`-shaped (`blx r4` @`0x4F690`); stack return
-     pcs `0x4F6CB/0x4F691/0x52C4F/0x5250B/0x5197B`.
+     `mp_call_function`-shaped (`blx r4` @`0x4F690`); queue-drain
+     (`bl 0x52C2E` @`0x51976`) → MemberFunctionCallback::fire
+     (`0x52C2E`, layout-verified) → … → NULL call. Bus machinery
+     healthy; NULL born downstream (audio/speaker tick path fits:
+     P0.00 pin-toggle virtuals nested under the fault).
    - RX-event group unsubscribed → still fires. TX group
      unsubscribed (DMA kept alive) → still fires. ALL IRQs cut →
      no fault (thread parks in idle @`0x4D939`). TIMER1-only →
      still fires. So: **tick-scheduled MicroPython work, no
      peripheral handler delivers it, RX/TX IRQ paths excluded**.
    - Fires natively just after the banner body, before the prompt is
-     staged; absent in the headless-Chrome run (timing-dependent).
-   - Next steps: (a) walk the messageBus listener list at fault (field
-     map in plan P21); (b) identify the NULL `this` (which
-     stream/device object is expected at +2340/+2336); (c) test whether
-     completing the prompt write first (browser timing) always avoids it.
+     staged. Prompt-first is not achievable by pump policy
+     (tick-pause impossible — TX staging needs the tick; eager TX
+     completion changes nothing). P20's browser prompt+no-fault is
+     env-specific (see §5) and unavailable as schedule evidence.
    - Companion stall: prompt sits in TX ring, `is_tx` false, no kick
      source; readline never consumes a non-empty RX ring.
 2. **TX byte drops** (~3% single-byte N+1 substitutions, cosmetic).
@@ -130,12 +159,18 @@ yet): ECB/AAR take-complete, NFCT beyond proof, MWU beyond proof.
    pump read/completion timing, STOPTX arm, stack/heap collision all
    exonerated. Open: exact double-stage source.
 3. **Bootloader full chain** (MBR→BL→SD→app; direct-app boot works
-   around it). BL reset-loops on a validation error; next step is
-   anchored disassembly from the BL vector + capturing r0 at the
-   init-runner compare.
-4. **MakeCode display content** (refresh runs blank) + BLE events
-   (no radio attempts; needs SD event synthesis, see below).
+   around it). BL entry + main head now decoded (plan P25); still
+   resets at the validation step (`0x783FE` park). NEXT: trace
+   `0x77404`→IPR22 check→park, capture r0 at the cmp.
+4. **MakeCode display content** (TIMER4 never STARTs; DIR ever 0;
+   scheduler-idle park is normal, main's print never drives refresh)
+   + BLE events (no radio attempts; needs SD event synthesis).
+   NEXT: fiber walk + NRF52LEDMatrix::enable caller.
 5. **SPIM2/3 I2C-tap routing** (DMA works; tap routing open).
+6. **Demo wall-time**: banner needs ~150–260M at ~300K–1.5M instr/s
+   in this Chromium — 600s+ per boot. NEXT: verify pkg profile
+   (dev vs --release; both builds ~1.55MB, inconclusive) — release
+   WASM should be several x faster.
 
 ## 7. Deliberately out of scope
 

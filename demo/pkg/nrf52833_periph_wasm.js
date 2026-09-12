@@ -218,6 +218,27 @@ export class WasmCpu {
         return ret !== 0;
     }
     /**
+     * External-master SPI exchange with our SPIS slave (MISO bytes out).
+     * @param {number} base
+     * @param {Uint8Array} mosi
+     * @returns {Uint8Array}
+     */
+    spis_exchange(base, mosi) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            const ptr0 = passArray8ToWasm0(mosi, wasm.__wbindgen_export2);
+            const len0 = WASM_VECTOR_LEN;
+            wasm.wasmcpu_spis_exchange(retptr, this.__wbg_ptr, base, ptr0, len0);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v2 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export(r0, r1 * 1, 1);
+            return v2;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
      * @param {number} budget
      * @returns {number}
      */
@@ -247,6 +268,40 @@ export class WasmCpu {
     trace_stop() {
         wasm.wasmcpu_trace_stop(this.__wbg_ptr);
     }
+    /**
+     * External-master I2C read from our TWIS slave (ORC-padded).
+     * @param {number} base
+     * @param {number} addr
+     * @param {number} len
+     * @returns {Uint8Array}
+     */
+    twis_master_read(base, addr, len) {
+        try {
+            const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+            wasm.wasmcpu_twis_master_read(retptr, this.__wbg_ptr, base, addr, len);
+            var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+            var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+            var v1 = getArrayU8FromWasm0(r0, r1).slice();
+            wasm.__wbindgen_export(r0, r1 * 1, 1);
+            return v1;
+        } finally {
+            wasm.__wbindgen_add_to_stack_pointer(16);
+        }
+    }
+    /**
+     * External-master I2C write to our TWIS slave at `base`/`addr7`.
+     * Returns bytes accepted (0 on NACK/overflow; see error events).
+     * @param {number} base
+     * @param {number} addr
+     * @param {Uint8Array} data
+     * @returns {number}
+     */
+    twis_master_write(base, addr, data) {
+        const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.wasmcpu_twis_master_write(this.__wbg_ptr, base, addr, ptr0, len0);
+        return ret >>> 0;
+    }
     wake() {
         wasm.wasmcpu_wake(this.__wbg_ptr);
     }
@@ -266,6 +321,37 @@ export class WasmCpu {
     }
 }
 if (Symbol.dispose) WasmCpu.prototype[Symbol.dispose] = WasmCpu.prototype.free;
+
+/**
+ * @param {boolean} mic_ok
+ */
+export function ccm_complete(mic_ok) {
+    wasm.ccm_complete(mic_ok);
+}
+
+/**
+ * @returns {Uint32Array}
+ */
+export function ccm_take_job() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.ccm_take_job(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * @param {number} mv
+ */
+export function comp_set_input_mv(mv) {
+    wasm.comp_set_input_mv(mv);
+}
 
 /**
  * @returns {number}
@@ -469,6 +555,58 @@ export function is_watchdog_reset_requested() {
     return ret !== 0;
 }
 
+/**
+ * @param {number} amount
+ */
+export function nfct_complete_rx(amount) {
+    wasm.nfct_complete_rx(amount);
+}
+
+export function nfct_complete_tx() {
+    wasm.nfct_complete_tx();
+}
+
+/**
+ * @param {boolean} present
+ */
+export function nfct_field_present(present) {
+    wasm.nfct_field_present(present);
+}
+
+/**
+ * @returns {Uint32Array}
+ */
+export function nfct_take_rx() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.nfct_take_rx(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * @returns {Uint32Array}
+ */
+export function nfct_take_tx() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.nfct_take_tx(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
 export function nvmc_complete_erase() {
     wasm.nvmc_complete_erase();
 }
@@ -528,6 +666,13 @@ export function periph_read(addr, width) {
  */
 export function periph_write(addr, width, value) {
     wasm.periph_write(addr, width, value);
+}
+
+/**
+ * @param {number} dir
+ */
+export function qdec_step(dir) {
+    wasm.qdec_step(dir);
 }
 
 /**
@@ -615,6 +760,23 @@ export function qspi_take_write() {
     }
 }
 
+export function radio_complete_rx() {
+    wasm.radio_complete_rx();
+}
+
+export function radio_complete_tx() {
+    wasm.radio_complete_tx();
+}
+
+/**
+ * @param {Uint8Array} bytes
+ */
+export function radio_inject_corrupt(bytes) {
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.radio_inject_corrupt(ptr0, len0);
+}
+
 /**
  * @param {Uint8Array} bytes
  */
@@ -622,6 +784,30 @@ export function radio_inject_rx(bytes) {
     const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
     wasm.radio_inject_rx(ptr0, len0);
+}
+
+/**
+ * @param {number} dbm
+ */
+export function radio_set_rssi_dbm(dbm) {
+    wasm.radio_set_rssi_dbm(dbm);
+}
+
+/**
+ * @returns {Uint32Array}
+ */
+export function radio_take_rx() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.radio_take_rx(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
 }
 
 /**
@@ -646,6 +832,14 @@ export function radio_take_tx() {
  */
 export function reset_state() {
     wasm.reset_state();
+}
+
+/**
+ * @param {number} ch
+ * @param {number} value
+ */
+export function saadc_check_limits(ch, value) {
+    wasm.saadc_check_limits(ch, value);
 }
 
 /**
@@ -724,6 +918,13 @@ export function spi_tap(peripheral, cs, dc) {
     var ptr2 = isLikeNone(dc) ? 0 : passStringToWasm0(dc, wasm.__wbindgen_export2, wasm.__wbindgen_export3);
     var len2 = WASM_VECTOR_LEN;
     wasm.spi_tap(ptr0, len0, ptr1, len1, ptr2, len2);
+}
+
+/**
+ * @param {number} c
+ */
+export function temp_set_celsius(c) {
+    wasm.temp_set_celsius(c);
 }
 
 export function tick() {

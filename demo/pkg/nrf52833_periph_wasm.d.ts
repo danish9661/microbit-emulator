@@ -28,14 +28,33 @@ export class WasmCpu {
     set_fpscr(v: number): void;
     set_sreg(i: number, v: number): void;
     sleeping(): boolean;
+    /**
+     * External-master SPI exchange with our SPIS slave (MISO bytes out).
+     */
+    spis_exchange(base: number, mosi: Uint8Array): Uint8Array;
     step(budget: number): number;
     take_trace(): Uint32Array;
     trace_start(): void;
     trace_stop(): void;
+    /**
+     * External-master I2C read from our TWIS slave (ORC-padded).
+     */
+    twis_master_read(base: number, addr: number, len: number): Uint8Array;
+    /**
+     * External-master I2C write to our TWIS slave at `base`/`addr7`.
+     * Returns bytes accepted (0 on NACK/overflow; see error events).
+     */
+    twis_master_write(base: number, addr: number, data: Uint8Array): number;
     wake(): void;
     write32(addr: number, v: number): void;
     write8(addr: number, v: number): void;
 }
+
+export function ccm_complete(mic_ok: boolean): void;
+
+export function ccm_take_job(): Uint32Array;
+
+export function comp_set_input_mv(mv: number): void;
 
 export function get_next_pending_interrupt(): number;
 
@@ -89,6 +108,16 @@ export function init_svd(svd_xml: string): void;
  */
 export function is_watchdog_reset_requested(): boolean;
 
+export function nfct_complete_rx(amount: number): void;
+
+export function nfct_complete_tx(): void;
+
+export function nfct_field_present(present: boolean): void;
+
+export function nfct_take_rx(): Uint32Array;
+
+export function nfct_take_tx(): Uint32Array;
+
 export function nvmc_complete_erase(): void;
 
 export function nvmc_take_erase(): Uint32Array;
@@ -100,6 +129,8 @@ export function pdm_take_sample(): Uint32Array;
 export function periph_read(addr: number, width: number): number;
 
 export function periph_write(addr: number, width: number, value: number): void;
+
+export function qdec_step(dir: number): void;
 
 export function qspi_complete_erase(ptr: number, len_code: number): void;
 
@@ -115,7 +146,17 @@ export function qspi_take_read(): Uint32Array;
 
 export function qspi_take_write(): Uint32Array;
 
+export function radio_complete_rx(): void;
+
+export function radio_complete_tx(): void;
+
+export function radio_inject_corrupt(bytes: Uint8Array): void;
+
 export function radio_inject_rx(bytes: Uint8Array): void;
+
+export function radio_set_rssi_dbm(dbm: number): void;
+
+export function radio_take_rx(): Uint32Array;
 
 export function radio_take_tx(): Uint32Array;
 
@@ -123,6 +164,8 @@ export function radio_take_tx(): Uint32Array;
  * Clear all process-lifetime globals so a NEW emulator instance starts clean.
  */
 export function reset_state(): void;
+
+export function saadc_check_limits(ch: number, value: number): void;
 
 export function saadc_complete_result(amount: number): void;
 
@@ -135,6 +178,8 @@ export function spi_push_miso(peripheral: string, bytes: Uint8Array): void;
 export function spi_take_events(peripheral: string): Uint32Array;
 
 export function spi_tap(peripheral: string, cs?: string | null, dc?: string | null): void;
+
+export function temp_set_celsius(c: number): void;
 
 export function tick(): void;
 
@@ -184,6 +229,9 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmcpu_free: (a: number, b: number) => void;
+    readonly ccm_complete: (a: number) => void;
+    readonly ccm_take_job: (a: number) => void;
+    readonly comp_set_input_mv: (a: number) => void;
     readonly get_next_pending_interrupt: () => number;
     readonly get_uart_output: (a: number) => void;
     readonly gpio_read_input: (a: number, b: number) => number;
@@ -201,12 +249,18 @@ export interface InitOutput {
     readonly init: () => void;
     readonly init_svd: (a: number, b: number) => void;
     readonly is_watchdog_reset_requested: () => number;
+    readonly nfct_complete_rx: (a: number) => void;
+    readonly nfct_complete_tx: () => void;
+    readonly nfct_field_present: (a: number) => void;
+    readonly nfct_take_rx: (a: number) => void;
+    readonly nfct_take_tx: (a: number) => void;
     readonly nvmc_complete_erase: () => void;
     readonly nvmc_take_erase: (a: number) => void;
     readonly pdm_complete_sample: () => void;
     readonly pdm_take_sample: (a: number) => void;
     readonly periph_read: (a: number, b: number) => number;
     readonly periph_write: (a: number, b: number, c: number) => void;
+    readonly qdec_step: (a: number) => void;
     readonly qspi_complete_erase: (a: number, b: number) => void;
     readonly qspi_complete_read: () => void;
     readonly qspi_complete_write: (a: number, b: number, c: number) => void;
@@ -214,15 +268,22 @@ export interface InitOutput {
     readonly qspi_take_erase: (a: number) => void;
     readonly qspi_take_read: (a: number) => void;
     readonly qspi_take_write: (a: number) => void;
+    readonly radio_complete_rx: () => void;
+    readonly radio_complete_tx: () => void;
+    readonly radio_inject_corrupt: (a: number, b: number) => void;
     readonly radio_inject_rx: (a: number, b: number) => void;
+    readonly radio_set_rssi_dbm: (a: number) => void;
+    readonly radio_take_rx: (a: number) => void;
     readonly radio_take_tx: (a: number) => void;
     readonly reset_state: () => void;
+    readonly saadc_check_limits: (a: number, b: number) => void;
     readonly saadc_complete_result: (a: number) => void;
     readonly saadc_take_result: (a: number) => void;
     readonly set_intr_pending: (a: number) => void;
     readonly spi_push_miso: (a: number, b: number, c: number, d: number) => void;
     readonly spi_take_events: (a: number, b: number, c: number) => void;
     readonly spi_tap: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly temp_set_celsius: (a: number) => void;
     readonly tick: () => void;
     readonly tick_n: (a: number) => void;
     readonly tick_peripherals: () => void;
@@ -265,10 +326,13 @@ export interface InitOutput {
     readonly wasmcpu_set_fpscr: (a: number, b: number) => void;
     readonly wasmcpu_set_sreg: (a: number, b: number, c: number) => void;
     readonly wasmcpu_sleeping: (a: number) => number;
+    readonly wasmcpu_spis_exchange: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly wasmcpu_step: (a: number, b: number) => number;
     readonly wasmcpu_take_trace: (a: number, b: number) => void;
     readonly wasmcpu_trace_start: (a: number) => void;
     readonly wasmcpu_trace_stop: (a: number) => void;
+    readonly wasmcpu_twis_master_read: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly wasmcpu_twis_master_write: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly wasmcpu_wake: (a: number) => void;
     readonly wasmcpu_write32: (a: number, b: number, c: number) => void;
     readonly wasmcpu_write8: (a: number, b: number, c: number) => void;
