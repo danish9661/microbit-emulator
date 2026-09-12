@@ -331,6 +331,39 @@ fn nrf_usbdev_c_setup_and_epin_flash_dma() {
 }
 
 #[test]
+fn nrf_nfct_field_select_and_frames() {
+    // nfct_nrf.s (GCC): ENABLE+SENSE, field pre-presented by the driver,
+    // ACTIVATE->SELECTED, TX frame completed driver-side, RX buffer filled
+    // driver-side and verified by firmware ('R').
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/nfct_nrf.bin"));
+    let sys = crate::sys();
+    crate::peripherals::nfct_nrf::nfct_field_present(sys, true);
+    // Phase 1: firmware consumes FIELDDETECTED, activates, stages TX.
+    cpu.run(sys, &mut mem, 60_000);
+    let (ptr, len) = crate::peripherals::nfct_nrf::take_nfct_tx(sys).expect("tx staged");
+    let bytes: Vec<u8> = (0..len).map(|i| mem.read8(ptr.wrapping_add(i))).collect();
+    assert_eq!(bytes, vec![0xD0, 0x07, 0x86, 0x77], "payload bytes");
+    crate::peripherals::nfct_nrf::complete_nfct_tx(sys);
+    // Phase 2: firmware repoints at RAM, arms RX, spins on RXFRAMEEND.
+    cpu.run(sys, &mut mem, 200_000);
+    let (ptr, len) = crate::peripherals::nfct_nrf::take_nfct_rx(sys).expect("rx staged");
+    assert_eq!((ptr, len), (0x20001000, 4));
+    for (i, &b) in b"RESP".iter().enumerate() {
+        mem.write8(ptr.wrapping_add(i as u32), b);
+    }
+    crate::peripherals::nfct_nrf::complete_nfct_rx(sys, 4);
+    // Phase 3: drain to done loop.
+    cpu.run(sys, &mut mem, 2_000_000);
+    assert!(cpu.fault.is_none(), "nfct faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("NFC:OK"), "missing NFC marker, got {out:?}");
+    assert!(out.contains("NFCT:OK"), "missing NFCT marker, got {out:?}");
+}
+
+#[test]
 fn nrf_ecb_aes128_fips_vector() {
     // ECB encrypts driver-side (the model has no RAM handle): stage via
     // registers, take dataptr, AES-128 in the driver, write back, complete.

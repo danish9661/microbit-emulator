@@ -261,6 +261,32 @@ pub fn i2s_take_capture() -> Vec<u8> {
     system::i2s_take_capture()
 }
 
+// ── NFCT tag driver API ──
+#[wasm_bindgen]
+pub fn nfct_field_present(present: bool) {
+    crate::peripherals::nfct_nrf::nfct_field_present(sys(), present);
+}
+
+#[wasm_bindgen]
+pub fn nfct_take_tx() -> Vec<u32> {
+    crate::peripherals::nfct_nrf::take_nfct_tx(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn nfct_complete_tx() {
+    crate::peripherals::nfct_nrf::complete_nfct_tx(sys());
+}
+
+#[wasm_bindgen]
+pub fn nfct_take_rx() -> Vec<u32> {
+    crate::peripherals::nfct_nrf::take_nfct_rx(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn nfct_complete_rx(amount: u32) {
+    crate::peripherals::nfct_nrf::complete_nfct_rx(sys(), amount);
+}
+
 // ── COMP/QDEC host driver API ──
 #[wasm_bindgen]
 pub fn comp_set_input_mv(mv: u32) {
