@@ -261,6 +261,17 @@ pub fn i2s_take_capture() -> Vec<u8> {
     system::i2s_take_capture()
 }
 
+// ── COMP/QDEC host driver API ──
+#[wasm_bindgen]
+pub fn comp_set_input_mv(mv: u32) {
+    crate::peripherals::comp_nrf::comp_set_input_mv(sys(), mv);
+}
+
+#[wasm_bindgen]
+pub fn qdec_step(dir: i32) {
+    crate::peripherals::qdec_nrf::qdec_step(sys(), dir);
+}
+
 // ── USBD endpoint driver API ──
 #[wasm_bindgen]
 pub fn usbd_take_epin() -> Vec<u32> {
