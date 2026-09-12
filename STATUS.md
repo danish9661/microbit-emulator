@@ -91,9 +91,8 @@ yet): ECB/AAR take-complete, NFCT beyond proof, MWU beyond proof.
   reproduce in the current environment — old and fresh pkgs stall
   identically pre-banner (measured ~300K instr/s vs a ~150–260M
   threshold; 480s runs ≈144M never arrive). P20 = faster machine,
-  not a different build. Demo pump switched to 20x5K+tick (matches
-  the validated native quantum; coarse quanta measurably slow
-  tick-starved waits). Natively the prompt is composed in the TX ring
+  not a different build (a fine-grained 20x5K demo pump was tried
+  and reverted — it faults at app entry, see item 1). Natively the prompt is composed in the TX ring
   but never DMA-staged (queued + `is_tx` false, no kick source found);
   input bytes land in the DMA buffer but the ring stays empty.
   Post-banner NULL fault narrowed (Sept-12, plan P24–P25): C++ virtual
@@ -153,6 +152,21 @@ yet): ECB/AAR take-complete, NFCT beyond proof, MWU beyond proof.
      env-specific (see §5) and unavailable as schedule evidence.
    - Companion stall: prompt sits in TX ring, `is_tx` false, no kick
      source; readline never consumes a non-empty RX ring.
+   - Demo-only divergence decoded (plan P26): the demo reaches the
+     flash-op waiter via `bl 0x215A2` (r0=0, r4=`0x74000`) with
+     returns `0x215A3/0x25633/0x263FD/0x23775`; the 0x502F8 subtree
+     is heap free-list code inside an fds/flash-write path (no direct
+     `bl`, no flash vtable — runtime-constructed pointer). SD SVC
+     numbers decoded from S132 headers (SVC18=is_enabled,
+     SVC40=page_erase, SVC41=write): native takes the skip branch
+     10/10, zero SVC40 over full boot; the demo waits on the SD-event
+     completion only sd_evt_get could deliver. WASM execution proven
+     equivalent (blinky prints in-demo <10s). Pre-roll (2/8/20M),
+     duty latency, drip, parts, USBD, image, UICR, params all
+     excluded. Pump sensitivity is real and open: the 20x5K demo
+     pump deterministically faults at app entry (`0x29C7A`,
+     `op=0xDEAD`) while 1x20K spins fault-free — reverted to 1x20K;
+     do not re-land without explaining the entry fault.
 2. **TX byte drops** (~3% single-byte N+1 substitutions, cosmetic).
    Verdict update: **bytes are staged wrong at the source**
    (`staged==taken==completed==uartlen`, substitution not loss);
@@ -168,9 +182,10 @@ yet): ECB/AAR take-complete, NFCT beyond proof, MWU beyond proof.
    NEXT: fiber walk + NRF52LEDMatrix::enable caller.
 5. **SPIM2/3 I2C-tap routing** (DMA works; tap routing open).
 6. **Demo wall-time**: banner needs ~150–260M at ~300K–1.5M instr/s
-   in this Chromium — 600s+ per boot. NEXT: verify pkg profile
-   (dev vs --release; both builds ~1.55MB, inconclusive) — release
-   WASM should be several x faster.
+   in this Chromium — 600s+ per boot. Pkg profile question closed:
+   dev and --release builds are byte-identical in this wasm-pack
+   setup (single profile); speed is environmental. Demo pump stays
+   1x20K (see item 1).
 
 ## 7. Deliberately out of scope
 

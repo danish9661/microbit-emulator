@@ -643,3 +643,47 @@ FICR `0x10000404-444` (DEVICEID/ER/IR/DEVICEADDR) to RAM struct
 (`*(0x774B0)`+`0x520`…). Continues at `0x77404` toward the IPR22
 check / `0x783FE` park (P22). NEXT: trace `0x77404`→IPR22→park,
 capture r0 at the init-runner cmp.
+
+## 26. P26 SD-SVC decode + waiter-chain + pump-sensitivity + blinky (2026-09-12)
+
+SVC numbers decoded from Arduino-nRF52 S132 headers (stable across
+S132/S140): SVC18 = sd_softdevice_is_enabled (SDM 0x10+2), SVC40 =
+sd_flash_page_erase (SoC 0x20+8), SVC41 = sd_flash_write. The
+0x21578-fn: NVMC CONFIG/READY dance + SVC18(is_enabled?) into
+[sp,#7]; 0 → skip (`0x215B8`); nonzero → SVC40(erase) → wait
+`*0x20004A9E` (SD-event completion — never comes: sd_evt_get is out
+of scope). Native SVC18 log (temp hook, reverted): 10 calls, all
+skip, zero SVC40 over full boot — native never enables the SD.
+Flash page 0x74000 verified erased in-image and never written
+natively; demo stuck-state reads it erased too.
+
+Demo-vs-native, settled findings:
+- Blinky (`BOOT/BLINK` via UARTE+GPIO) works in the demo (<10s):
+  WASM execution is equivalent to native. Divergence is
+  MPY-state-specific, not a WASM gap.
+- Demo stack capture at the spin: `bl 0x215A2` (waiter mid-entry,
+  r0=0) with r4=`0x74000` (flash page!) and returns
+  `0x215A3/0x25633/0x263FD/0x23775`. 0x502F8-subtree = heap free-list
+  (0x80000000 busy-bit) i.e. malloc inside an fds/flash-write path;
+  no direct `bl` to the waiter anywhere in flash (register call),
+  no flash vtable holds `0x215A3` (runtime-constructed pointer).
+  NEXT: widen the captured backtrace below 0x25633 (256B window
+  overflowed) to name the exact fds caller.
+- Pre-roll (2M/8M/20M MBR/BL), TX policy, duty latency, drip, parts,
+  UICR, image, MBR params, watchdog handling, USBD duties, RAM-clear
+  at reset: ALL excluded (native still banners+faults identically).
+  SVC40-hook pkg + svc_hook_drain export verified live in-browser
+  (zero SVC16/18/40 over 120s of spinning) — then fully reverted
+  (hook, export, instrumentation, probes; suite 185 green; pkg
+  rebuilt clean, hash-matches pre-hook bytes).
+- Pump-sensitivity (real, open): the 20x5K demo pump deterministically
+  faults at app entry (`0x29C7A`, `op=0xDEAD`) while 1x20K spins at
+  the waiter with no fault. Tick density changes app-entry behavior;
+  mechanism unknown (stale-IRQ-during-entry is the prime suspect but
+  bootImage re-inits, so unproven). REVERTED to 1x20K (this diff);
+  do not re-land fine-grained pumping without explaining the entry
+  fault.
+- Pkg profile question closed: dev and --release builds are byte-
+  identical in this wasm-pack setup (single profile); browser speed
+  (~300K/s-1.5M/s here) is environmental. Banner needs ~150-260M:
+  600s+ wall in this Chromium; P20 = faster machine.
