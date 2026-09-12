@@ -13,6 +13,14 @@ pub fn get_uart_output() -> &'static Mutex<String> {
 }
 
 #[cfg(test)]
+static BOOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Serialize tests that install the process-global system (boot() and
+/// any test driving mem hooks that need the installed instance).
+#[cfg(test)]
+pub(crate) fn lock_boot() -> std::sync::MutexGuard<'static, ()> {
+    BOOT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+#[cfg(test)]
 static UART_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Serialize tests that assert on the process-global UART buffer
 /// (firmware marker tests + peripheral console tests). Without it a
@@ -54,6 +62,16 @@ static WATCHDOG_RESET_EVENT: AtomicBool = AtomicBool::new(false);
 static RESETREAS_LATCH: AtomicU32 = AtomicU32::new(0);
 pub fn resetreas() -> u32 { RESETREAS_LATCH.load(Ordering::Acquire) }
 pub fn resetreas_clear(mask: u32) { RESETREAS_LATCH.fetch_and(!mask, Ordering::Release); }
+// MWU watch gate: set while any MWU region/pregion is armed. The memory
+// layer checks this single atomic per access (no cost when disarmed)
+// and calls mwu_note() only then.
+static MWU_ARMED: AtomicBool = AtomicBool::new(false);
+pub fn mwu_armed() -> bool {
+    MWU_ARMED.load(Ordering::Relaxed)
+}
+pub fn mwu_set_armed(v: bool) {
+    MWU_ARMED.store(v, Ordering::Relaxed)
+}
 // MPU master-enable latch (MPU_CTRL.ENABLE write). Level semantics follow
 // the register: clearing ENABLE clears this. The driver halts while set —
 // protection is not enforced, so running on would be silently wrong.

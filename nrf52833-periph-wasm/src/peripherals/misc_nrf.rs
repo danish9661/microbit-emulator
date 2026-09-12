@@ -419,9 +419,6 @@ mod tests {
     #[test]
     fn misc_stubs_handshake() {
         let sys = test_dummy_system();
-        let mut m = MwuNrf::default();
-        m.write(&sys, 0x500, 0x0F);
-        assert_eq!(m.read(&sys, 0x500), 0x0F);
         let mut e = EcbNrf::default();
         e.write(&sys, 0x504, 0x20001000); // ECBDATAPTR
         e.write(&sys, 0x000, 1); // STARTECB stages

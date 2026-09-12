@@ -12,9 +12,8 @@ use super::{Cpu, mem::FlatMemory};
 use super::mem::Memory;
 use crate::system::WasmSystem;
 
-static BOOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn lock_boot() -> std::sync::MutexGuard<'static, ()> {
-    BOOT_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    crate::system::lock_boot()
 }
 
 fn boot(bin: &[u8]) -> (Cpu, FlatMemory) {

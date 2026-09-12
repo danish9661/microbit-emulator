@@ -30,6 +30,7 @@ pub mod qdec_nrf;
 pub mod comp_nrf;
 pub mod nfct_nrf;
 pub mod egu_nrf;
+pub mod mwu_nrf;
 pub mod misc_nrf;
 
 use std::cell::RefCell;
@@ -232,7 +233,7 @@ fn make_nrf_peripheral(name: &str, _ext: &ExtDevices) -> Option<Box<dyn Peripher
         .or_else(|| comp_nrf::CompNrf::new(name))
         .or_else(|| nfct_nrf::NfctNrf::new(name))
         .or_else(|| egu_nrf::EguNrf::new(name))
-        .or_else(|| misc_nrf::MwuNrf::new(name))
+        .or_else(|| mwu_nrf::MwuNrf::new(name))
         .or_else(|| misc_nrf::EcbNrf::new(name))
         .or_else(|| misc_nrf::AarCcmNrf::new(name))
         .or_else(|| misc_nrf::I2sNrf::new(name))

@@ -17,6 +17,18 @@ pub(crate) fn sys() -> &'static WasmSystem {
     unsafe { &*p }
 }
 
+/// Fallible system handle for hot paths (e.g. the MWU mem hook): unit
+/// tests with dummy (non-installed) systems must not trap here.
+pub(crate) fn try_sys() -> Option<&'static WasmSystem> {
+    let p = SYS.load(Ordering::Acquire);
+    if p.is_null() {
+        None
+    } else {
+        // SAFETY: same contract as sys().
+        Some(unsafe { &*p })
+    }
+}
+
 fn set_sys(s: WasmSystem) {
     SYS.store(Box::into_raw(Box::new(s)), Ordering::Release);
 }

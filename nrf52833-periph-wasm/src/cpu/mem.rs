@@ -253,6 +253,21 @@ impl FlatMemory {
     }
 }
 
+impl FlatMemory {
+    /// MWU watch hook: one atomic load when disarmed; full region check
+    /// only while a watch is armed. Called on every successful data
+    /// access (never on MPU-denied or unmapped faults, which silicon
+    /// would not put on the bus either).
+    #[inline]
+    fn watch(&self, addr: u32, is_write: bool) {
+        if crate::system::mwu_armed() {
+            if let Some(sys) = crate::try_sys() {
+                crate::peripherals::mwu_nrf::mwu_note(sys, addr, is_write);
+            }
+        }
+    }
+}
+
 impl Memory for FlatMemory {
     fn read8(&self, addr: u32) -> u8 {
         if is_periph(addr) {
@@ -263,6 +278,7 @@ impl Memory for FlatMemory {
             }
             // Single width-1 model read (mirrors the JS memReadHook, which
             // takes the low byte). The model aligns internally.
+            self.watch(addr, false);
             return crate::sys().p.read(crate::sys(), addr, 1) as u8;
         }
         // Unmapped addresses keep the legacy behavior (bad-address latch
@@ -271,16 +287,19 @@ impl Memory for FlatMemory {
             if self.mpu_deny(addr, 1, false) {
                 return 0;
             }
+            self.watch(addr, false);
             self.flash[off]
         } else if self.in_ram(addr) {
             if self.mpu_deny(addr, 1, false) {
                 return 0;
             }
+            self.watch(addr, false);
             self.ram[(addr - self.ram_base) as usize]
         } else if let Some(idx) = self.extra_idx(addr) {
             if self.mpu_deny(addr, 1, false) {
                 return 0;
             }
+            self.watch(addr, false);
             let r = &self.extra[idx];
             r.data[(addr - r.base) as usize]
         } else {
@@ -348,6 +367,7 @@ impl Memory for FlatMemory {
             // into byte RMWs here: each model write can have side effects
             // (a USART DR write emits a UART char), so one guest store must
             // equal exactly one model call, like the JS memWriteHook.
+            self.watch(addr, true);
             crate::sys().p.write(crate::sys(), addr, 1, v as u32);
             self.service_sync_dma();
             return;
@@ -359,15 +379,18 @@ impl Memory for FlatMemory {
                 return;
             }
             // flash protection: guest stores are ignored (see struct docs)
+            self.watch(addr, true);
         } else if self.in_ram(addr) {
             if self.mpu_deny(addr, 1, true) {
                 return;
             }
+            self.watch(addr, true);
             self.ram[(addr - self.ram_base) as usize] = v;
         } else if let Some(idx) = self.extra_idx(addr) {
             if self.mpu_deny(addr, 1, true) {
                 return;
             }
+            self.watch(addr, true);
             let r = &mut self.extra[idx];
             r.data[(addr - r.base) as usize] = v;
         } else {
