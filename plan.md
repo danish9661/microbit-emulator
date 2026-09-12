@@ -846,3 +846,60 @@ pages; triggers on master for `demo/**` + manual dispatch; serves
 uses the intentionally-committed wasm pkg, no toolchain needed) plus
 `demo/.nojekyll`. YAML validated. Still needed to go live: commit +
 push, then repo Settings -> Pages -> Source: "GitHub Actions".
+
+## 35. P35 GPIO CNF->DIR sync fixes display drive (2026-09-12, uncommitted)
+
+Real model gap, found via MakeCode (TIMER4 ISR runs render(), OUT
+toggles, but DIR ever 0): PIN_CNF writes stored the register without
+syncing `dir[]`, so firmware configuring pins the normal Nordic way
+never showed DIR=output (IN reads and the demo's DIR-gate stayed
+dark). Fix: sync `dir[port]` bit from PIN_CNF.DIR on every CNF write
+(both directions) + `pin_cnf_dir_bit_drives_dir` test. Proof:
+MakeCode boot now shows sticky DIR0=`0x01788000`, all five matrix
+rows output-driven. MC waiter chain also captured en route (obj
+`0x20002D58`, busy 7->0, display-channel event (7,1), starter
+`0x30C30`, caller lr `0x30CFB`, TIMER4 vector stuck at MBR forwarder
+`0x869`). Remaining MC: scroll completion/content (needs wall time).
+
+## 36. P36 demo presets + MIPS meter (2026-09-12, uncommitted)
+
+`demo/index.html`: preset `<select>` (blinky/sensors/dma embedded as
+base64, same `bootImage` path as dropped files — verified live:
+blinky prints BOOT/BLINK, sensors prints SENS:OK/BTN without any
+file) + live speedometer (`cpu.step()` return accumulated per frame,
+`#mips` span updated 2x/sec; measured 1.20 MIPS in this Chromium).
+Playwright-verified end to end, zero page errors.
+
+## 37. P37 MP preset + boot gate + speed verdict (2026-09-12, uncommitted)
+
+User hit `CPU fault pc=60012100` from Boot MicroPython app with no
+real MicroPython loaded (preset/empty image leaves 0x1C000 as
+0x00000000; reset_cpu(0,0) jumps into the weeds). Fixed properly:
+`bootMicroPythonApp` now sanity-gates SP/PC (RAM/flash ranges) and
+fails loudly (`no valid MicroPython app at 0x1C000 (SP=0 PC=0)` —
+verified live). MicroPython v2.1.2 pre-added as
+`demo/firmware/micropython-microbit-v2.1.2.hex` (1.24MB, same-origin
+fetch, no CORS) with a one-click preset that loads + auto-boots
+(verified: correct vectors, clean 60s run, no fault, no page errors).
+
+Speed, measured not guessed: 1.20 MIPS in this Chromium, IDENTICAL
+for the wasm-pack build and a guaranteed-release cargo+wasm-bindgen
+build (profile is not the lever; pkg restored byte-identical).
+Native debug ~5M/s, native release ~17M/s (suite 3.0s->0.87s), so
+browser WASM costs ~4x vs native-debug structurally (bounds+MPU
+checks, RefCell traffic, atomics, JS boundary per frame). Full
+20K/frame budget is consumed awake (no sleep savings available).
+Faster later: wasm-opt (not installed), hotter-loop work.
+
+## 38. P38 demo 5x throughput (2026-09-12, uncommitted)
+
+1.20 MIPS was the vsync cap (60fps x fixed 20K/frame), not WASM speed:
+batching 5x[20K step+tick] per frame with duties once holds 60fps and
+runs 6.0 MIPS (release-guaranteed build measures identical — profile
+was never the lever). Same 20K tick granularity; sleep/fault handling
+moved into the sub-loop (old trailing sleep block removed as double).
+Verified: blinky/sensors presets, MIPS meter, zero page errors.
+MicroPython preset now banners in ~30s (was: never in 700s) with the
+known drop artifacts, partial prompt (`\n\n >`), then stalls with NO
+fault at 150s+ — the native prompt-stall frontier, now reachable
+in-browser. REPL exec still open (prompt kick + NULL fault).

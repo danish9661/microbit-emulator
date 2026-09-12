@@ -19,7 +19,14 @@
 <p>Drop a <code>.hex/.bin</code> built for flash <code>0x0</code> (ARM GCC, no SoftDevice).
 Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB serial.</p>
 <input type="file" id="fw" accept=".hex,.bin">
-<span id="status">loading wasm…</span>
+<select id="preset" title="Built-in firmware proofs — run instantly, no file needed">
+  <option value="">preset firmware…</option>
+  <option value="blinky">blinky (UART BOOT/BLINK + GPIO)</option>
+  <option value="sensors">sensors (buttons + TWIM + GPIOTE)</option>
+  <option value="dma">dma (TWIM DMA loopback)</option>
+  <option value="mpy">MicroPython v2.1.2 (built-in, auto-boots)</option>
+</select>
+<span id="status">loading wasm…</span> <span id="mips" title="Emulated instructions per wall-clock second"></span>
 <div id="matrix"></div>
 <div>
   <button id="btnA">A (P0.14)</button>
@@ -119,6 +126,40 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   }
   // Pending UICR bytes from the last hex load (applied on boot).
   let pendingUicr = [];
+  // Built-in preset firmware (blinky/*.bin proofs, base64). Same boot
+  // path as a dropped file: MBR vectors at 0x0, no UICR records.
+  const PRESETS = {
+    blinky: 'ACAAIAkAAABP8IBAASEBYBRICCEBYBRIT/QAEQFgE0gA8BP4AiQSSE/0ABEBYADwFfgQSE/0ABEBYADwD/gOSADwA/gBPO7R/ucQtQRGFPgBGxGxCUoRYPnnEL0ISgE6/dFwRwAlAEAYBQBQhAAAAAgFAFAMBQBQigAAABwlAEBADQMAQk9PVAoAQkxJTksKAA==',
+    sensors: 'ACAAIAkAAABP8IBAASEBYBZICCEBYBZIFkkBYBZIBiEBYBZIGSEBYBVIASEBYBVIKCEBYBRIASEBYBRIAPAM+BNIAGgAKAPQEkgA8AX4AuARSADwAfj+5xC1BEYU+AEbEbEOShFg+ecQvQAAACUAQBBlAEABDgIAADUAQIg1AEAIMABAHDUAQBQwAECgAAAAAGEAQKkAAACwAAAAHCUAQFNFTlM6T0sKAEJUTjoxCgBCVE46MAoA',
+    dma: 'ACAAIAkAAABP8IBAASEBYCJICCEBYCJIIkkBYCJIByEBYCJIASEBYCFIAPAl+CFIIUkBYCFIAyEBYCFIGSEBYCBIASEBYCBIAPAW+B9IAPAb+B9IH0kBYB9IASEBYB9IAWAfSAFgH0gBYB9IAPAE+B5IAPAJ+P7nBrUdSQJoACoB0QE5+tEGvRC1BEYU+AEbEbEYShFg+ecQvQAAACUAQEQlAED4AAAASCUAQAggAEAgIQBANDUAQAAQACA4NQBAiDUAQAAwAEAMMQBAAAEAACx2AEAQEAAgMHYAQAB1AEAAcABABHAAQARxAEAIAQAAQEIPABwlAEBETUE6T0sKAEkyQzpPSwoAQURDOk9LCgA=',
+  };
+  function bootPreset(name) {
+    if (name === 'mpy') { bootPresetMicroPython(); return; }
+    const b64 = PRESETS[name];
+    if (!b64) return;
+    bootImage(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)), []);
+  }
+  // Built-in MicroPython: shipped as demo/firmware/*.hex (same origin,
+  // no CORS involved), then straight into the direct-app boot.
+  async function bootPresetMicroPython() {
+    status.textContent = 'loading built-in MicroPython…';
+    try {
+      const res = await fetch('./firmware/micropython-microbit-v2.1.2.hex');
+      if (!res.ok) throw new Error('http ' + res.status);
+      const parsed = parseHex(await res.text());
+      if (!parsed) throw new Error('no data records');
+      bootImage(parsed.img, parsed.uicr);
+      bootMicroPythonApp();
+    } catch (err) {
+      status.textContent = 'built-in MicroPython failed to load: ' + err;
+    }
+  }
+  document.getElementById('preset').addEventListener('change', (e) => {
+    if (e.target.value) bootPreset(e.target.value);
+  });
+  // Live speedometer: emulated instructions per wall-clock second.
+  let mipsN = 0, mipsT = performance.now();
+  const mipsEl = document.getElementById('mips');
   // Direct-app boot target (e.g. MicroPython at 0x1C000): SYSRESETREQ
   // reboots must return here, not to the MBR vector table.
   let appBoot = null;
@@ -143,6 +184,7 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     boot = { sp, pc };
     appBoot = null;
     uartBox.value = '';
+    mipsN = 0; mipsT = performance.now(); mipsEl.textContent = '';
     status.textContent = `running (SP=${sp.toString(16)} PC=${pc.toString(16)})`;
   }
   // MicroPython direct-app boot (plan.md P16 recipe): the stock hex's MBR
@@ -157,6 +199,13 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     cpu.mem_write(0x20000000, u32(0x1000)); // MBR param: SoftDevice base
     cpu.mem_write(0x20000004, u32(0x1C000)); // MBR param: app base
     const sp = w(0x1C000), pc = w(0x1C004);
+    // Sanity-gate the vectors: a preset/small image (or no image) leaves
+    // 0x1C000 as 0x00000000, and reset_cpu(0, 0) would jump into the
+    // weeds and fault obscurely (pc=60012100 class). Fail loudly instead.
+    if (sp < 0x20000000 || sp > 0x20020000 || pc < 0x1C000 || pc >= 0x80000) {
+      status.textContent = `no valid MicroPython app at 0x1C000 (SP=${(sp >>> 0).toString(16)} PC=${(pc >>> 0).toString(16)}) — load its .hex first`;
+      return;
+    }
     cpu.reset_cpu(sp, pc);
     boot = { sp, pc };
     appBoot = { sp, pc };
@@ -300,18 +349,25 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   }
   function frame() {
     if (cpu) {
-      cpu.step(20000);
-      wasm.tick_peripherals();
+      // Throughput: several 20K step+tick slices per frame (100K), duties
+      // once. Single-slice frames cap at ~60fps*20K (vsync-bound); batching
+      // raises wall throughput ~2-3x with unchanged 20K tick granularity.
+      for (let k = 0; k < 5; k++) {
+        mipsN += cpu.step(20000);
+        wasm.tick_peripherals();
+        if (cpu.fault_pc() !== 0xFFFFFFFF) break;
+        if (cpu.sleeping()) {
+          // Firmware idles in WFE/WFI (the MicroPython scheduler does this
+          // constantly): advance virtual time so a future peripheral IRQ
+          // can pend, then wake on one. Without this the core naps forever
+          // the first time it idles (found via MicroPython REPL bring-up).
+          wasm.tick_n(20000);
+          if (wasm.has_pending_interrupt()) cpu.wake();
+        }
+      }
       const fpc = cpu.fault_pc();
       if (fpc !== 0xFFFFFFFF) {
         status.textContent = `CPU fault pc=${(fpc >>> 0).toString(16)} op=${cpu.fault_op1().toString(16)} (see console-style UART above)`;
-      } else if (cpu.sleeping()) {
-        // Firmware idles in WFE/WFI (the MicroPython scheduler does this
-        // constantly): advance virtual time so a future peripheral IRQ can
-        // pend, then wake on one. Without this the core naps forever the
-        // first time it idles (found via MicroPython REPL bring-up).
-        wasm.tick_n(20000);
-        if (wasm.has_pending_interrupt()) cpu.wake();
       }
       pumpDma();
       // Drip one typed byte per consumed RXDRDY (see above). The byte is
@@ -325,6 +381,11 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
       }
       const out = wasm.get_uart_output();
       if (out) uartBox.value += out;
+      const now = performance.now();
+      if (now - mipsT > 500) {
+        mipsEl.textContent = `${(mipsN / (now - mipsT) / 1000).toFixed(2)} MIPS`;
+        mipsN = 0; mipsT = now;
+      }
       // LEDs need DIR=output on silicon: a toggling OUT latch on an input
       // pin (e.g. display refresh before first show) must stay dark.
       const dir0 = wasm.periph_read(0x50000514, 4), dir1 = wasm.periph_read(0x50000814, 4);

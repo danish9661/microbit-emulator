@@ -127,7 +127,18 @@ impl Peripheral for GpioNrf {
     }
     fn write(&mut self, sys: &System, offset: u32, value: u32) {
         if let Some((port, i)) = Self::cnf_idx(offset) {
-            if i < 32 { sys.p.gpio.borrow_mut().cnf[port][i] = value; }
+            if i < 32 {
+                let mut gpio = sys.p.gpio.borrow_mut();
+                gpio.cnf[port][i] = value;
+                // PIN_CNF.DIR (bit 0) is the direction source of truth on
+                // silicon (firmware configures pins via CNF, not DIRSET);
+                // keep the cached dir[] in sync so DIR/IN reads agree.
+                if value & 1 != 0 {
+                    gpio.dir[port] |= 1 << i;
+                } else {
+                    gpio.dir[port] &= !(1 << i);
+                }
+            }
             return;
         }
         let (port, reg) = Self::decode(offset).unwrap_or((self.port, offset));
@@ -172,5 +183,17 @@ mod tests {
         assert_eq!(p0.read(&sys, 0x510) & 0x2, 0x2, "pull-up default");
         sys.p.gpio.borrow_mut().set_input_pin(0, 1, false);
         assert_eq!(p0.read(&sys, 0x510) & 0x2, 0x0);
+    }
+    #[test]
+    fn pin_cnf_dir_bit_drives_dir() {
+        let sys = test_dummy_system();
+        let mut p0 = GpioNrf { port: 0 };
+        // P0.21 (matrix row) via PIN_CNF, the way NRF52Pin configures it.
+        p0.write(&sys, 0x700 + 21 * 4, 0x1); // DIR=output
+        assert_eq!(p0.read(&sys, 0x514) & (1 << 21), 1 << 21);
+        p0.write(&sys, 0x508, 1 << 21); // OUTSET
+        assert_eq!(p0.read(&sys, 0x510) & (1 << 21), 1 << 21, "driven high");
+        p0.write(&sys, 0x700 + 21 * 4, 0x0); // DIR=input
+        assert_eq!(p0.read(&sys, 0x514) & (1 << 21), 0, "back to input");
     }
 }
