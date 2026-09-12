@@ -39,19 +39,37 @@ _start:
     /* print SENS:OK */
     ldr r0, =msg_sens
     bl print_cstr
-    /* read GPIOTE EVENTS_IN0 -> BTN:1 / BTN:0 */
-    ldr r0, =0x40006100
-    ldr r0, [r0]
+    /* poll P0.14 level (GPIO IN bit14, active-low), print BTN:1/0 on
+       change. Level polling (not the one-shot IN event) so release is
+       visible too. */
+    movs r5, #2          /* last = invalid so first state prints */
+ploop_btn:
+    ldr r0, =0x50000510
+    ldr r0, [r0]         /* GPIO IN */
+    lsls r0, r0, #17     /* P0.14 -> N flag */
+    bmi btn_rel          /* HIGH = released (pull-up) */
+    movs r0, #1          /* LOW = pressed */
+    b btncmp
+btn_rel:
+    movs r0, #0
+btncmp:
+    cmp r0, r5
+    beq samestate
+    mov r5, r0
     cmp r0, #0
-    beq btn0
+    beq pbtn0
     ldr r0, =msg_btn1
     bl print_cstr
-    b done
-btn0:
+    b samestate
+pbtn0:
     ldr r0, =msg_btn0
     bl print_cstr
-done:
-    b done
+samestate:
+    ldr r0, =0x200000   /* ~2M-iter delay so the console stays readable */
+dloop:
+    subs r0, #1
+    bne dloop
+    b ploop_btn
 
 print_cstr:
     push {r4, lr}

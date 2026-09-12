@@ -47,14 +47,25 @@ pub(crate) fn init_for_test(s: WasmSystem) {
 #[wasm_bindgen]
 pub fn init() {
     console_error_panic_hook::set_once();
+    // Physical pin levels survive reboot (SYSRESET doesn't touch GPIO
+    // input latches): carry input_state across the fresh peripheral map
+    // so a button held through load/boot still reads pressed.
+    let saved = try_sys().map(|s| s.p.gpio.borrow().input_state);
     set_sys(WasmSystem::new());
+    if let Some(st) = saved {
+        sys().p.gpio.borrow_mut().input_state = st;
+    }
 }
 
 /// Initialize the emulator from an SVD XML string (e.g., nrf52833.svd).
 #[wasm_bindgen]
 pub fn init_svd(svd_xml: &str) {
     console_error_panic_hook::set_once();
+    let saved = try_sys().map(|s| s.p.gpio.borrow().input_state);
     set_sys(WasmSystem::new_svd(svd_xml));
+    if let Some(st) = saved {
+        sys().p.gpio.borrow_mut().input_state = st;
+    }
 }
 
 #[wasm_bindgen]
