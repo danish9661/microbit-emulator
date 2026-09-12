@@ -713,3 +713,136 @@ flash events only, no new wasm exports, proof spec included).
 SVC/event numbers resolved from S132 headers (SD_EVT_GET=82,
 FLASH_SUCCESS=2; verify against S140 binary before implementing).
 STATUS §7 updated accordingly.
+
+## 28. P28 SPIM RXD + TX-drop ring diagnosis (2026-09-12, uncommitted)
+
+SPIM fix (working tree): `0x518` RXD now returns the MISO queue for
+`SPI*` names, I2C queue for `TWI*` (was I2C for all; TWIS/SPIS keep
+their own paths) + `rxd_polling_reads_slave_response_line` test.
+Stale "still open" comment corrected. Suite 186 green.
+
+TX drops, diagnosed to the firmware ring (working tree only has the
+fix above; probes reverted): per-take log vs flash ground truth gives
+holes at takes #19/#39/#59/#79 — every 20 takes, always `0x20`,
+aligned, PTR constant, len 1 — under eager AND delayed pumps,
+pristine and pre-rolled. Slot-watch shows putc wrote the space itself
+(pc `0x50F37`-family); heap txBuff holds mismatching bytes too
+(`micro:bn .` window, head 20→19 wrap). NOT an N+1/timing race.
+NEXT: audit putc→ring→flush index math against OUR AMOUNT/ENDTX
+timing, else accept as firmware-cosmetic (likely silicon-visible).
+
+## 29. P29 BL resets decoded + MC constructor finding (2026-09-12, uncommitted)
+
+BL (all static addresses in `full.bin`, temp src markers reverted):
+- reset#0 (`0x774A7`, r1=SCB, r3=AIRCR-magic) = deliberate post-UICR-
+  programming reset (design, benign). reset#1 (`0x78405`,
+  r0=`0x2002` STALE, lr=`0x78519`) = CODED AIRCR via the 2nd of three
+  `bl 0x783EC` sites (`0x7850E/14/24`); the `0x783FE` "park" is the
+  post-reset `dsb;nop;b .` wait (silicon-instant, model-deferred up
+  to a pump quantum). NOT a WDT expiry (proven by caller-marked
+  reset sources). No static IPR22 access exists in the BL (priority-
+  table walk at runtime); r0=`0x2002` is stale, not causative.
+- Validation dispatch: tbb at `0x78498` on (r0-1), entered when r4==0
+  from the `0x7B530`-check (`cbnz r4` at `0x7B636` skips validation);
+  r5=1 selects the 2nd reset site. NEXT: why r4==0 (`0x7B5B4`/
+  `0x7B568` validators) + the `0x784C4`-flag / r4-vs-59 compare.
+- UICR writes observed live (CONFIG=1, `0x10001200/204`=18, CONFIG=0).
+
+TX: putc path runs through C++ virtuals (`0x50F34/0x50F54` via
+`0x25Bxx` glue); the lone TXD.PTR-site hit (`0x29D3A`) is a false
+positive (FICR-copy code, same offsets different struct). Ring-filler
+live-catch blocked by scheduler pacing (micro-steps stall without
+sleep+TX servicing; windows miss). NEXT per P28.
+
+MC display: `NRF52LEDMatrix` calls `enable()` IN ITS CONSTRUCTOR, so
+TIMER4-zero means construction never reached display (stall is in
+power/flash/storage/i2c-probe members per `MicroBit.h` order — not
+post-init). Live waiter is `0x30C04` (busy byte `[r4+20]`, sole
+`wfe`-caller `0x30C1E`); no direct `bl` to it (register/virtual
+call). NEXT: capture r4 at `0x30C18` via pc-triggered reg dump.
+
+## 30. P30 BL reset sources + UICR-gated app halt (2026-09-12, uncommitted)
+
+Reset sources proven distinct (temp caller markers, reverted): reset#0
+(`0x774A7`) and reset#1 (`0x78405`) are BOTH AIRCR-coded, never WDT.
+reset#0 = post-UICR-programming design reset. reset#1 comes via the
+2nd `bl 0x783EC` (`0x78514`, r5=1); the `0x783FE` park is the
+post-AIRCR `dsb;nop;b .` wait (model defers up to a quantum).
+No static IPR22 access in BL; r0=`0x2002` stale.
+
+UICR replay (native): BL programs exactly `0x10001200/204`=18 (SVD
+has no field there — undocumented word). Seeding those two words then
+direct-app boot STALLS at `0x29CD1` (400M, no fault, no output) vs
+pristine banner+fault. `0x29CD1` is a `b .` park AFTER an
+AIRCR-SYSRESETREQ write — but honors never land (8000 entry samples
+miss), and no `bl` targets the park or its `0x29CB4` reset-fn, so it
+is entered via register as a HALT routine, gated on programmed UICR.
+NEXT: find the halt caller (register-called; scan the UICR-gated
+branch above the app entry init) + identify UICR+0x200 (PS check).
+
+## 31. P31 MC waiter object + display-channel event (2026-09-12, uncommitted)
+
+PC-entry hook (temp, reverted after) caught the waiter once:
+obj=`0x20002D58` (vtable `0x43DC0`, +4=`0x30000007`, +16=`0x7E`,
+busy@+20, target@+22, progress@+24), entered with lr=`0x30CFB`.
+Busy trajectory: 0 → 7 (~180M) → 0 (~210M, no resume).
+Call chain: `0x30CD0`-region → `0x30C30` (starter: sets
+target=len/progress=0/busy=7 after a buffered-copy `0x34248`) →
+`0x30C04` waiter (fiber-wait-shaped `(7,1)` via `0x2E2E8` + busy poll).
+No direct `bl` to waiter/starter (virtual-called); vtable literal
+`0x43DC0` absent from flash (runtime-constructed pointer).
+Event id 7 = DEVICE_ID_DISPLAY (source headers): the wait is for a
+display-channel event that never arrives; TIMER4 vector stuck at the
+MBR forwarder `0x869` (display_irq never installed); 30 COMPARE0
+events vanish into the SD default. `enable()` runs in the
+`NRF52LEDMatrix` constructor, so the stall is pre-display-construct
+(power/flash/storage/i2c member phase). NEXT: constructor-order
+trace (which member init reaches the `0x30CD0` region) + the (7,1)
+producer (TIMER-driven completion of the same transfer?).
+
+## 32. P32 SVC16 sites + sd_evt premise refuted (2026-09-12, uncommitted)
+
+`svc 16` (sd_softdevice_enable) sites: `0x54D4E` (app — BLE init,
+post-banner) and `0x7B530` (BL). Nothing enables the SD pre-banner
+in ANY configuration (hook: zero SVC16/18/40 in-demo over 120s of
+spinning; zero natively). So SD-disabled is UNIVERSAL pre-banner —
+yet demo takes the fds-wait path and native skips it. The fds entry
+condition reads non-SD state that still differs (fds queue leftovers
+excluded 4x via pre-roll; UICR excluded except the two BL words;
+NVIC excluded 3x). NEXT: capture the fds-entry compare (which
+address does the 0x21578-fn's caller test before `bl 0x215A2` —
+needs a spin-lottery run with the entry regs).
+
+sd_evt_design.md premise REFUTED: zero `svc 82` sites in MPY+MC
+binaries — no firmware calls sd_evt_get, so an SVC82 hook would be
+dead code. The doc stays as a corrected reference (do not build as
+specified). The NVMC-IRQ idea is likewise dead (no NVMC IRQ/INTEN
+in the SVD — polled READY only, our model already faithful).
+Real remaining question is unchanged: what differs demo-vs-native
+at the fds gate.
+
+## 33. P33 reset timing + sd_evt shelved (2026-09-12, uncommitted)
+
+Watchdog honors in native boot land at instructions 5000 and 10000
+(back-to-back). A per-frame honorer coalesces them (single bool
+latch); native per-5K honors both. Disproven as the differentiator:
+per-100K honoring (`tmp_delayed_duties`) still banners natively, so
+coalescing is benign (both resets target app vectors; redundant).
+Demo divergence is NOT reset phasing.
+
+sd_evt phase-1 as designed is SHELVED before building: zero `svc 82`
+sites in MPY+MC binaries (no firmware calls sd_evt_get — hook would
+be dead code), and NVMC has no IRQ/INTEN in the SVD (polled READY
+only; our model already faithful, nothing to fix). The doc stays as
+a corrected reference. The live question remains what differs at
+the fds gate (SD-disabled universally pre-banner; no SVC16 ever).
+
+## 34. P34 GitHub Pages workflow (2026-09-12, uncommitted)
+
+No workflow existed. Added `.github/workflows/pages.yml` (official
+actions only: checkout/configure-pages/upload-pages-artifact/deploy-
+pages; triggers on master for `demo/**` + manual dispatch; serves
+`demo/` as site root so relative `./pkg`/`./parts` imports resolve;
+uses the intentionally-committed wasm pkg, no toolchain needed) plus
+`demo/.nojekyll`. YAML validated. Still needed to go live: commit +
+push, then repo Settings -> Pages -> Source: "GitHub Actions".

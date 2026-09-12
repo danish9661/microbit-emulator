@@ -1,0 +1,55 @@
+# Demo emulator page -> GitHub Pages (official Actions deployment).
+#
+# Serves demo/ (index.html + committed wasm pkg + parts) as the site
+# root, so all relative imports (./pkg/..., ./parts/...) resolve.
+# The wasm pkg is committed intentionally (see 3a29694), so no
+# wasm-pack/Rust toolchain is needed here; what is in demo/ is what
+# ships. After merging, enable once in repo Settings -> Pages ->
+# Source: "GitHub Actions". Live URL: https://danish9661.github.io/microbitemu/
+name: Deploy demo to GitHub Pages
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "demo/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Verify committed wasm pkg is present
+        run: |
+          test -f demo/index.html || (echo "demo/index.html missing" && exit 1)
+          test -f demo/pkg/nrf52833_periph_wasm.js || (echo "wasm pkg missing (run wasm-pack build)" && exit 1)
+          test -f demo/pkg/nrf52833_periph_wasm_bg.wasm || (echo "wasm blob missing" && exit 1)
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload demo as Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: demo/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

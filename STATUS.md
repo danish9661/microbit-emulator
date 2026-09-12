@@ -15,7 +15,7 @@ driver take/complete, firmware proof), **H** = handshake
 | CLOCK, POWER (shared `0x40000000`) | `clock_nrf.rs` | F | HF/LF STARTED events+STAT, USBDETECTED/USBPWRRDY, RESETREAS+SREQ latch, GPREGRET, RAMSTATUS, LFCLKSRC; POWER_CLOCK IRQ 0 |
 | RADIO `0x40001000` | `radio_nrf.rs` | F | PCNF-length TX take / RX completion+inject, CRCERROR inject, RSSI, SHORTS; bare-metal loopback proven (`air_nrf`) |
 | UARTE0+UART0, UARTE1 | `uarte_nrf.rs` | F | 1-byte TX DMA + RXDMA ring; OVERRUN, ERROR, TXSTOPPED (`0x158`/INTEN 22, fixed P20); UARTE1 TX/RX fully routed (was UARTE0-locked), no dedicated UARTE1 proof |
-| TWIM0/TWI0/SPIM0/SPIS0/TWIS0/SPI0, TWIM1 family, SPIM2, SPIM3 | `twim_nrf.rs` | F | Mode-blind shared-base; SHORTS, NACK-after-~6000-instr without slave, LASTTX/STARTRX/SUSPEND; TWIS/SPIS slave engines (`twis_master_write/read`, `spis_exchange`); SPIM tap routing incl. SPIM2/3; SPIM2/3 I2C-tap routing still open |
+| TWIM0/TWI0/SPIM0/SPIS0/TWIS0/SPI0, TWIM1 family, SPIM2, SPIM3 | `twim_nrf.rs` | F | Mode-blind shared-base; SHORTS, NACK-after-~6000-instr without slave, LASTTX/STARTRX/SUSPEND; TWIS/SPIS slave engines (`twis_master_write/read`, `spis_exchange`); SPIM tap routing incl. SPIM2/3; register-mode RXD returns MISO for SPI names, I2C queue for TWI (`rxd_polling_reads_slave_response_line`) |
 | NFCT | `nfct_nrf.rs` | F | Field-detect/select state machine, frame TX/RX take-complete, C+S proof (`nfct_nrf.s/.bin`, `nrf_nfct_field_select_and_frames`) |
 | GPIOTE | `gpiote_nrf.rs` | F | 8 ch event/task, edge detect vs pull-up inputs, PORT event, OUT tasks drive GPIO |
 | SAADC | `saadc_nrf.rs` | F | CH config/limits, LIMIT events, RESULTDONE/STOPPED, EASYDMA take/complete + result pump |
@@ -169,20 +169,34 @@ beyond proof-level driving remain future work.
      pump deterministically faults at app entry (`0x29C7A`,
      `op=0xDEAD`) while 1x20K spins fault-free — reverted to 1x20K;
      do not re-land without explaining the entry fault.
-2. **TX byte drops** (~3% single-byte N+1 substitutions, cosmetic).
-   Verdict update: **bytes are staged wrong at the source**
-   (`staged==taken==completed==uartlen`, substitution not loss);
-   pump read/completion timing, STOPTX arm, stack/heap collision all
-   exonerated. Open: exact double-stage source.
+2. **TX byte drops** (single-byte →space substitutions, cosmetic).
+   Verdict update: **firmware-side ring corruption, pump exonerated 4x**.
+   Per-take log vs flash ground truth: holes at takes #19/#39/#59/#79
+   (every 20 takes = every 200K instr), always `0x20`, fully aligned
+   (no loss/shift); PTR constant (`0x2001FEC7`), len 1; putc slot AND
+   heap txBuff both hold the wrong bytes *before* the take, under
+   eager, delayed, pristine and pre-rolled pumps alike. NOT an N+1
+   race. Next: audit putc→ring→flush index math against OUR
+   AMOUNT/ENDTX timing (the one model-behavioral input left), else
+   accept as firmware-cosmetic.
 3. **Bootloader full chain** (MBR→BL→SD→app; direct-app boot works
-   around it). BL entry + main head now decoded (plan P25); still
-   resets at the validation step (`0x783FE` park). NEXT: trace
-   `0x77404`→IPR22 check→park, capture r0 at the cmp.
-4. **MakeCode display content** (TIMER4 never STARTs; DIR ever 0;
-   scheduler-idle park is normal, main's print never drives refresh)
+   around it). Decoded (plan P25/P29): entry `0x772F9`, FICR gather,
+   UICR writes + deliberate post-UICR reset (benign); 2nd reset is a
+   CODED AIRCR via `0x78514` after a tbb validation dispatch (r4==0
+   path) — not WDT, not IPR22-caused (no static IPR22 access; r0 stale).
+   NEXT: why r4==0 + the `0x784C4`-flag compare.
+   (P30: both resets proven AIRCR-coded via caller markers; seeding
+   BL-programmed UICR (`0x10001200/204`=18) stalls direct-app boot at
+   a register-called HALT (`0x29CD1`) — UICR-gated halt caller open.)
+4. **MakeCode display content** (TIMER4 never STARTs because the
+   display object is never constructed — `enable()` runs in the
+   `NRF52LEDMatrix` constructor, so the stall is in an earlier member
+   init; live waiter is `0x30C04` busy-`[r4+20]`)
    + BLE events (no radio attempts; needs SD event synthesis).
-   NEXT: fiber walk + NRF52LEDMatrix::enable caller.
-5. **SPIM2/3 I2C-tap routing** (DMA works; tap routing open).
+   NEXT: capture r4 at `0x30C18` + fiber walk.
+5. **SPIM2/3 tap routing** — done (RXD register returns the MISO
+   queue for SPI names; DMA frames already routed; stale "still open"
+   comment corrected).
 6. **Demo wall-time**: banner needs ~150–260M at ~300K–1.5M instr/s
    in this Chromium — 600s+ per boot. Pkg profile question closed:
    dev and --release builds are byte-identical in this wasm-pack

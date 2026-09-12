@@ -175,7 +175,15 @@ impl Peripheral for Twim {
             0x304 => self.intenset,
             0x4C4 => self.errorsrc,
             0x500 => self.enable,
-            0x518 => crate::system::i2c_tap_rx_pop(&self.name) as u32,
+            0x518 => {
+                // RXD polling path: master-mode reads return the slave's
+                // response line (MISO for SPI, SDA for I2C); 0xFF idle.
+                if self.name.starts_with("SPI") {
+                    crate::system::spi_tap_miso_pop(&self.name) as u32
+                } else {
+                    crate::system::i2c_tap_rx_pop(&self.name) as u32
+                }
+            }
             0x534 => self.rx_ptr,
             0x538 => self.rx_maxcnt,
             0x53C => self.rx_amount,
@@ -253,11 +261,10 @@ impl Peripheral for Twim {
             0x4C4 => self.errorsrc &= !value, // write-1-clears
             0x500 => self.enable = value & 0xF,
             0x51C => {
-                // TXD byte -> tapped I2C slave matching ADDRESS. SPIM-only
-                // instances (SPIM2/3) skip the I2C tap; routing their frames
-                // to spi_taps (with CS/DC like the JS display layer expects)
-                // is still open -- the DMA take/complete path works, only
-                // slave-side observability is missing.
+                // TXD byte -> tapped slave. I2C slaves match ADDRESS;
+                // SPIM-only instances (SPIM2/3) route register-mode bytes
+                // and DMA frames to spi_taps (CS/DC handled JS-side, like
+                // the display layer expects).
                 self.tx_byte = (value & 0xFF) as u8;
                 if self.name.starts_with("TWI") {
                     crate::system::i2c_tap_push_tx(&self.name, self.tx_byte);
@@ -720,6 +727,21 @@ mod tests {
         complete_rxdma(&sys, "TWIM1", 6);
         assert_eq!(sys.p.read(&sys, 0x4000410C, 4), 1, "ENDRX after complete");
         assert_eq!(sys.p.read(&sys, 0x4000453C, 4), 6, "AMOUNT");
+    }
+    #[test]
+    fn rxd_polling_reads_slave_response_line() {
+        use crate::system::test_dummy_system;
+        let sys = test_dummy_system();
+        // SPIM register-mode RXD returns MISO bytes pushed by the slave.
+        crate::system::spi_tap_miso_push("SPIM2", &[0xA5, 0x5A]);
+        let mut s = Twim::new("SPIM2").unwrap();
+        assert_eq!(s.read(&sys, 0x518), 0xA5, "first MISO byte");
+        assert_eq!(s.read(&sys, 0x518), 0x5A, "second MISO byte");
+        assert_eq!(s.read(&sys, 0x518), 0xFF, "idle when queue drains");
+        // TWIM register-mode RXD still returns the I2C (SDA) queue.
+        crate::system::i2c_tap_rx_push("TWIM0", &[0x33]);
+        let mut t = Twim::new("TWIM0").unwrap();
+        assert_eq!(t.read(&sys, 0x518), 0x33, "I2C queue preserved");
     }
     #[test]
     fn tx_completion_irq_when_enabled() {
