@@ -3,9 +3,8 @@ use super::Peripheral;
 
 /// RNG @ 0x4000D000 (IRQ 13 per nrf52833.svd). TASKS_START 0x000, TASKS_STOP 0x004,
 /// EVENTS_VALRDY 0x100, SHORTS 0x200, INTENSET 0x304/CLR 0x308,
-/// VALUE 0x508. Deterministic LCG seeded from INSTRUCTION_COUNT
-/// (same recipe as the old STM32 RNG, new addresses). SHORTS bit0 =
-/// shortcut VALRDY->STOP.
+/// VALUE 0x508. Deterministic LCG seeded from INSTRUCTION_COUNT.
+/// SHORTS bit0 = shortcut VALRDY->STOP.
 pub struct RngNrf {
     running: bool,
     ev_valrdy: bool,

@@ -2,9 +2,13 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_wasmcpu_free: (a: number, b: number) => void;
+export const aar_complete: (a: number) => void;
+export const aar_take_job: (a: number) => void;
 export const ccm_complete: (a: number) => void;
 export const ccm_take_job: (a: number) => void;
 export const comp_set_input_mv: (a: number) => void;
+export const ecb_complete: () => void;
+export const ecb_take_job: (a: number) => void;
 export const get_next_pending_interrupt: () => number;
 export const get_uart_output: (a: number) => void;
 export const gpio_read_input: (a: number, b: number) => number;

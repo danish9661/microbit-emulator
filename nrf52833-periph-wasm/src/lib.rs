@@ -349,6 +349,32 @@ pub fn ccm_complete(mic_ok: bool) {
     crate::peripherals::misc_nrf::complete_ccm(sys(), mic_ok);
 }
 
+// ── AAR host driver API (mirrors CCM; resolution runs driver-side) ──
+#[wasm_bindgen]
+pub fn aar_take_job() -> Vec<u32> {
+    crate::peripherals::misc_nrf::take_aar(sys())
+        .map(|(irkptr, addrptr)| vec![irkptr, addrptr])
+        .unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn aar_complete(resolved: bool) {
+    crate::peripherals::misc_nrf::complete_aar(sys(), resolved);
+}
+
+// ── ECB host driver API (AES-128 block runs driver-side, FIPS-197 shape) ──
+#[wasm_bindgen]
+pub fn ecb_take_job() -> Vec<u32> {
+    crate::peripherals::misc_nrf::take_ecb(sys())
+        .map(|dataptr| vec![dataptr])
+        .unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn ecb_complete() {
+    crate::peripherals::misc_nrf::complete_ecb(sys());
+}
+
 // ── COMP/QDEC host driver API ──
 #[wasm_bindgen]
 pub fn comp_set_input_mv(mv: u32) {

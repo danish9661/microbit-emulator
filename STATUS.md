@@ -80,8 +80,10 @@ watchdog-reset reboot, sleep-aware frame (`tick_n` + wake), Intel-HEX
 loader (type-02 + UICR), and a MicroPython direct-app boot button.
 Parts: matrix pins, LSM303 (WHO_AM_I `0x33`/`0x40`), SSD1306, all
 green via `smoke.mjs`. `microbit-v2-emulator@0.1.0` npm package
-defined (publish blocked: registry 401). Driver-API gaps (no consumer
-yet): ECB/AAR take-complete, NFCT beyond proof, MWU beyond proof.
+defined (publish blocked: registry 401). No open driver-API gaps: every
+take/complete pair (incl. ECB/AAR/CCM, I2S, NFCT, QDEC/COMP/TEMP
+driver values) is exported and documented in `demo/API.md`; MWU/NFCT
+beyond proof-level driving remain future work.
 
 ## 5. Real-firmware results (all executed, zero CPU faults except MPY §6.1)
 

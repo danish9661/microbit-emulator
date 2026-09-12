@@ -50,11 +50,19 @@ export class WasmCpu {
     write8(addr: number, v: number): void;
 }
 
+export function aar_complete(resolved: boolean): void;
+
+export function aar_take_job(): Uint32Array;
+
 export function ccm_complete(mic_ok: boolean): void;
 
 export function ccm_take_job(): Uint32Array;
 
 export function comp_set_input_mv(mv: number): void;
+
+export function ecb_complete(): void;
+
+export function ecb_take_job(): Uint32Array;
 
 export function get_next_pending_interrupt(): number;
 
@@ -229,9 +237,13 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmcpu_free: (a: number, b: number) => void;
+    readonly aar_complete: (a: number) => void;
+    readonly aar_take_job: (a: number) => void;
     readonly ccm_complete: (a: number) => void;
     readonly ccm_take_job: (a: number) => void;
     readonly comp_set_input_mv: (a: number) => void;
+    readonly ecb_complete: () => void;
+    readonly ecb_take_job: (a: number) => void;
     readonly get_next_pending_interrupt: () => number;
     readonly get_uart_output: (a: number) => void;
     readonly gpio_read_input: (a: number, b: number) => number;

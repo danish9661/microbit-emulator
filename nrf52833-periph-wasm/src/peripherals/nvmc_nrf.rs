@@ -11,7 +11,8 @@ use super::Peripheral;
 /// With CONFIG=WEN, flash-region writes via the NVMC window are accepted
 /// by the memory layer (mem.rs flash protection stays: guest stores to
 /// flash are still ignored natively; the JS driver applies program words
-/// through mem_write, exactly like the old STM32 flow).
+/// through mem_write, exactly like the original driver flow from the
+/// early bring-up).
 pub struct Nvmc {
     pub config: u32,
     erase_pending: Option<u32>,

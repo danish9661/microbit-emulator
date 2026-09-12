@@ -2748,7 +2748,7 @@ fn busfault_unmapped_data_access() {
     // Wild data read takes BusFault with PRECISERR + BFARVALID + BFAR when
     // BUSFAULTENA is set (vector A), else escalates to HardFault (vector B).
     // ldr r0,[r1,#0] is 0x6808 (GAS). nRF flash lives at 0x0, so 0x0 is NOT
-    // wild here — use 0x30000000 (unmapped on both STM32 and nRF maps).
+    // wild here — use 0x30000000 (unmapped on the nRF map).
     let _g = lock_boot();
     let (mut cpu, mut mem) = boot(&irq_test_image(false));
     let sys = crate::sys();

@@ -323,6 +323,30 @@ export class WasmCpu {
 if (Symbol.dispose) WasmCpu.prototype[Symbol.dispose] = WasmCpu.prototype.free;
 
 /**
+ * @param {boolean} resolved
+ */
+export function aar_complete(resolved) {
+    wasm.aar_complete(resolved);
+}
+
+/**
+ * @returns {Uint32Array}
+ */
+export function aar_take_job() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.aar_take_job(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * @param {boolean} mic_ok
  */
 export function ccm_complete(mic_ok) {
@@ -351,6 +375,27 @@ export function ccm_take_job() {
  */
 export function comp_set_input_mv(mv) {
     wasm.comp_set_input_mv(mv);
+}
+
+export function ecb_complete() {
+    wasm.ecb_complete();
+}
+
+/**
+ * @returns {Uint32Array}
+ */
+export function ecb_take_job() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.ecb_take_job(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
 }
 
 /**

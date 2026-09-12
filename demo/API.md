@@ -93,6 +93,27 @@ USBD EPOUT: usbd_take_epout() -> [ep,ptr,n] | complete_epout(ep,amount)
 QSPI:      qspi_take_read/write/erase() | complete_read/write/erase(...)
 NVMC:      nvmc_take_erase() -> [base] | nvmc_complete_erase()
 RADIO:     radio_take_tx() -> [ptr,len] | radio_inject_rx(bytes)
+RADIO RX:  radio_take_rx() -> [ptr] | radio_complete_rx() (+inject_corrupt, set_rssi_dbm)
+I2S RX:    i2s_take_rx() -> [ptr,len] | i2s_complete_rx() (silence/fill)
+I2S TX:    i2s_take_tx() -> [ptr,len] | i2s_complete_tx(bytes) (+take_capture())
+NFCT:      nfct_take_tx() -> [ptr,len] | nfct_complete_tx() (+take_rx/complete_rx, field_present)
+CCM:       ccm_take_job() -> [cnf,in,out,scratch,len,dec] | ccm_complete(mic_ok)
+AAR:       aar_take_job() -> [irkptr,addrptr] | aar_complete(resolved)
+ECB:       ecb_take_job() -> [dataptr] | ecb_complete() (driver AES-128s in place: KEY@+0, CLEAR@+16, ENCRYPTED@+32)
+SAADC lim: saadc_check_limits(ch, value) (driver-side threshold check)
+TEMP:      temp_set_celsius(c) (driver-side die-temp value)
+COMP:      comp_set_input_mv(mv) (driver-side analog input)
+QDEC:      qdec_step(dir) (host-steppable quadrature accumulator)
+```
+
+Taps (virtual parts observe/inject without DMA round-trips):
+
+```
+I2C slave:  i2c_register_slave(bus, addr) | i2c_take_events(bus) | i2c_push_rx(bus, bytes)
+SPI slave:  spi_tap(bus, cs, dc) | spi_take_events(bus) | spi_push_miso(bus, bytes)
+TWIS/SPIS (host-side engines, WasmCpu methods): cpu.twis_master_write/read(base, addr, ...) | cpu.spis_exchange(base, mosi)
+USBD setup: usbd_inject_setup(bytes8) (host SETUP packets)
+Trace:      trace_start/stop() | take_trace() (PC trace ring)
 ```
 
 `demo/index.html:pumpDma()` is the reference implementation.
