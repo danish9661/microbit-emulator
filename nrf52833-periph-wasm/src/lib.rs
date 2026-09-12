@@ -336,6 +336,19 @@ pub fn temp_set_celsius(c: i32) {
     crate::peripherals::temp_nrf::temp_set_celsius(sys(), c);
 }
 
+// ── CCM crypt driver API (job words: cnf,in,out,scratch,len,decrypt) ──
+#[wasm_bindgen]
+pub fn ccm_take_job() -> Vec<u32> {
+    crate::peripherals::misc_nrf::take_ccm(sys())
+        .map(|j| vec![j.cnfptr, j.inptr, j.outptr, j.scratchptr, j.len, j.decrypt as u32])
+        .unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn ccm_complete(mic_ok: bool) {
+    crate::peripherals::misc_nrf::complete_ccm(sys(), mic_ok);
+}
+
 // ── COMP/QDEC host driver API ──
 #[wasm_bindgen]
 pub fn comp_set_input_mv(mv: u32) {

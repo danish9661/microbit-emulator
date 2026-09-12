@@ -144,22 +144,57 @@ pub fn complete_ecb(sys: &System) {
 /// NIRK 0x504, IRKPTR 0x508, ADDRPTR 0x510, SCRATCHPTR 0x514.
 /// Resolution runs driver-side: START stages take_aar() (irkptr, addrptr);
 /// complete_aar(resolved) sets END + RESOLVED/NOTRESOLVED.
+///
+/// CCM @ 0x4000F000 (same base, different task map; SVD ground truth).
+/// TASKS_KSGEN 0x000, TASKS_CRYPT 0x004, TASKS_STOP 0x008,
+/// TASKS_RATEOVERRIDE 0x00C, EVENTS_ENDKSGEN 0x100, EVENTS_ENDCRYPT 0x104,
+/// EVENTS_ERROR 0x108, SHORTS 0x200 (ENDKSGEN_CRYPT 0), INTENSET 0x304
+/// (ENDKSGEN 0, ENDCRYPT 1, ERROR 2) / CLR 0x308, MICSTATUS 0x400,
+/// ENABLE 0x500 (Disabled 0 / Enabled 2), MODE 0x504 (MODE bit0:
+/// encryption 0 / decryption 1; DATARATE bit16; LENGTH bit24),
+/// CNFPTR 0x508, INPTR 0x50C, OUTPTR 0x510, SCRATCHPTR 0x514,
+/// MAXPACKETSIZE 0x518, RATEOVERRIDE 0x51C.
+/// Map selection is honest, not aliased: ENABLE==2 runs the CCM map,
+/// any other nonzero keeps the AAR map (legacy drivers write 1).
+/// Crypto runs driver-side like ECB: KSGEN completes at once (the
+/// keystream is internal state with no RAM effect to stage;
+/// SHORTS ENDKSGEN_CRYPT chains into a staged CRYPT), while CRYPT
+/// stages take_ccm() and the driver performs AES-CTR + CBC-MAC.
+/// CNF layout (driver contract, ECB-style): KEY[16] @CNF+0,
+/// NONCE[13] @CNF+16. Packets are raw payload bytes; MIC is 4 bytes
+/// appended (BLE default). complete_ccm(mic_ok) sets ENDCRYPT +
+/// MICSTATUS.
 pub struct AarCcmNrf {
-    enabled: bool,
+    enable: u32,
+    ccm_mode: bool,
     ev_end: bool,
     ev_resolved: bool,
     ev_notresolved: bool,
+    ev_endcrypt: bool,
+    ev_ccm_error: bool,
     intenset: u32,
     status: u32,
     irkptr: u32,
     addrptr: u32,
     staged_aar: bool,
+    shorts: u32,
+    mode: u32,
+    cnfptr: u32,
+    inptr: u32,
+    outptr: u32,
+    scratchptr: u32,
+    maxpacketsize: u32,
+    rateoverride: u32,
+    staged_ccm: bool,
 }
 
 impl Default for AarCcmNrf {
     fn default() -> Self {
-        Self { enabled: false, ev_end: false, ev_resolved: false, ev_notresolved: false,
-               intenset: 0, status: 0, irkptr: 0, addrptr: 0, staged_aar: false }
+        Self { enable: 0, ccm_mode: false, ev_end: false, ev_resolved: false,
+               ev_notresolved: false, ev_endcrypt: false, ev_ccm_error: false,
+               intenset: 0, status: 0, irkptr: 0, addrptr: 0, staged_aar: false,
+               shorts: 0, mode: 0, cnfptr: 0, inptr: 0, outptr: 0,
+               scratchptr: 0, maxpacketsize: 0, rateoverride: 0, staged_ccm: false }
     }
 }
 
@@ -186,32 +221,172 @@ impl Peripheral for AarCcmNrf {
     fn read(&mut self, _sys: &System, offset: u32) -> u32 {
         match offset {
             0x100 => self.ev_end as u32,
-            0x104 => self.ev_resolved as u32,
-            0x108 => self.ev_notresolved as u32,
+            0x104 => {
+                if self.ccm_mode {
+                    self.ev_endcrypt as u32
+                } else {
+                    self.ev_resolved as u32
+                }
+            }
+            0x108 => {
+                if self.ccm_mode {
+                    self.ev_ccm_error as u32
+                } else {
+                    self.ev_notresolved as u32
+                }
+            }
+            0x200 => self.shorts,
             0x304 => self.intenset,
             0x400 => self.status,
-            0x500 => self.enabled as u32,
-            0x508 => self.irkptr,
-            0x510 => self.addrptr,
+            0x500 => self.enable,
+            0x504 => {
+                if self.ccm_mode {
+                    self.mode
+                } else {
+                    0
+                }
+            }
+            0x508 => {
+                if self.ccm_mode {
+                    self.cnfptr
+                } else {
+                    self.irkptr
+                }
+            }
+            0x50C => {
+                if self.ccm_mode {
+                    self.inptr
+                } else {
+                    0
+                }
+            }
+            0x510 => {
+                if self.ccm_mode {
+                    self.outptr
+                } else {
+                    self.addrptr
+                }
+            }
+            0x514 => {
+                if self.ccm_mode {
+                    self.scratchptr
+                } else {
+                    0
+                }
+            }
+            0x518 => {
+                if self.ccm_mode {
+                    self.maxpacketsize
+                } else {
+                    0
+                }
+            }
+            0x51C => {
+                if self.ccm_mode {
+                    self.rateoverride
+                } else {
+                    0
+                }
+            }
             _ => 0,
         }
     }
     fn write(&mut self, sys: &System, offset: u32, value: u32) {
         match offset {
             0x000 => {
-                // AAR TASKS_START: stage unless IRKPTR is null.
-                self.ev_end = false;
-                self.staged_aar = self.irkptr != 0;
+                if self.ccm_mode {
+                    // CCM TASKS_KSGEN: keystream is internal (no RAM
+                    // effect to stage); complete at once, chain on SHORTS.
+                    self.ev_end = true;
+                    self.fire(sys, 1 << 0);
+                    if self.shorts & 1 != 0 {
+                        self.staged_ccm = self.inptr != 0;
+                    }
+                } else {
+                    // AAR TASKS_START: stage unless IRKPTR is null.
+                    self.ev_end = false;
+                    self.staged_aar = self.irkptr != 0;
+                }
             }
-            0x008 => self.staged_aar = false, // STOP
+            0x004 => {
+                if self.ccm_mode {
+                    // CCM TASKS_CRYPT: stage the CTR/MIC job for the driver.
+                    self.ev_endcrypt = false;
+                    self.staged_ccm = self.inptr != 0;
+                }
+            }
+            0x008 => {
+                self.staged_aar = false;
+                self.staged_ccm = false;
+            }
+            0x00C => {} // TASKS_RATEOVERRIDE: accepted, no modeled effect
             0x100 => if value == 0 { self.ev_end = false; }
-            0x104 => if value == 0 { self.ev_resolved = false; }
-            0x108 => if value == 0 { self.ev_notresolved = false; }
+            0x104 => {
+                if value == 0 {
+                    if self.ccm_mode {
+                        self.ev_endcrypt = false;
+                    } else {
+                        self.ev_resolved = false;
+                    }
+                }
+            }
+            0x108 => {
+                if value == 0 {
+                    if self.ccm_mode {
+                        self.ev_ccm_error = false;
+                    } else {
+                        self.ev_notresolved = false;
+                    }
+                }
+            }
+            0x200 => self.shorts = value & 1,
             0x304 => self.intenset |= value & 7,
             0x308 => self.intenset &= !value,
-            0x500 => self.enabled = value & 1 == 1,
-            0x508 => self.irkptr = value,
-            0x510 => self.addrptr = value,
+            0x500 => {
+                // ENABLE=2 selects the CCM map; anything else nonzero
+                // keeps the legacy AAR map (drivers write 1 or 3).
+                self.ccm_mode = value == 2;
+                self.enable = value;
+            }
+            0x504 => {
+                if self.ccm_mode {
+                    self.mode = value;
+                }
+            }
+            0x508 => {
+                if self.ccm_mode {
+                    self.cnfptr = value;
+                } else {
+                    self.irkptr = value;
+                }
+            }
+            0x50C => {
+                if self.ccm_mode {
+                    self.inptr = value;
+                }
+            }
+            0x510 => {
+                if self.ccm_mode {
+                    self.outptr = value;
+                } else {
+                    self.addrptr = value;
+                }
+            }
+            0x514 => {
+                if self.ccm_mode {
+                    self.scratchptr = value;
+                }
+            }
+            0x518 => {
+                if self.ccm_mode {
+                    self.maxpacketsize = value & 0xFF;
+                }
+            }
+            0x51C => {
+                if self.ccm_mode {
+                    self.rateoverride = value & 3;
+                }
+            }
             _ => {}
         }
     }
@@ -241,6 +416,59 @@ pub fn take_aar(sys: &System) -> Option<(u32, u32)> {
         }
     })
     .flatten()
+}
+
+/// A staged CCM crypt job: all pointers live in guest RAM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CcmJob {
+    /// CNFPTR: KEY[16] @+0, NONCE[13] @+16 (driver contract, ECB-style).
+    pub cnfptr: u32,
+    /// INPTR: plaintext (encrypt) or ciphertext+MIC (decrypt).
+    pub inptr: u32,
+    /// OUTPTR: ciphertext+MIC (encrypt) or plaintext (decrypt).
+    pub outptr: u32,
+    /// SCRATCHPTR (observed, unused by the driver crypto).
+    pub scratchptr: u32,
+    /// Payload length in bytes (MIC excluded).
+    pub len: u32,
+    /// MODE bit0: false = encryption, true = decryption.
+    pub decrypt: bool,
+}
+
+/// Take a staged CCM CRYPT job; None when idle (or when the AAR map is
+/// active -- ENABLE=2 selects CCM).
+pub fn take_ccm(sys: &System) -> Option<CcmJob> {
+    with_aar(sys, |a| {
+        if a.ccm_mode && a.staged_ccm {
+            a.staged_ccm = false;
+            Some(CcmJob {
+                cnfptr: a.cnfptr,
+                inptr: a.inptr,
+                outptr: a.outptr,
+                scratchptr: a.scratchptr,
+                len: a.maxpacketsize,
+                decrypt: a.mode & 1 == 1,
+            })
+        } else {
+            None
+        }
+    })
+    .flatten()
+}
+
+/// Complete CCM: sets ENDCRYPT + MICSTATUS (1 = MIC verified/written)
+/// with INTEN IRQs.
+pub fn complete_ccm(sys: &System, mic_ok: bool) {
+    let fire = with_aar(sys, |a| {
+        a.ev_endcrypt = true;
+        a.status = mic_ok as u32;
+        a.intenset
+    });
+    if let Some(en) = fire {
+        if en & 0x7 != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(15);
+        }
+    }
 }
 
 /// Complete AAR: sets END + RESOLVED (or NOTRESOLVED) with INTEN IRQs.
@@ -409,6 +637,140 @@ pub fn complete_i2s_tx(sys: &System, data: &[u8]) {
     let _ = sys;
     if let Some(m) = crate::system::i2s_capture() {
         m.lock().unwrap().extend_from_slice(data);
+    }
+}
+
+#[cfg(test)]
+mod ccm_tests {
+    use super::*;
+    use crate::cpu::mem::{FlatMemory, Memory};
+    use crate::system::test_dummy_system;
+    use aes::Aes128;
+    use cipher::{KeyInit, BlockEncrypt};
+    use generic_array::GenericArray;
+
+    fn aes_block(key: &[u8], blk: &[u8]) -> [u8; 16] {
+        let cipher = Aes128::new(GenericArray::from_slice(key));
+        let mut b = GenericArray::clone_from_slice(blk);
+        cipher.encrypt_block(&mut b);
+        let mut out = [0u8; 16];
+        out.copy_from_slice(&b);
+        out
+    }
+
+    /// CCM job per our CNF contract: CTR keystream from NONCE[13] ++
+    /// [0x00, ctr_hi, ctr_lo] (ctr from 1), CBC-MAC (zero IV, first 4
+    /// bytes) encrypted under counter 0 and appended as MIC-4.
+    /// CTR keystream per our CNF contract: counter block =
+    /// NONCE[13] ++ [0x00, ctr_hi, ctr_lo], ctr from 1.
+    fn ctr_crypt(key: &[u8], nonce13: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(data.len());
+        for (i, chunk) in data.chunks(16).enumerate() {
+            let ctr = (i + 1) as u16;
+            let mut ctrblk = [0u8; 16];
+            ctrblk[..13].copy_from_slice(nonce13);
+            ctrblk[13] = 0x00;
+            ctrblk[14] = (ctr >> 8) as u8;
+            ctrblk[15] = (ctr & 0xFF) as u8;
+            let ks = aes_block(key, &ctrblk);
+            for (k, &b) in chunk.iter().enumerate() {
+                out.push(b ^ ks[k]);
+            }
+        }
+        out
+    }
+
+    /// CBC-MAC (zero IV) encrypted under counter 0, first 4 bytes: MIC-4.
+    fn cbcmac_mic(key: &[u8], nonce13: &[u8], pt: &[u8]) -> [u8; 4] {
+        let mut mac = [0u8; 16];
+        for chunk in pt.chunks(16) {
+            let mut blk = [0u8; 16];
+            blk[..chunk.len()].copy_from_slice(chunk);
+            for (m, &b) in blk.iter().enumerate() {
+                mac[m] ^= b;
+            }
+            mac = aes_block(key, &mac);
+        }
+        let s0 = aes_block(key, &[nonce13, &[0u8; 3]].concat());
+        let mut mic = [0u8; 4];
+        for k in 0..4 {
+            mic[k] = mac[k] ^ s0[k];
+        }
+        mic
+    }
+
+
+    #[test]
+    fn ccm_encrypt_decrypt_roundtrip() {
+        let sys = test_dummy_system();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        let key: Vec<u8> = (0..16u8).collect();
+        let nonce: Vec<u8> = (0..13u8).collect();
+        let pt = b"Hello nRF52833!";
+        for (i, &b) in key.iter().enumerate() {
+            mem.write8(0x20001000 + i as u32, b);
+        }
+        for (i, &b) in nonce.iter().enumerate() {
+            mem.write8(0x20001010 + i as u32, b);
+        }
+        for (i, &b) in pt.iter().enumerate() {
+            mem.write8(0x20002000 + i as u32, b);
+        }
+        // CNF layout is driver-defined (KEY@+0, NONCE@+16); MODE=encrypt.
+        sys.p.write(&sys, 0x4000F500, 4, 2); // ENABLE=CCM
+        assert_eq!(sys.p.read(&sys, 0x4000F500, 4), 2);
+        sys.p.write(&sys, 0x4000F504, 4, 0); // MODE encrypt
+        sys.p.write(&sys, 0x4000F508, 4, 0x20001000); // CNFPTR
+        sys.p.write(&sys, 0x4000F50C, 4, 0x20002000); // INPTR
+        sys.p.write(&sys, 0x4000F510, 4, 0x20003000); // OUTPTR
+        sys.p.write(&sys, 0x4000F518, 4, pt.len() as u32); // MAXPACKETSIZE
+        sys.p.write(&sys, 0x4000F304, 4, 0x03); // INTEN ENDKSGEN+ENDCRYPT
+        sys.p.write(&sys, 0x4000F000, 4, 1); // KSGEN -> ENDKSGEN at once
+        assert_eq!(sys.p.read(&sys, 0x4000F100, 4), 1, "ENDKSGEN");
+        sys.p.write(&sys, 0x4000F004, 4, 1); // CRYPT stages job
+        let job = take_ccm(&sys).expect("ccm staged");
+        assert_eq!((job.cnfptr, job.inptr, job.outptr, job.len), (0x20001000, 0x20002000, 0x20003000, 15));
+        assert!(!job.decrypt);
+        // Driver crypto (mirrors the documented CNF contract).
+        let keya: Vec<u8> = (0..16).map(|i| mem.read8(0x20001000 + i)).collect();
+        let noncea: Vec<u8> = (0..13).map(|i| mem.read8(0x20001010 + i)).collect();
+        let pta: Vec<u8> = (0..15).map(|i| mem.read8(0x20002000 + i)).collect();
+        let ct = ctr_crypt(&keya, &noncea, &pta);
+        let mic = cbcmac_mic(&keya, &noncea, &pta);
+        assert_ne!(ct, pta, "ciphertext differs");
+        for (i, &b) in ct.iter().enumerate() {
+            mem.write8(0x20003000 + i as u32, b);
+        }
+        for (i, &b) in mic.iter().enumerate() {
+            mem.write8(0x20003000 + 15 + i as u32, b);
+        }
+        complete_ccm(&sys, true);
+        assert_eq!(sys.p.read(&sys, 0x4000F104, 4), 1, "ENDCRYPT");
+        assert_eq!(sys.p.read(&sys, 0x4000F400, 4), 1, "MICSTATUS ok");
+        // Decrypt path: MODE=1, ciphertext+MIC back to plaintext, MIC ok.
+        sys.p.write(&sys, 0x4000F504, 4, 1); // MODE decrypt
+        sys.p.write(&sys, 0x4000F50C, 4, 0x20003000); // INPTR = ct+mic
+        sys.p.write(&sys, 0x4000F510, 4, 0x20004000); // OUTPTR
+        sys.p.write(&sys, 0x4000F004, 4, 1);
+        let job = take_ccm(&sys).expect("decrypt staged");
+        assert!(job.decrypt);
+        let cta: Vec<u8> = (0..15).map(|i| mem.read8(0x20003000 + i)).collect();
+        let mica: [u8; 4] = [mem.read8(0x2000300F), mem.read8(0x20003010), mem.read8(0x20003011), mem.read8(0x20003012)];
+        let pt2 = ctr_crypt(&keya, &noncea, &cta);
+        assert_eq!(pt2, pta, "roundtrip plaintext");
+        assert_eq!(mica, cbcmac_mic(&keya, &noncea, &pt2), "MIC verifies");
+        for (i, &b) in pt2.iter().enumerate() {
+            mem.write8(0x20004000 + i as u32, b);
+        }
+        complete_ccm(&sys, true);
+        assert_eq!(sys.p.read(&sys, 0x4000F400, 4), 1, "MICSTATUS ok");
+        // Tampered MIC -> MICSTATUS 0.
+        complete_ccm(&sys, false);
+        assert_eq!(sys.p.read(&sys, 0x4000F400, 4), 0, "MICSTATUS fail");
+        // SHORTS ENDKSGEN_CRYPT chains KSGEN straight into a staged CRYPT.
+        sys.p.write(&sys, 0x4000F200, 4, 1);
+        sys.p.write(&sys, 0x4000F000, 4, 1);
+        assert!(take_ccm(&sys).is_some(), "SHORTS chained a CRYPT stage");
     }
 }
 
