@@ -243,8 +243,33 @@ pub fn radio_take_tx() -> Vec<u32> {
 }
 
 #[wasm_bindgen]
+pub fn radio_complete_tx() {
+    crate::peripherals::radio_nrf::complete_tx(sys());
+}
+
+#[wasm_bindgen]
 pub fn radio_inject_rx(bytes: &[u8]) {
     crate::peripherals::radio_nrf::inject_rx(sys(), bytes.to_vec());
+}
+
+#[wasm_bindgen]
+pub fn radio_inject_corrupt(bytes: &[u8]) {
+    crate::peripherals::radio_nrf::inject_corrupt(sys(), bytes.to_vec());
+}
+
+#[wasm_bindgen]
+pub fn radio_take_rx() -> Vec<u32> {
+    crate::peripherals::radio_nrf::take_rx(sys()).map(|p| vec![p]).unwrap_or_default()
+}
+
+#[wasm_bindgen]
+pub fn radio_complete_rx() {
+    crate::peripherals::radio_nrf::complete_rx(sys());
+}
+
+#[wasm_bindgen]
+pub fn radio_set_rssi_dbm(dbm: i32) {
+    crate::peripherals::radio_nrf::set_rssi_dbm(sys(), dbm);
 }
 
 // ── I2S streaming driver API ──

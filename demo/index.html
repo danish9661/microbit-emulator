@@ -193,6 +193,8 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     b.addEventListener('pointerleave', () => wasm.gpio_set_input(port, pin, true));
   }
   // EASYDMA pump: move staged transfers between guest RAM and hosts.
+  // Last looped-back air packet (radio RX delivery needs the bytes).
+  let lastAir = [];
   function pumpDma() {
     if (!cpu) return;
     if (wasm.is_watchdog_reset_requested()) {
@@ -280,9 +282,20 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     }
     t = wasm.radio_take_tx();
     if (t.length) {
-      // Demo air: loop straight back.
-      const bytes = cpu.mem_read(t[0], 8);
+      // Demo air: loop straight back into the RX queue, complete TX,
+      // and deliver the queued bytes to the staged RX buffer.
+      const bytes = cpu.mem_read(t[0], t[1]);
+      lastAir = bytes;
       wasm.radio_inject_rx(bytes);
+      wasm.radio_complete_tx();
+    }
+    t = wasm.radio_take_rx();
+    if (t.length && lastAir.length) {
+      // Loopback: the last injected packet lands in the RX buffer.
+      // (A real air layer would supply foreign bytes here instead.)
+      cpu.mem_write(t[0], lastAir.slice(0, 252));
+      lastAir = [];
+      wasm.radio_complete_rx();
     }
   }
   function frame() {

@@ -222,6 +222,15 @@ fn nrf_air_usb_radio_ppi() {
     // Driver moves the TX packet through air (loopback).
     if let Some(_t) = crate::peripherals::radio_nrf::take_tx(sys) {
         crate::peripherals::radio_nrf::inject_rx(sys, vec![0xAA]);
+        crate::peripherals::radio_nrf::complete_tx(sys);
+    }
+    // Driver delivers the queued RX packet to RAM and completes it
+    // (END fires only on completion).
+    if let Some(ptr) = crate::peripherals::radio_nrf::take_rx(sys) {
+        for (i, &b) in [0x01u8, 0x02, 0x03].iter().enumerate() {
+            mem.write8(ptr.wrapping_add(i as u32), b);
+        }
+        crate::peripherals::radio_nrf::complete_rx(sys);
     }
     // Phase 2: PPI/TIMER part with ticks.
     run_with_ticks(&mut cpu, &mut mem, sys, 400_000);
