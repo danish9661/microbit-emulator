@@ -506,6 +506,36 @@ fn exception_svc_roundtrip() {
     assert_eq!(cpu.ipsr, 0, "still in handler mode");
 }
 
+#[test]
+fn exception_svc_stacks_even_return_pc() {
+    // Stacked PC bit 0 must be clear (Thumb travels in xPSR.T): silicon
+    // consumers (the MBR SVC dispatcher reads [PC-2] for the SVC number)
+    // break when it leaks the internal Thumb bit (see docs/cpu_bug.md).
+    let _g = lock_boot();
+    let mut img = vec![0u8; 0x200];
+    img[0..4].copy_from_slice(&0x20002000u32.to_le_bytes());
+    img[4..8].copy_from_slice(&0x00000100u32.to_le_bytes());
+    img[11 * 4..11 * 4 + 4].copy_from_slice(&0x00000111u32.to_le_bytes());
+    // main at 0x100: svc #0x18 (0xDF18), then b.n loop (0xE7FE)
+    img[0x100] = 0x18;
+    img[0x101] = 0xDF;
+    img[0x102] = 0xFE;
+    img[0x103] = 0xE7;
+    // handler at 0x110 (GAS-built): mrs r0,MSP; ldr r0,[r0,#24];
+    // ldr r1,=0x20001000; str r0,[r1]; bx lr. NOTE: GAS/objdump show
+    // halfword VALUES (F3EF = bytes EF,F3 little-endian).
+    let h: [u8; 16] = [0xEF, 0xF3, 0x08, 0x80, 0x80, 0x69, 0x01, 0x49,
+                       0x08, 0x60, 0x70, 0x47, 0x00, 0x10, 0x00, 0x20];
+    img[0x110..0x120].copy_from_slice(&h);
+    let (mut cpu, mut mem) = boot(&img);
+    cpu.deliver_irqs = true;
+    let sys = crate::sys();
+    cpu.run(sys, &mut mem, 12);
+    assert!(cpu.fault.is_none(), "fault: {:?}", cpu.fault);
+    // Return address of the 16-bit SVC at 0x100 is 0x102, bit 0 clear.
+    assert_eq!(mem.read32(0x20001000), 0x00000102, "stacked PC has Thumb bit set");
+}
+
 fn run_snippet(code: &[u16], regs: &[(usize, u32)]) -> (Cpu, FlatMemory) {
     let _g = lock_boot();
     let sys = WasmSystem::new();

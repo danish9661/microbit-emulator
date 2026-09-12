@@ -471,7 +471,12 @@ impl Cpu {
         mem.write32(sp.wrapping_add(12), self.regs.r[3]);
         mem.write32(sp.wrapping_add(16), self.regs.r[12]);
         mem.write32(sp.wrapping_add(20), self.regs.r[14]);
-        mem.write32(sp.wrapping_add(24), self.regs.r[15]);
+        // Stacked return address is instruction-aligned (bit 0 clear):
+        // Thumb state travels in stacked xPSR.T, and silicon consumers
+        // (notably the MBR SVC dispatcher, which reads [PC-2] to recover
+        // the SVC number) require PC-2 == the faulting/SVC instruction.
+        // r[15] always carries the Thumb bit internally; strip it here.
+        mem.write32(sp.wrapping_add(24), self.regs.r[15] & !1);
         // xPSR with the T-bit set (R0 landed lowest, xPSR highest), plus
         // the ALIGN pad flag (bit 9) when STKALIGN padded above.
         let xpsr = self.regs.xpsr | 0x01000000 | if pad != 0 { 0x200 } else { 0 };

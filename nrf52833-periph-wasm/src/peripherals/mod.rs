@@ -455,7 +455,11 @@ impl Peripherals {
         } else if let Some(p) = Self::get_peripheral(&self.peripherals, addr) {
             p.peripheral.borrow_mut().read(sys, addr - p.start)
         } else { 0 };
-        value << (8 * byte_offset)
+        // Shift DOWN: callers truncate to their width (mem.read8 takes the
+        // low byte). Shifting up here zeroed every sub-word read past
+        // offset 0 (e.g. the bootloader's ldrb of NVIC IPR22), which
+        // reset-looped MicroPython (see docs/cpu_bug.md §3).
+        value >> (8 * byte_offset)
     }
 
     pub fn write(&self, sys: &System, addr: u32, size: u8, mut value: u32) {
@@ -525,6 +529,23 @@ mod svd_tests {
         assert_eq!(p.peripherals.iter().filter(|s| s.start == 0x1000_0000).count(), 1);
     }
 
+    #[test]
+    fn subword_reads_shift_down() {
+        // Peripheral byte/halfword reads at nonzero offsets must return
+        // the addressed lanes (callers truncate to width). Shifting up
+        // zeroed them all: the bootloader's ldrb of NVIC IPR22 read 0
+        // and reset-looped MicroPython (docs/cpu_bug.md §3).
+        let sys = crate::system::test_dummy_system();
+        sys.p.write(&sys, 0xE000E400, 4, 0x04030201);
+        // (Peripherals::read returns the lane-shifted word; callers like
+        // mem.read8 truncate to width -- mask here like they do.)
+        assert_eq!(sys.p.read(&sys, 0xE000E400, 1) & 0xFF, 0x01);
+        assert_eq!(sys.p.read(&sys, 0xE000E401, 1) & 0xFF, 0x02);
+        assert_eq!(sys.p.read(&sys, 0xE000E402, 1) & 0xFF, 0x03);
+        assert_eq!(sys.p.read(&sys, 0xE000E403, 1) & 0xFF, 0x04);
+        assert_eq!(sys.p.read(&sys, 0xE000E402, 2) & 0xFFFF, 0x0403);
+        assert_eq!(sys.p.read(&sys, 0xE000E400, 4), 0x04030201);
+    }
     #[test]
     fn hardcoded_map_matches_svd_bases() {
         // Every new_wasm slot start must equal some SVD peripheral base

@@ -19,3 +19,21 @@ pc/opcode), fix in the core, add a native regression test.
 - Why old tests stayed green: no prior test used TST with equal-nonzero
   operands (the only case where TST and CMP flag results differ... more
   precisely where `(a&b)==0 != (a==b)`).
+
+## 2. Stacked return PC leaked the Thumb bit (FIXED 2026-09-11)
+
+- Claim: `take_exception` stacked raw `r[15]` (which always carries
+  `|1` internally), so every stacked return address was odd.
+- Repro: MicroPython bootloader's MBR SVC dispatcher reads
+  `[stackedPC-2]` as a byte to recover the SVC number. For
+  `svc 24` (`0xDF18`) at `0x7A278` it needs stacked `0x7A27A`
+  (`[0x7A278]=0x18`); we stacked `0x7A27B`, it read `[0x7A279]`
+  (`0xDF`=223), took the unknown-SVC path, the command failed with
+  `NRF_ERROR_SVC_HANDLER_MISSING`, and the bootloader reset-looped
+  forever (MBR -> BL -> failed `sd_mbr_command` -> reset).
+- Found by: tracing the bootloader reset loop to `svc24-ret r0=1`
+  with command struct `[2,0,0,0,0,0x7A125]`.
+- Fix: `src/cpu/mod.rs` stacks `r[15] & !1` (Thumb travels in
+  stacked xPSR.T; silicon stacks the aligned return address).
+- Regression: `cpu::tests::exception_svc_stacks_even_return_pc`
+  (verified to fail without the fix: `0x103` vs `0x102`).
