@@ -2068,3 +2068,23 @@ product gap). REPL exec (`print(1+2)` → `3`) is the next frontier,
 still open; the NULL-fault/pin-poll layers (P24–P25/P44) now get a
 fast iteration loop (~60s/boot instead of never).
 Probes: `p86banner.py` lives in /tmp (ephemeral, not committed).
+
+## 76. P87 REPL exec WORKS: `print(1+2)` → `3` in-browser (2026-09-13)
+
+Headless Chromium (`p87repl.py`, committed pkg from P86, no code
+changes — the fix WAS P86): banner at T+60s (`uartLen=104`), then
+`print(1+2)` typed + Send → R+60s `uartLen=121` =
+`"...>>> print(1+2)\n3\n>>> "` — echo + result + fresh prompt,
+stable R2m/R3m, zero page errors, no fault. LEFT-1 (STATUS §6.1,
+"REPL exec BLOCKED BEHIND BANNER") is CLOSED: it was never a
+separate input-path bug — the RX drip + DMA-mirror path (P39) was
+already correct, and every "parked-main / pin-poll / NULL-fault"
+post-banner layer (P24–P25/P40–P44/P51) was observed on
+schedule-starved or NACK-degraded runs that the KL27 retry storm
+explains. With the transact tax gone the scheduler runs, readline
+consumes, MP executes, TX stages. Remaining REPL-adjacent work is
+normal product depth (multi-line, paste burst pacing, Ctrl-C/D —
+untested), not a bring-up gate. Next frontier candidates: MakeCode
+scroll content (LEFT-4, pre-scroll sequencing still open) or the
+bootloader full chain (LEFT-3).
+Probes: `p87repl.py` lives in /tmp (ephemeral, not committed).

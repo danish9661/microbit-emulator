@@ -152,9 +152,16 @@ beyond proof-level driving remain future work.
 
 ## 6. LEFT — prioritized
 
-1. **REPL exec (`print(1+2)` → `3`)**. BLOCKED BEHIND BANNER (P55–P57,
-   P67): native re-run on the CURRENT tree (clocks boot ON, ADDR raw,
-   AIRCR honored) still parks at `0x200021b8/bb` through 600M, uartLen
+1. **REPL exec (`print(1+2)` → `3`)**. CLOSED (P87, 2026-09-13,
+   headless Chrome, committed P86 pkg, zero page errors, no fault):
+   banner at T+60s, `print(1+2)` + Send → `...>>> print(1+2)\n3\n>>> `
+   at R+60s, stable after. It was never a separate input-path bug —
+   the RX drip + DMA-mirror path (P39) was already correct; the
+   "parked-main / pin-poll / NULL-fault" post-banner layers
+   (P24–P25/P40–P44/P51) were schedule-starved/NACK-degraded runs
+   that the KL27 retry storm explains. Historical forensics kept
+   below for the record.
+   Pre-P86 state (superseded, kept for context):
    0, TWIM clean (`t_addr=114/err=0/endtx/rx=1`), UARTE never staged
    (`u_max=0/u_end=0`) — so the banner gate is NOT clocks/ADDR/AIRCR.
    Pre-banner park is a countdown wait, not a hang: pc `0x200021b8/bb`
