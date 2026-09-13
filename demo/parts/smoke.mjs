@@ -16,6 +16,8 @@ function mockWasm() {
   const rx = [];
   return {
     slaves: [],
+    inputs: [],
+    gpio_set_input(port, pin, v) { this.inputs.push([port, pin, v]); },
     i2c_register_slave(p, a) { this.slaves.push([p, a]); },
     i2c_take_events(p) { return []; },
     i2c_push_rx(p, bytes) { rx.push(...bytes); },
@@ -62,6 +64,7 @@ check(ROWS.length === 5 && COLS.length === 5, '5x5 matrix map');
   cpu._ram.set([0x0F], 0);
   imu.poll(cpu);
   check((wasm._rxStaged ?? null) === null, 'no rx staged spontaneously');
+  check(wasm.inputs.some(([p, n, v]) => p === 0 && n === 25 && v === false), 'DRDY holds P0.25 low');
 }
 
 // --- LSM303 byte path: pointer-set anticipates the read ---

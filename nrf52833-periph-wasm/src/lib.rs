@@ -548,7 +548,12 @@ impl WasmCpu {
     pub fn fault_op2(&self) -> u32 { self.cpu.fault.map(|f| f.op2 as u32).unwrap_or(0) }
     pub fn fault_len(&self) -> u32 { self.cpu.fault.map(|f| f.len as u32).unwrap_or(0) }
     pub fn mem_fault(&self) -> u32 { self.mem.bad.get().unwrap_or(0xFFFF_FFFF) }
-    pub fn step(&mut self, budget: u32) -> u32 { self.cpu.run(sys(), &mut self.mem, budget) }
+    pub fn step(&mut self, budget: u32) -> u32 {
+        // Publish RAM so UARTE STARTTX can snapshot TXD bytes synchronously
+        // (P49 N+1 drops); guard clears on return even on host panic.
+        let _snap = crate::peripherals::uarte_nrf::tx_snapshot_guard(&self.mem);
+        self.cpu.run(sys(), &mut self.mem, budget)
+    }
     pub fn trace_start(&mut self) { cpu::trace_start(); }
     pub fn trace_stop(&mut self) { cpu::trace_stop(); }
     pub fn take_trace(&mut self) -> Vec<u32> { cpu::take_trace() }

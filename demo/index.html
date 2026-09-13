@@ -18,12 +18,18 @@
 <h1>micro:bit v2.2 emulator <small>(nRF52833 target only)</small></h1>
 <p>Drop a <code>.hex/.bin</code> built for flash <code>0x0</code> (ARM GCC, no SoftDevice).
 Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB serial.</p>
-<input type="file" id="fw" accept=".hex,.bin">
+<input type="file" id="fw" accept=".hex,.bin" style="display:none">
+<button id="fwload" title="Pick a .hex/.bin file to stage it (does not boot)">Load firmware…</button>
+<button id="fwrun" title="Boot the staged file (or preset)">Run</button>
 <select id="preset" title="Built-in firmware proofs — run instantly, no file needed">
   <option value="">preset firmware…</option>
   <option value="blinky">blinky (UART BOOT/BLINK + GPIO)</option>
   <option value="sensors">sensors (buttons + TWIM + GPIOTE)</option>
   <option value="dma">dma (TWIM DMA loopback)</option>
+  <option value="extras">extras (SAADC/TEMP/RNG/PWM)</option>
+  <option value="stubs">stubs (SPIM/PDM/QSPI/USBD/RADIO)</option>
+  <option value="air">air (USB + RADIO loopback + PPI)</option>
+  <option value="cirq">c-irq (C TIMER0 IRQ + UART)</option>
   <option value="mpy">MicroPython v2.1.2 (built-in, auto-boots)</option>
 </select>
 <span id="status">loading wasm…</span> <span id="mips" title="Emulated instructions per wall-clock second"></span>
@@ -139,17 +145,25 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   // path as a dropped file: MBR vectors at 0x0, no UICR records.
   const PRESETS = {
     blinky: 'ACAAIAkAAABP8IBAASEBYBRICCEBYBRIT/QAEQFgE0gA8BP4AiQSSE/0ABEBYADwFfgQSE/0ABEBYADwD/gOSADwA/gBPO7R/ucQtQRGFPgBGxGxCUoRYPnnEL0ISgE6/dFwRwAlAEAYBQBQhAAAAAgFAFAMBQBQigAAABwlAEBADQMAQk9PVAoAQkxJTksKAA==',
-    sensors: 'ACAAIAkAAABP8IBAASEBYBZICCEBYBZIFkkBYBZIBiEBYBZIGSEBYBVIASEBYBVIKCEBYBRIASEBYBRIAPAM+BNIAGgAKAPQEkgA8AX4AuARSADwAfj+5xC1BEYU+AEbEbEOShFg+ecQvQAAACUAQBBlAEABDgIAADUAQIg1AEAIMABAHDUAQBQwAECgAAAAAGEAQKkAAACwAAAAHCUAQFNFTlM6T0sKAEJUTjoxCgBCVE46MAoA',
+    sensors: 'ACAAIAkAAABP8IBAASEBYBxICCEBYBxIHEkBYBxIBiEBYBxIGSEBYBtIASEBYBtIKCEBYBpIASEBYBpIAPAZ+AIlGUgAaEAEAdQBIADgACCoQgnQBUYAKAPQFEgA8An4AuATSADwBfhP9AAQATj90efnELUERhT4ARsRsQ1KEWD55xC9ACUAQBBlAEABDgIAADUAQIg1AEAIMABAHDUAQBQwAEC4AAAAEAUAUMEAAADIAAAAHCUAQFNFTlM6T0sKAEJUTjoxCgBCVE46MAoA',
     dma: 'ACAAIAkAAABP8IBAASEBYCJICCEBYCJIIkkBYCJIByEBYCJIASEBYCFIAPAl+CFIIUkBYCFIAyEBYCFIGSEBYCBIASEBYCBIAPAW+B9IAPAb+B9IH0kBYB9IASEBYB9IAWAfSAFgH0gBYB9IAPAE+B5IAPAJ+P7nBrUdSQJoACoB0QE5+tEGvRC1BEYU+AEbEbEYShFg+ecQvQAAACUAQEQlAED4AAAASCUAQAggAEAgIQBANDUAQAAQACA4NQBAiDUAQAAwAEAMMQBAAAEAACx2AEAQEAAgMHYAQAB1AEAAcABABHAAQARxAEAIAQAAQEIPABwlAEBETUE6T0sKAEkyQzpPSwoAQURDOk9LCgA=',
+    extras: 'ACAAIAkAAABP8IBAASEBYCdICCEBYCdIASEBYCZIASEBYCZIAWAmSADwMfglSADwNvglSAEhAWAkSADwKPgkSABoACgD0CNIAPAp+ALgIkgA8CX4IUgBIQFgIUgA8Bf4IEgAaAAoA9AfSADwGPgC4B5IAPAU+B5IASEBYB1IAWAdSADwBPgdSADwCfj+5wa1G0kCaAAqAdEBOfrRBr0QtQRGFPgBGxGxFkoRYPnnEL0AJQBAAHUAQABwAEAEcABABHEAQAgBAAAAwABAAMEAQAjFAEASAQAAGwEAAADQAEAA0QBACNUAQCUBAAAtAQAAABUCQAgQAkAQEQJANgEAAEBCDwAcJQBAU0FBREM6T0sKAFRFTVA6T0sKAFRFTVA6QkFECgBSTkc6T0sKAFJORzpCQUQKAFBXTTpPSwoA',
+    stubs: 'ACAAIAkAAABP8IBAASEBYCVICCEBYCVIASEBYCRIAWAkSADwL/gkSAEhAWAjSAFgI0gA8Cf4I0gBIQFgIkgBYCJIAWAiSADwHfgiSAEhAWAhSAFgIUgBYCFIAPAT+CFIASEBYCBIAPAN+CBIASEBYB9IAPAH+B9IASEBYB5IAPAJ+P7nBrUdSQJoACoB0QE5+tEGvRC1BEYU+AEbEbEYShFg+ecQvQAAACUAQBAwAEAUMABABDEAQADVAUAA0AFAANEBQACVAkAAkAJABJACQASRAkAAdQJABHUCQABwAkAEcQJAABAAQAARAEAIEABADBEAQAwQAEAEAQAAQEIPABwlAEBTVFVCUzpPSwoA',
+    air: 'ACAAIAkAAABP8IBAASEBYCxICCEBYCxIAPA8+AAhAWAqSADwRfgqSCpJAWAqSAEhAWAqSAFgKkgBYCpIAWAnSAFgKUgA8Cb4KEgA8DH4KEhB8gNRAWAnSE/0+mEBYCZIJkkBYCZIJ0kBYCdIASEBYCZIAWAA8Bb4JUgAaE/0ABEIQgPQI0gA8BP4AuAiSADwD/j+5wa1IUkCaAAqAdEBOfrRBr0EtUzyUDIBOv3RBL0QtQRGFPgBGxGxGUoRYPnnEL0AAAAlAEAAcQJAJAEAAAQVAEAAEgAgABAAQAgQAEAMEABABBAAQAwRAEAsAQAAEGUAQECFAEAQ9QFAQIEAQBT1AUAAYABABPUBQACAAEAEBQBQNgEAAD4BAABAQg8AHCUAQFVTQjpPSwoAUkFESU86T0sKAFBQSTpPSwoAUFBJOkJBRAoA',
+    cirq: 'AAACIGUAAABxAAAAcQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABxAAAAAAAAAAAAAABxAAAAcQAAAHEAAABxAAAAcQAAAHEAAABxAAAAcQAAAHEAAABxAAAAdQAAAC9IhUYA8F74/ucAv/7nAL8mS9P4QCEAKkPQMLUkSAAihbDD+EAhA2giSk/woEEBM0/0ABQDYMH4CEUfSVQjwfgcNRL4AT8AK/nRAGhQswGsGk2kRqX7ABLSCALrggGg60EBhkYwMb7xCQ8M+AEbA/EBAxBGAdkKK+zRD0kjRBP4AS3B+BwlnEL50QtJT/CgQwogT/QAEsH4HAXD+AwlBbAwvXBHMCPB+Bw17ucAgABAAAAAIOgBAAAAIABAzczMzAAAAiBP8IBCT/ABDChJwvgAwE/woEAII0/0ABwlSsH4ADVCI8D4GMXB+Bw1EvgBPwAr+dEgSk/0emzC+EDFASFP8OAgT/SAPML4ABLC+ATDT/SAfMD4AMERYGK2F0kKaAIqGtiCsBpGAZIBm7P1en8G0gGbATMBkwGbs/V6f/jTC2gCK/DZDkoJSUQjwfgcNRL4AT8AK/nR/ucJSgRJRCPB+Bw1EvgBPwAr+dH+5wC/ACAAQPABAAAAgABAAAAAIPgBAABUSUNLOgAAAEJPT1QKAAAARE9ORQoA',
   };
+  // Selecting a preset only STAGES it (same as Load) — nothing runs
+  // until Run is pressed. stagedKind lets Run apply per-preset fixups.
   function bootPreset(name) {
     if (name === 'mpy') { bootPresetMicroPython(); return; }
     const b64 = PRESETS[name];
     if (!b64) return;
-    bootImage(Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)), []);
+    stageImage('preset:' + name, Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)), []);
+    stagedKind = name;
   }
   // Built-in MicroPython: shipped as demo/firmware/*.hex (same origin,
-  // no CORS involved), then straight into the direct-app boot.
+  // no CORS involved). Staged like everything else; Run boots the MBR
+  // image and continues straight into the direct-app boot.
   async function bootPresetMicroPython() {
     status.textContent = 'loading built-in MicroPython…';
     try {
@@ -157,14 +171,15 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
       if (!res.ok) throw new Error('http ' + res.status);
       const parsed = parseHex(await res.text());
       if (!parsed) throw new Error('no data records');
-      bootImage(parsed.img, parsed.uicr);
-      bootMicroPythonApp();
+      stageImage('preset:mpy', parsed.img, parsed.uicr);
+      stagedKind = 'mpy';
     } catch (err) {
       status.textContent = 'built-in MicroPython failed to load: ' + err;
     }
   }
   document.getElementById('preset').addEventListener('change', (e) => {
     if (e.target.value) bootPreset(e.target.value);
+    e.target.value = ''; // back to placeholder: staging boots nothing
   });
   // Live speedometer: emulated instructions per wall-clock second.
   let mipsN = 0, mipsT = performance.now();
@@ -223,6 +238,28 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     uartBox.value = '';
     status.textContent = `MicroPython app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}), banner follows`;
   }
+  // Staged image: Load/preset parses and holds it here WITHOUT booting;
+  // Run boots it via bootImage. Nothing runs until Run is pressed.
+  // stagedKind remembers which preset was staged (air needs a USBRESET
+  // poke AFTER boot; mpy continues straight into the direct-app boot).
+  let stagedImg = null, stagedName = '', stagedKind = null;
+  function stageImage(name, u8, uicr) {
+    stagedImg = u8; stagedName = name; stagedKind = null;
+    pendingUicr = uicr || [];
+    const dv = new DataView(u8.buffer);
+    status.textContent = `loaded ${name} (${u8.length}B, SP=${dv.getUint32(0, true).toString(16)} PC=${dv.getUint32(4, true).toString(16)}) — press Run`;
+  }
+  document.getElementById('fwload').addEventListener('click', () => {
+    document.getElementById('fw').click();
+  });
+  document.getElementById('fwrun').addEventListener('click', () => {
+    if (!stagedImg) { status.textContent = 'nothing staged — Load a file or pick a preset first'; return; }
+    bootImage(stagedImg, pendingUicr);
+    // air_nrf polls USBRESET first: the test host pre-signals it, so Run
+    // must too (radio loopback is already in pumpDma).
+    if (stagedKind === 'air') { try { wasm.usbd_signal_reset(); } catch (e) {} }
+    if (stagedKind === 'mpy') bootMicroPythonApp();
+  });
   document.getElementById('fw').addEventListener('change', async (e) => {
     const f = e.target.files[0];
     if (!f) return;
@@ -235,7 +272,10 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     } else {
       img = new Uint8Array(buf);
     }
-    bootImage(img, pendingUicr);
+    stagedImg = img; stagedName = f.name; stagedKind = null;
+    e.target.value = ''; // allow re-picking the same file later
+    const dv = new DataView(img.buffer);
+    status.textContent = `loaded ${f.name} (${img.length}B, SP=${dv.getUint32(0, true).toString(16)} PC=${dv.getUint32(4, true).toString(16)}) — press Run`;
   });
   document.getElementById('reset').addEventListener('click', () => {
     if (cpu && boot) {

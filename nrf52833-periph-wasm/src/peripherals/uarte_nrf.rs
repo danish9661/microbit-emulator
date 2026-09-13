@@ -1,5 +1,52 @@
+use std::cell::Cell;
 use crate::system::{System, instruction_count, get_uart_output};
+use crate::cpu::mem::{FlatMemory, Memory};
 use super::Peripheral;
+
+/// Synchronous TX snapshot hooks (P49 N+1 drops).
+///
+/// Silicon EasyDMA latches TXD bytes within cycles of TASKS_STARTTX, but
+/// our driver take runs up to ~100K instructions later (once per demo
+/// frame), after MicroPython's `putc` reuses its `&c` stack slot for the
+/// next char. The deferred `mem_read` then transmits char N+1 twice and
+/// drops N (holes every ~20 takes, always `0x20`, aligned).
+///
+/// Fix: `WasmCpu::step` (the only producer of peripheral writes that owns
+/// guest RAM) publishes its `FlatMemory` in this thread-local for the
+/// duration of `cpu.run`. STARTTX copies `MAXCNT` bytes synchronously;
+/// `complete_txdma` emits the snapshot instead of the driver's late bytes.
+/// No `Peripheral::write` trait change, no `src/cpu` edits. Native
+/// `cpu.run` harnesses and unit tests never set it (null = legacy path).
+thread_local! {
+    static TX_SNAPSHOT_MEM: Cell<*const FlatMemory> = Cell::new(std::ptr::null());
+}
+/// Publish guest RAM for synchronous TX snapshots; returned guard clears
+/// on drop (also on panic), so no stale pointer can outlive the step.
+pub fn tx_snapshot_guard(mem: &FlatMemory) -> TxSnapshotGuard {
+    TX_SNAPSHOT_MEM.with(|c| c.set(mem as *const FlatMemory));
+    TxSnapshotGuard
+}
+pub struct TxSnapshotGuard;
+impl Drop for TxSnapshotGuard {
+    fn drop(&mut self) {
+        TX_SNAPSHOT_MEM.with(|c| c.set(std::ptr::null()));
+    }
+}
+fn snapshot_tx_bytes(ptr: u32, len: u32) -> Option<Vec<u8>> {
+    TX_SNAPSHOT_MEM.with(|c| {
+        let p = c.get();
+        if p.is_null() {
+            None
+        } else {
+            // SAFETY: set by the enclosing WasmCpu::step guard on this
+            // thread; cleared on guard drop. Snapshot reads RAM only
+            // (TXD.PTR is always a RAM ring/slot address), never MMIO,
+            // so no peripheral reentrancy through this read.
+            let mem = unsafe { &*p };
+            Some((0..len).map(|i| mem.read8(ptr.wrapping_add(i))).collect())
+        }
+    })
+}
 
 /// UARTE0 @ 0x40002000 (IRQ 2). Polling subset + EASYDMA:
 ///   ENABLE 0x500, BAUDRATE 0x524, TXD 0x51C (byte TX -> UART_OUTPUT),
@@ -34,15 +81,20 @@ pub struct Uarte {
     tx_amount: u32,
     tx_pending: bool,
     tx_taken: bool,
+    /// Bytes latched synchronously at STARTTX (see above). Used by
+    /// `complete_txdma` instead of the driver's late `mem_read`.
+    tx_snapshot: Vec<u8>,
+    tx_snapshot_valid: bool,
 }
 
 impl Default for Uarte {
     fn default() -> Self {
         Self { irq: 2, enable: 0, baudrate: 0, ev_txdrdy: false, ev_endtx: false,
                ev_txstopped: false,
-               ev_rxdrdy: false, ev_endrx: false, ev_error: false, errorsrc: 0, rxd: 0,
-               intenset: 0, rx_ptr: 0, rx_maxcnt: 0, rx_amount: 0, rx_pending: false, rx_taken: false,
-               tx_ptr: 0, tx_maxcnt: 0, tx_amount: 0, tx_pending: false, tx_taken: false }
+                ev_rxdrdy: false, ev_endrx: false, ev_error: false, errorsrc: 0, rxd: 0,
+                intenset: 0, rx_ptr: 0, rx_maxcnt: 0, rx_amount: 0, rx_pending: false, rx_taken: false,
+                tx_ptr: 0, tx_maxcnt: 0, tx_amount: 0, tx_pending: false, tx_taken: false,
+                tx_snapshot: Vec::new(), tx_snapshot_valid: false }
     }
 }
 
@@ -99,6 +151,18 @@ impl Peripheral for Uarte {
                 self.tx_amount = 0;
                 if self.tx_maxcnt > 0 {
                     self.tx_pending = true; // driver completes (take/complete)
+                    // Latch the DMA source now: by take time the firmware
+                    // has reused putc's `&c` slot (P49). No mem in this
+                    // call means a legacy harness path — take/complete as
+                    // before. Last-wins on back-to-back STARTTX (silicon
+                    // would not stage twice without ENDTX either).
+                    match snapshot_tx_bytes(self.tx_ptr, self.tx_maxcnt) {
+                        Some(bytes) => {
+                            self.tx_snapshot = bytes;
+                            self.tx_snapshot_valid = true;
+                        }
+                        None => self.tx_snapshot_valid = false,
+                    }
                 } else {
                     self.ev_txdrdy = true;
                     self.ev_endtx = true;
@@ -109,7 +173,7 @@ impl Peripheral for Uarte {
             // TASKS_STOPTX aborts the transfer: TXSTOPPED only (silicon
             // never raises ENDTX here; doing so self-triggers an ENDTX
             // ISR loop -- MicroPython stalled exactly this way).
-            0x00C => { self.tx_pending = false; self.ev_txstopped = true; self.fire(sys, 1 << 22); }
+            0x00C => { self.tx_pending = false; self.tx_snapshot.clear(); self.tx_snapshot_valid = false; self.ev_txstopped = true; self.fire(sys, 1 << 22); }
             0x108 => if value == 0 { self.ev_rxdrdy = false; }
             0x10C => if value == 0 { self.ev_endrx = false; }
             0x11C => if value == 0 { self.ev_txdrdy = false; }
@@ -270,15 +334,22 @@ pub fn take_txdma(sys: &System) -> Option<(u32, u32)> {
 /// Complete a TX DMA transfer: bytes hit the console, AMOUNT + ENDTX set.
 /// Completes whichever instance was taken (UARTE0 on ties or when
 /// completing without a prior take, preserving legacy behavior).
+/// When a STARTTX snapshot is present it wins over `data` (the driver's
+/// late `mem_read` may already hold the reused N+1 byte — P49).
 pub fn complete_txdma(sys: &System, data: &[u8]) {
     let taken0 = with_uarte(sys, |u| u.tx_taken).unwrap_or(false);
     let taken1 = with_uarte_at(sys, 0x4002_8000, |u| u.tx_taken).unwrap_or(false);
     let complete_on = |sys: &System, u: &mut Uarte| {
-        for &b in data {
+        // Prefer the synchronous snapshot; fall back to driver bytes on
+        // legacy paths (unit/native harnesses never publish mem).
+        let bytes: &[u8] = if u.tx_snapshot_valid { &u.tx_snapshot } else { data };
+        for &b in bytes {
             get_uart_output().lock().unwrap().push(b as char);
         }
-        u.tx_amount = data.len() as u32;
+        u.tx_amount = bytes.len() as u32;
         u.tx_taken = false;
+        u.tx_snapshot.clear();
+        u.tx_snapshot_valid = false;
         u.ev_txdrdy = true;
         u.ev_endtx = true;
         (u.irq, u.intenset)
@@ -374,6 +445,39 @@ mod tests {
         sys.p.write(&sys, 0x40002008, 4, 1);
         complete_txdma(&sys, b"Z");
         assert!(sys.p.nvic.borrow().has_pending(), "ENDTX IRQ pends");
+    }
+    #[test]
+    fn tx_snapshot_freezes_starttx_bytes() {
+        use crate::cpu::mem::{FlatMemory, Memory};
+        let _u = crate::system::lock_uart();
+        // STARTTX copies RAM now; a later slot reuse (the P49 N+1 race)
+        // must not leak into the console. Second run without the guard
+        // takes the legacy driver-bytes path (no leak of the snapshot).
+        let sys = test_dummy_system();
+        crate::system::get_uart_output().lock().unwrap().clear();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        mem.write8(0x20001000, b'A');
+        sys.p.write(&sys, 0x40002544, 4, 0x20001000); // TXD.PTR
+        sys.p.write(&sys, 0x40002548, 4, 1);          // TXD.MAXCNT
+        let _g = tx_snapshot_guard(&mem);
+        sys.p.write(&sys, 0x40002008, 4, 1);          // STARTTX snapshots 'A'
+        drop(_g);
+        mem.write8(0x20001000, b'B'); // firmware reuses putc's slot
+        let t = take_txdma(&sys).expect("staged");
+        assert_eq!(t, (0x20001000, 1));
+        complete_txdma(&sys, b"B"); // driver read late, holds N+1
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        assert!(out.contains('A'), "snapshot byte emitted, got {out:?}");
+        assert!(!out.contains('B'), "reused byte suppressed, got {out:?}");
+        assert_eq!(sys.p.read(&sys, 0x40002120, 4), 1, "ENDTX after complete");
+        // 2nd run: no guard, no snapshot — legacy path, no leak.
+        crate::system::get_uart_output().lock().unwrap().clear();
+        sys.p.write(&sys, 0x40002008, 4, 1); // STARTTX without mem
+        let t2 = take_txdma(&sys).expect("staged again");
+        assert_eq!(t2, (0x20001000, 1));
+        complete_txdma(&sys, b"C");
+        let out2 = crate::system::get_uart_output().lock().unwrap().clone();
+        assert!(out2.contains('C'), "legacy driver bytes pass through, got {out2:?}");
     }
     #[test]
     fn tx_dma_stages_and_completes() {

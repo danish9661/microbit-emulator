@@ -82,6 +82,12 @@ export class LSM303 {
 
   poll(cpu) {
     const w = this.wasm, P = this.peripheral;
+    // DRDY (P0.25 = MICROBIT_PIN_SENSOR_DATA_READY, irq1, active-lo):
+    // our synthetic sample is always ready, so hold INT1 low. Else
+    // LSM303Accelerometer/Magnetometer::requestUpdate() spins forever
+    // in its awaitSample first-sample loop on getDigitalValue (the
+    // post-banner MPY REPL pin-poll stall: pc 0x28744 + 0x266Dx).
+    if (typeof w.gpio_set_input === 'function') w.gpio_set_input(0, 25, false);
     // --- EASYDMA path (nrfx drivers): staged transfers with addresses ---
     let t = w.twim_take_txdma(P);
     if (t.length) {

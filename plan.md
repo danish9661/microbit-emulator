@@ -903,3 +903,371 @@ MicroPython preset now banners in ~30s (was: never in 700s) with the
 known drop artifacts, partial prompt (`\n\n >`), then stalls with NO
 fault at 150s+ — the native prompt-stall frontier, now reachable
 in-browser. REPL exec still open (prompt kick + NULL fault).
+
+## 39. P39 RX path proven live + audio exonerated (2026-09-12, uncommitted)
+
+Native RX handoff end-to-end (P21 correction): banner run-up, drip
+one byte the demo way (DMA mirror + `rx_byte`), 200K later head=1
+AND tail=1 — the ISR moved it to the ring and **readline consumed
+it**. P21's "readline never reads" was phase-specific, not
+structural. modaudio fetcher also exonerated (returns instantly on
+NULL source). Browser input stall is therefore downstream of delivery:
+either the drip gate deadlocks (RXDRDY stays 1 because firmware never
+consumes) or main is parked pre-readline — needs in-browser ev/pc
+sampling (both proven-safe reads) to separate. RX-kick test was
+negative (90s, no movement): no TX side effect from input.
+
+## 40. P40 pin-poll + shifted vtable (2026-09-12, uncommitted)
+
+In-browser main-loop forensics (temp instrumentation, reverted):
+stalled REPL shows pc cycling `getDigitalValue` (`0x28744`) + MP
+virtuals (`0x266Dx`) with a FROZEN deep-MP stack (0x2A416Bx3, ...).
+The polled pin is P0.25 (obj `0x20003960`), but its vtable
+(`0x57EF4`) sits +12 past NRF52Pin's (`0x57EE8`) — shifted dispatch
+(corrupt pointer or sibling class sharing the reader at slot 1).
+Enclosing-guess refuted (`*(obj-12)` is RAM data, not a vtable).
+modaudio fetcher exonerated (returns on NULL source); idle() is
+WFI+SCHEDULER_IDLE, not a pin poll. RX side meanwhile fills the CODAL
+ring (head=4, tail=0) with main never reading. NEXT: name the
+polling driver (r4-object at the `0x266D8`-blx / MP bytecode ID of
+the looping frames) + P0.25's role (touch/logo/light/speaker?).
+
+## 41. P41 MP-type object in pin-reader + creator chain (2026-09-12, uncommitted)
+
+Pin-poll target is MP object `0x20003960` (type `0x57AC0`), NOT an
+NRF52Pin — yet `getDigitalValue` (`0x28744`) runs with r0=it, reading
+MP field +16 (=25) as a pin number and toggling P0.25. Type confusion
+(pin method on MP object) or a type legitimately delegating to pin
+hardware. Type ctors at `0x26848`/`0x2685C` (store type, status,
+byte@+76, words@+68 — matches waiter fields); sole creator
+`bl @0x24230` (80B alloc + params incl. 50/5, gated by `0x51874`
+check). Vtable `0x57AC0` slots shown contain no `0x28745`, so the
+route into the reader is NOT slot-1 of this type — open how r0 gets
+there (stale MP-object pointer reused as pin? wrong-arg call?).
+modaudio/idle exonerated again. NEXT: resolve the type NAME via its
+qstr field + capture r0-provenance at the `0x28744` blx (needs the
+inner call site: NOT `0x266DB` (stale lr) — sample lr strictly inside
+`0x28744-0x28748` before any call).
+
+## 42. P42 BL handoff theory: UICR markers (2026-09-12, uncommitted)
+
+r0=`0x2002` is constructed by `movw` at `0x7B5D2` when the IPR22-bit
+test fails — an error/length code into the reset path, not a live
+value. MBR reset jumps via `*(0xA9C)`=`0x417` into a chained-pointer
+boot selector (UICR base `0x10001000` + list walk). Piece together:
+BL validates → programs UICR markers (`0x10001200/204`=18) → coded
+AIRCR reset (Mbps pump honors to MBR vectors) → MBR selector sees
+markers → should skip BL to APP. Our UICR store keeps the markers,
+so pass 2 SHOULD diverge — but native pre-rolls show BL looping at
+entry. Untested discriminator (next): seed markers + run MBR (not
+app!) and trace whether pass 2 skips validation at `0x7B5B4`.
+Also re-examine: the IPR22-bit math (`236>>a(byte>>5)` odd = pass)
+with IPR22=0 always fails — so either the pass condition is met
+elsewhere or real silicon reads nonzero reserved bits (unlikely);
+more likely the markers, not IPR22, gate progress.
+
+## 43. P43 interactive buttons (2026-09-12, uncommitted)
+
+Button presses did nothing observable: sensors proof read EVENTS_IN0
+once at boot (any later press invisible), and boot wiped latched
+inputs (`initBoard` installs a fresh model). Fixed both properly:
+`sensors_nrf.s` now level-polls P0.14 (print on change + delay;
+verified encoding via objdump) and `init()`/`init_svd()` preserve
+GPIO `input_state` across the fresh map (physical pins survive
+SYSRESET). Native test green unchanged; Playwright: press->BTN:1,
+release->BTN:0 (last line), hold-during-boot samples BTN:1.
+testall.cjs now 15/15 (all presets, interactions, MIPS, layout).
+
+## 44. P44 REPL main stuck in MP pin-poll loop (2026-09-12, uncommitted)
+
+Browser main-loop forensics converged: stalled REPL has pc cycling
+`getDigitalValue` (`0x28744`) + MP virtuals (`0x266Dx`) over a FROZEN
+deep-MP stack — main is inside MP bytecode execution polling pin
+P0.25 on heap MP object `0x20003960` (type `0x57AC0`, ctors
+`0x26848`/`0x2685C`, sole creator `bl @0x24230` with 80B alloc +
+params 50/5). NOT readline-blocked, NOT dead, NOT audio (fetcher
+exonerated, idle is WFI). RX fills CODAL ring (head=4) but tail never
+moves because main never reaches `serial.read()`. Display shows
+nothing at 90s (no boot heart in this build, or scroll never starts).
+Excluded as the poll driver: modaudio fetcher, idle/WFI, display
+scroll ticker (needs TIMER4), touch-scan assumption. P0.25 has no
+reference in MP pin/speaker/mic sources (internal CODAL use).
+NEXT: MP type NAME via qstr pool (names the subsystem without runs)
++ whether the poll expects LOW (drive P0.25 low and watch for
+unblock — 2-min browser test).
+
+## 45. P45 content-sensitivity + WFE park (2026-09-12, uncommitted)
+
+App-phase with ANSWERED TWIM1 slaves (LSM303-faithful WHO_AM_I/
+STATUS/data) takes a FOURTH path: slow drift (0x29C51 -> RAM-dwell
+-> 0x539E7 (WFE-wait helper, r0=2/3/4 modes) + UARTE region),
+uartlen=0 at 260M, no fault — vs NACK/pristine banner+NULL-fault and
+demo pin-poll spin. Sensor answer CONTENT steers the boot (NACK vs
+answered vs real-part give different paths); pre-roll TWIM traffic
+is zero either way (BL never touches I2C — verified by take logging).
+`0x539E4` = `wfe; bx lr` waiter. So native replications now span
+banner+fault (pristine), spin (dirty), drift+WFE-park (answered) —
+the firmware is schedule+content chaotic; exact demo replication is
+the wrong goal. The lever with payoff is sensor-part fidelity
+(DRDY/data-ready behavior the waiter needs) or the NULL-this fix on
+the banner path. Probes reverted; suite green.
+
+## 46. P46 NULL member never initialized + SD-up inversion (2026-09-12, uncommitted)
+
+`[0x20002E24]` (+2340 of the uBit-area object) is 0 from boot and
+NEVER WRITTEN through banner+fault (transition watch) — the member
+is never constructed, not cleared. Direct SVC16 pre-app is the wrong
+enabler (MBR eats it with VTOR=0; lands in a trap sled). MBR-path
+SD init (P22 canary) + app boot on top INVERTS the outcome: SVC-wait
+spin (`0x215B1/AD`), uartlen=0, no fault, m2340 still 0. So SD-up
+avoids the NULL fault by taking a different stuck path (waits an
+SD-event completion nothing delivers — sd_evt_get has zero callers;
+S140 delivers via registered observer callbacks (NRF_SDH_*_OBSERVER),
+not polling). The 5 pre-fault calls (r0=obj constant, r2 mask
+growing, r3 `0x5250B`→`0xC0`, last from a different sp) look like
+event/bus listener invocations, the last possibly IRQ-driven.
+NEXT: (1) name the +2340 member via MicroBit.h member-size math
+(sizes in headers — offline, no runs); (2) find which init should
+construct it and what gate it missed (compare uBit.init progress
+markers vs silicon order); (3) sd_evt observer delivery remains the
+deep option (SD internals, out of scope).
+
+## 47. P47 +2340 named: compassCalibrator, watch was radio.rxQueue (2026-09-12, uncommitted)
+
+Offline header math (no runs, ARM GCC 14.2.1 `Show<sizeof>` error
+trick with stub `platform_includes`/`nrf.h`/`ble.h`): MicroPython
+v2.1.2 pins codal-microbit-v2 v0.2.67 (not master) + codal-core
+`509086c` + codal-nrf52 `8802eb4`; config from v0.2.67
+target-locked (`DEVICE_BLE=1`, `COMPONENT_COUNT=60`, `QUEUE=10`,
+`TIMESTAMP=uint64_t`, etc.). v0.2.67 has NO `displayTimer` (3 timers,
+master adds a 4th) — master math is off by a timer plus drift.
+
+v0.2.67 offsets: serial 1648, radio 2272 (40B: `rxQueue` at +16,
+`rxBuf` +20, datagram +24, event +32), thermometer 2312 (20B),
+accelerometer 2332 (4B ref), compass 2336 (4B ref),
+**compassCalibrator 2340 (16B: `compass&`, `accelerometer&`,
+`display&`, `storage*`)**, audio 2360 (2376B), log 4736, sizeof
+4896. So +2340 = `MicroBit::compassCalibrator` base.
+
+Init gate: NONE missed — it is value-constructed in the `MicroBit()`
+initializer list (always, before main) as
+`compassCalibrator(compass, accelerometer, display, storage)`; the
+4-arg ctor does `storage->get("compassCal")` (NULL when flash erased,
+no wait) + `defaultEventBus`-guarded listen. Its 4 words should be
+non-zero after construction (heap accel/compass + uBit display/
+storage).
+
+P46's watch was the wrong address: base `0x20002500` came from serial
+`0x2BA4-1700` (master math); with v0.2.67 serial 1648 the base is
+`0x2534`, true +2340 is `0x2E58`. Watched `0x2E24` = +2288 =
+`radio.rxQueue` (NULL until radio RX — never pre-banner, no radio
+attempts per STATUS). "Never written" is expected, not a bug; the
+real calibrator was never watched. The NULL fault (`r0=0` entry,
+reads flash `0x924`/`0x28`) is therefore unrelated to uBit+2340 —
+link spurious, calibrator exonerated. Fault stays MP-layer (pin-poll
+obj, event/bus listeners). Optional confirm (single native run):
+uBit base `0x2534`, calibrator non-zero at `0x2E58`.
+
+## 48. P48 handover prompt fix + plan hygiene (2026-09-12, uncommitted)
+
+Ops: fixed plan.md renumber glitch (duplicate P40 → deduped, P40-P47
+re-sequenced; all branch defaults restored) and prepared the 1.3
+handover prompt (this file's canonical copy). No model code touched
+in this step; suite 187 green, parts smoke green.
+
+## 49. P49 BL validators decoded + TX audit (2026-09-12, uncommitted)
+
+Offline only (objdump halfwords + v0.2.67 sources, no runs, no commits
+per order).
+
+BL (full.bin, Thumb): `0x7B530` = `svc 16; bx lr`
+(sd_softdevice_enable wrapper), `0x7B534` = svc 17. The `0x7B5EC`
+runner: flag `[0x20004E2D]` nonzero → `r4=8`, return; else set
+`[0x20004E2C]=1`, `bl 0x7B538` (list-walk; 17 = nothing-to-do →
+return `r4=0`); else `bl 0x7B568` (second list-walk), `bl 0x7763C`,
+`bl 0x7B530` (SVC16) → `r4` = SD-enable result. `cbnz r4` at
+`0x7B636` skips validation on SD-enable FAILURE; `r4==0` = SD-enable
+SUCCESS → proceeds to `0x7B5B4` + `bl 0x7B568`, then the tbb
+dispatch at `0x78498` selects reset site #2 (`0x78514` via
+`bl 0x783EC`; park `0x783FE` is the post-AIRCR wait). So "why r4==0"
+is answered: SD enable succeeded, and the coded reset is BY DESIGN
+(handoff into the SD-enabled state). The loop is the MBR selector
+re-entering BL despite UICR markers `0x10001200/204=18` (P42 theory
+stands; needs an MBR-pass-2 trace, not done here).
+
+`0x7B5B4` = IPR22 validator: `r1=[0x7B5E4]=0xE000E100`,
+`ldrb [r1+#0x316]` = `0xE000E416` (IPR22) → `r2=byte>>5`,
+pass iff `(236>>r2)` odd (`0xEC=0b11101100`: r2∈{2,3,5,6,7}).
+IPR22=0 → r2=0 → even → fail → `r0=0x2002` → reset path. Pass path
+sets bit `0x400000` at `[0x20004EC0]`/`[r3]` (or enables IRQ22 via
+ISER0 on the other branch). Either way IPR22=0 always fails in
+emulation (NVIC reset); on silicon SD sets app priorities (2/1
+pattern) first.
+
+`0x784C4` = DFU-progress gate, not the r4 cause: flag byte
+`[0x20002DF1]`; if set, `r4=[0x2DFC]-[0x2DF4]`, `cmp #59`; `r1=0/1`
+into `bl 0x78760`, then copy `[r6]→[r5]` when in range. Counter
+semantics (validated-pages/image progress) left unread; no model
+impact (no new registers).
+
+TX audit (v0.2.67 `NRF52Serial::putc` + `Serial::dataTransmitted`):
+banner uses 1B TXDMAs from putc's `&c` stack slot (`0x2001FEC7`);
+IRQ-mode putc sets `is_tx_in_progress_=true`, STARTTX, returns
+IMMEDIATELY (no ENDTX wait); the caller reuses the slot for the next
+char before our deferred `take_txdma` (pumpDma, up to ~100K later)
+reads it → N+1 substitution, aligned, self-correcting — exactly the
+holes (#19/39/59/79, always `0x20`, PTR constant). The entry spin
+(`while(is_tx_in_progress_)`) cannot help: the overwrite lands during
+argument setup BEFORE the next putc's spin. Silicon EasyDMA reads the
+byte within cycles of STARTTX; we read K instructions later. Proper
+fix = snapshot `MAXCNT` bytes synchronously at STARTTX, but
+`Peripheral::write(sys,…)` has no mem handle — needs a trait change
+(core-touching, anti-small-diff). Deferred as invasive; accepted as
+cosmetic TODO (likely silicon-visible only in the sense that silicon
+wins the race by speed, not by protocol).
+
+Prompt-kick source (same files): the idle-ring kick is
+`enableInterrupt(TxInterrupt)` (tail-advance + direct `putc`, end of
+`setTxInterrupt` fill path; `dataTransmitted` chains off ENDTX).
+Prompt queued-but-unstaged with `is_tx` false ⇒ the fill path never
+reached its kick (needs in-browser ev/pc sampling to separate
+drip-deadlock vs parked-main — still open, no model change here).
+
+No model code touched in this step; 187 green + smoke green hold
+from the P43/demo commits.
+
+## 50. P50 MC fiber walk: one-shot render, waiter never parks (2026-09-12, uncommitted)
+
+Native temp probe (reverted; suite file-free, 187 green): MakeCode
+`showString("A")` direct-app boot (UICR+params P16 recipe,
+sleep-aware 20K pump, pristine NACK): 2 handshake resets, zero
+faults over 240M. DIR0 sticky `0x01788000`, TIMER4 COUNTER ever 0,
+main dwells RAM `0x2000207A` (scheduler idle) / sleep leaf
+`0x37AF8` (`wfe; bx lr`, verified halfwords).
+
+Waiter `0x30C04` fully decoded (objdump, no guessing): fiber-wait
+`(7,1)` via `bl 0x2E2E8`, then busy-poll (`+20`: 7→sleep via
+`0x37AF8`+recheck, 1/0→return). Starter `0x30C30`: buffered-copy
+`bl 0x34248`, then `target=len/progress=0/busy=7` (len 0 returns
+without touching busy; busy==7 on entry returns -1001). A twin
+channel exists at `0x30C70`.
+
+Trace (20K slices + 1K fine-comb 160–172M, busy watch on
+`0x20002D6C`): periodic ticker fiber at `0x31F0A` (lr `0x30F97`,
+every ~267K); render cascade 164.53–164.59M (`0x31AE0` with
+r0=`0x200025D0` = uBit area, `0x34880/72`, `0x31F14`…); BUSY
+0→7 at 165.0M under EVENT dispatch (pc `0x2E68C`, lr `0x2E667`) →
+7→0 at 168.1M in display code (pc `0x31BDA`, lr `0x2DD71`).
+region_hits=0 / exact30C18=0 over the whole 240M: the waiter fiber
+NEVER parks — `showString("A")` fits 5x5, renders once (~165M) with
+no blocking scroll call outstanding, so no fiber ever waits on
+(7,1); starter+completion both run inside event handling.
+TIMER4 refresh never STARTs (display renders on demand in this
+CODAL cut, or refresh start is the still-missing init).
+
+NEXT: matrix content check needs browser wall time (long run, "A"
+should already be latched post-165M); (7,1) producer identity is now
+secondary (event fires, waiter absent). Temp probe + /tmp bins
+reverted; nothing committed per order.
+
+## 51. P51 browser batch: entry-fault closed, fds-lottery elapsed, prompt-kick = parked-main, sd_evt re-shelved (2026-09-13, uncommitted)
+
+All browser runs headless Chromium, demo pkg as committed + working
+presets/Load-Run (probes via Playwright `evaluate`, one-line
+`__dbg` + 20x5K pump as TEMP page edits — fully reverted,
+`grep __dbg/__firstFault` = 0, `node --check` clean; no commits).
+
+1. Entry-fault classification (P27 ask: clean multi-run + first-fault
+   hook): 20x5K pump ×3 with first-fault JS stash → 3/3 BANNER path
+   (~30s, uartLen 78, firstFault null, no page errors). The
+   deterministic `0x29C7A`/`0xDEAD` app-entry fault NO LONGER
+   REPRODUCES — almost certainly killed by the P45 pristine re-init in
+   `bootMicroPythonApp` (removes the dirty MBR/BL model state P27
+   itself suspected for stale-IRQ-at-entry). Banner shows live TX-drop
+   artifacts (`o  2023`, `micro: it`, `nRF5 833`) — P49's putc-slot
+   mechanism confirmed in the wild. Verdict: CLOSED, do not re-open
+   without a config that faults.
+2. FDS lottery (2048B backtrace at the `0x215AC` spin): unreachable —
+   current 5x20K pump takes the banner path deterministically (see
+   above + P38); the waiter spin was a 1x20K-era path. Backtrace probe
+   (regs + 2048B stack + flash-validated walk) stood ready but never
+   triggered. Verdict: ELAPSED by pump evolution; re-arm only if a
+   future pump/config re-enters the spin.
+3. Prompt-kick sampling (RXDRDY-ev + pc during input — the separation
+   experiment): banner → stall (pc `0x28747`, rxdrdy 0, ring 129/0/0)
+   → Send `print(1+2)` → 60s of pc cycling `0x2874x`
+   (getDigitalValue) + `0x266Dx` (MP virtuals), IDENTICAL loop
+   pre/post input, rxdrdy 0 throughout, uart frozen at 106B, no
+   fault. Main is inside MP bytecode execution polling P0.25 — NOT
+   readline-blocked, NOT dead. Verdict: PARKED-MAIN (pin-poll),
+   drip-deadlock moot as primary (consumer never reaches
+   `serial.read()`; ring deltas downstream of the stall). Matches P44
+   natively, now proven in-browser post-input. Remaining MP-layer
+   question unchanged: which bytecode loop (frame/qstr ID) drives the
+   P0.25 poll — MP internals, needs frame inspection.
+4. sd_evt: re-scanned full MPY + MC images for the `svc 82`
+   halfword (`0xDF52`): ZERO sites in both (control counts sane —
+   svc16:2 incl. BL `0x7B530`, svc18:2, svc40:4, svc41:5). Hook would
+   be dead code. Verdict: SHELVED, stays shelved; doc untouched.
+
+## 52. P52 batch: pin-poll named+fixed, TX snapshot, MBR static refutation, matrix strobe-OR (2026-09-13, single commit)
+
+All four NEXT items closed out in one commit (user order). Suite
+188 green (+1 TX snapshot test), smoke green incl. new DRDY check.
+Temp native probes reverted (`git checkout -- .../cpu/tests.rs`).
+
+1. NEXT-1 MP pin-poll driver ID — DONE offline (no browser needed).
+   `P0.25 = MICROBIT_PIN_SENSOR_DATA_READY` (`irq1`, active-lo,
+   pull-up): `codal-microbit-v2@v0.2.67` `model/MicroBitIO.h:268` +
+   `source/MicroBitAccelerometer.cpp:55-68` (`new LSM303Accelerometer/
+   Magnetometer(i2c, irq1, …)`), `model/MicroBit.cpp:128-130`.
+   `0x20003960` is the CODAL `LSM303Accelerometer` heap driver (80B,
+   `autoDetect@0x24200-0x24230`), NOT an MP object — corrects P41:
+   `0x57AC0`/`0x57B28` are C++ vtables (slots `0x266B9`/`0x26791`,
+   `0x26891`/`0x26941`/`0x269B9`), P40 "shifted vtable" was NRF52Pin
+   vtable `0x57EE8` (`0x28745` = `getDigitalValue+1`) read as a type.
+   Loop `0x266B8` = `LSM303Accelerometer::requestUpdate()`
+   (`codal-core/source/drivers/LSM303Accelerometer.cpp:148`:
+   STATUS `0x27` @`0x266F4 movs r2,#39`, OUT `0xA8=0x28|0x80`
+   @`0x26720`, `/32`, ENU `sampleENU.x=-y*range`); twin `0x26890` =
+   `LSM303Magnetometer::requestUpdate()` (STATUS `0x67` @`0x268CA
+   movs #103`, OUT `0xE8=0x68|0x80` @`0x268F8`, `0xFF6A`/150
+   normalize). Both spin `do{}while(awaitSample)` on
+   `int1.isActive()` → `NRF52Pin::getDigitalValue@0x28744`
+   (`PORT->IN`); our GPIO idle-HIGH reads inactive forever, zero I2C
+   (matches P45 zero-traffic). NACK WHO_AM_I → stub driver (no poll,
+   banner+fault); answered → LSM303 + DRDY spin. FIX (demo-only, no
+   model change): `demo/parts/lsm303.js:poll()` holds P0.25 low
+   (`gpio_set_input(0,25,false)` — synthetic sample always ready).
+2. NEXT-2 TX sync-snapshot — DONE without the invasive trait change.
+   Thread-local `FlatMemory` published by `WasmCpu::step` via a
+   drop-guard (`uarte_nrf.rs:tx_snapshot_guard`, no `src/cpu` edits,
+   no signature changes); STARTTX copies `MAXCNT` bytes synchronously;
+   `complete_txdma` emits the snapshot over the driver's late bytes.
+   Native/unit harnesses never set it (null = legacy path, all old
+   tests unchanged). Proof: new `tx_snapshot_freezes_starttx_bytes`
+   (STARTTX 'A', corrupt slot to 'B', complete with 'B' → console
+   'A', no 'B'; 2nd run without guard passes driver bytes through).
+   Demo pump untouched (same take/complete calls).
+3. NEXT-3 BL MBR selector — CLOSED by static decode (P42 refuted).
+   MBR reset `0xA81` → `*(0xA9C)=0x417` selector `0x416+`: reads
+   `*(0xFF8)`/`*(0xFFC)` chain, UICR `[base,#20]=0x10001014`
+   (BOOTLOADERADDR) / `[#24]=0x10001018` (settings), `0xAA` marker
+   byte, 16B memcmp, `*(r5)==4`→boot-app / `==0`→`bl 0x38E` / else
+   HALT `0x4BC`; missing SD (`*(0x1000)==FFFFFFFF`) halts `0x4EE`.
+   Full `0x0-0xB00` sweep: NO read of `0x10001200/204` anywhere —
+   the markers are BL-internal DFU state, never MBR inputs. Seeded
+   native MBR run (30M, markers pre-set): 1 reset, BL head parks at
+   `0x77332`, markers persist `[18,18]`, validation never passable
+   because BL-side `0x7B5B4` needs IPR22 nonzero (SD-set app
+   priorities — silicon state, out of scope like sd_evt). Direct-app
+   boot stays the recipe; do not re-trace without SD priorities.
+4. NEXT-4 MC matrix — blank PROVEN decisive (not strobe aliasing).
+   Native `showString("A")` direct-app 172M (~27s, no fault):
+   DIR0 sticky `0x01788000`, pc `0x2000207A`/`0x37AFA`, instant grids
+   blank at 100/164/172M; strobe-OR phase (200 samples over +1M)
+   all-zero counts — OUT never produces an on-phase. So the one-shot
+   render bookkeeping (BUSY flip P50) never starts TIMER4 refresh:
+   `NRF52LEDMatrix::enable` (ctor) never runs, init stalls in an
+   earlier member. Still open, but the fix is NOT timing/pump (any
+   init-order change now would be guessing).

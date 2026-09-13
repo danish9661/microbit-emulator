@@ -2,7 +2,8 @@
 
 Audited 2026-09-12 by cross-checking all 39 `monox/nrf52833.svd`
 peripherals against `src/peripherals/`, running the suite
-(**185 passed, 0 failed**), reading every model, and replaying the
+(**188 passed, 0 failed** — +3 since audit: SPIM RXD MISO +
+GPIO CNF→DIR + UARTE TX snapshot), reading every model, and replaying the
 live firmware runs. Grades: **F** = functional (timed, IRQs,
 driver take/complete, firmware proof), **H** = handshake
 (TASKS/EVENTS/INTEN minimum, no timed behavior or no consumer),
@@ -55,14 +56,15 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 185 green (`cargo test`)
+## 3. Tests — 188 green (`cargo test`)
 
 - 108 integration tests (`src/cpu/tests.rs`): 12 GCC-built firmware
   proofs (`blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
   `dma_nrf`, `air_nrf`, `c_irq_nrf.c`, `usbep_nrf`, `usbdev_nrf.c`,
   `i2s_nrf`, `wdt_nrf`, `nfct_nrf`, +2nd-run reset-state checks each).
-- ~77 unit tests at the peripheral level (register handshake,
+- ~80 unit tests at the peripheral level (register handshake,
   SHORTS/NACK/OVERRUN/CAPTURE, FIPS-197, reboot latch, TXSTOPPED,
+  SPIM RXD MISO, GPIO CNF→DIR, UARTE TX STARTTX-snapshot,
   COMP/QDEC/NFCT/MWU/RADIO/SAADC/CCM depth, EGU slots).
 - One rare parallel flake seen once
   (`unaligned_device_faults_without_trap`, 1/10 runs, never
@@ -78,6 +80,18 @@ clocks, GPIO/buttons (active-low), matrix (DIR+OUT), UARTE TX/RXDMA,
 TWIM taps, SAADC/PDM/USBD/NVMC/radio pumps, I2S silence/capture,
 watchdog-reset reboot, sleep-aware frame (`tick_n` + wake), Intel-HEX
 loader (type-02 + UICR), and a MicroPython direct-app boot button.
+Preset dropdown (same `bootImage` path as dropped files, staged — Run
+boots): blinky/sensors/dma/extras/stubs/air/c-irq + built-in
+MicroPython hex (i2s excluded: needs patterned-RX + mailbox release
+only the test driver provides); separate Load (stage, no boot) and
+Run buttons; live MIPS meter (~6.0 with the 5x pump).
+Sensor DRDY: the LSM303 part holds P0.25 (`SENSOR_DATA_READY`/`irq1`,
+active-lo) low while polling (else the LSM303 `requestUpdate`
+`awaitSample` loop spins on `getDigitalValue` forever — the MPY
+post-banner stall). UARTE TX snapshots `MAXCNT` bytes synchronously
+at STARTTX (thread-local RAM published by `WasmCpu::step`; no trait
+or `src/cpu` change), so the deferred driver take cannot transmit
+the reused N+1 byte (P49 putc-slot drops).
 Parts: matrix pins, LSM303 (WHO_AM_I `0x33`/`0x40`), SSD1306, all
 green via `smoke.mjs`. `microbit-v2-emulator@0.1.0` npm package
 defined (publish blocked: registry 401). No open driver-API gaps: every
@@ -95,8 +109,15 @@ beyond proof-level driving remain future work.
   threshold; 480s runs ≈144M never arrive). P20 = faster machine,
   not a different build (a fine-grained 20x5K demo pump was tried
   and reverted — it faults at app entry, see item 1). Natively the prompt is composed in the TX ring
-  but never DMA-staged (queued + `is_tx` false, no kick source found);
-  input bytes land in the DMA buffer but the ring stays empty.
+   but never DMA-staged (queued + `is_tx` false, no kick source found);
+   input bytes land in the DMA buffer but the ring stays empty.
+   Post-banner pin-poll stall NAMED+F fixed (plan P52): main loops
+   `NRF52Pin::getDigitalValue@0x28744` inside
+   `LSM303Accelerometer/Magnetometer::requestUpdate()` (`0x266B8`/
+   `0x26890`) polling `irq1`/P0.25 (`SENSOR_DATA_READY`, active-lo)
+   in the `awaitSample` first-sample loop — the demo part now holds
+   P0.25 low. (P41 "MP object `0x20003960`/type `0x57AC0`" was the
+   CODAL LSM303 driver/vtables, not MicroPython.)
   Post-banner NULL fault narrowed (Sept-12, plan P24–P25): C++ virtual
   through NULL `this` (`bx r3 @0x4F75A`, r0=0) via mp_call_function;
   tick-scheduled (TIMER1-only suffices; all-IRQ-cut parks clean);
@@ -170,30 +191,39 @@ beyond proof-level driving remain future work.
      `op=0xDEAD`) while 1x20K spins fault-free — reverted to 1x20K;
      do not re-land without explaining the entry fault.
 2. **TX byte drops** (single-byte →space substitutions, cosmetic).
-   Verdict update: **firmware-side ring corruption, pump exonerated 4x**.
-   Per-take log vs flash ground truth: holes at takes #19/#39/#59/#79
-   (every 20 takes = every 200K instr), always `0x20`, fully aligned
-   (no loss/shift); PTR constant (`0x2001FEC7`), len 1; putc slot AND
-   heap txBuff both hold the wrong bytes *before* the take, under
-   eager, delayed, pristine and pre-rolled pumps alike. NOT an N+1
-   race. Next: audit putc→ring→flush index math against OUR
-   AMOUNT/ENDTX timing (the one model-behavioral input left), else
-   accept as firmware-cosmetic.
+    FIXED via synchronous snapshot (no trait/`src/cpu` change):
+    STARTTX latches `MAXCNT` RAM bytes through a thread-local
+    published by `WasmCpu::step`; `complete_txdma` emits the snapshot
+    over the driver's late bytes (`tx_snapshot_freezes_starttx_bytes`
+    proof). Demo pump untouched.
+    Mechanism (plan P49): IRQ-mode `putc` returns right after STARTTX;
+    the caller reuses the `&c` stack slot before the deferred take —
+    aligned N+1 substitution (holes #19/#39/#59/#79, always `0x20`).
 3. **Bootloader full chain** (MBR→BL→SD→app; direct-app boot works
    around it). Decoded (plan P25/P29): entry `0x772F9`, FICR gather,
    UICR writes + deliberate post-UICR reset (benign); 2nd reset is a
    CODED AIRCR via `0x78514` after a tbb validation dispatch (r4==0
    path) — not WDT, not IPR22-caused (no static IPR22 access; r0 stale).
    NEXT: why r4==0 + the `0x784C4`-flag compare.
-   (P30: both resets proven AIRCR-coded via caller markers; seeding
-   BL-programmed UICR (`0x10001200/204`=18) stalls direct-app boot at
-   a register-called HALT (`0x29CD1`) — UICR-gated halt caller open.)
+    (P30: both resets proven AIRCR-coded via caller markers; seeding
+    BL-programmed UICR (`0x10001200/204`=18) stalls direct-app boot at
+    a register-called HALT (`0x29CD1`) — UICR-gated halt caller open.)
+    CLOSED-static (plan P52): the MBR selector (`0x417`: `*(0xFF8)`/
+    `*(0xFFC)` chain, UICR `0x10001014`/`0x10001018`, `0xAA` marker,
+    `*(r5)==4`→boot-app) NEVER reads `0x10001200/204` (full `0x0–0xB00`
+    sweep) — the markers are BL-internal DFU state, so seeding them
+    cannot skip BL (native seeded run: 1 reset, parks `0x77332`).
+    Blocker is BL-side `0x7B5B4` needing nonzero IPR22 (SD-set
+    priorities — silicon state, out of scope); direct-app boot stays.
 4. **MakeCode display content** (TIMER4 never STARTs because the
    display object is never constructed — `enable()` runs in the
    `NRF52LEDMatrix` constructor, so the stall is in an earlier member
    init; live waiter is `0x30C04` busy-`[r4+20]`)
-   + BLE events (no radio attempts; needs SD event synthesis).
-   NEXT: capture r4 at `0x30C18` + fiber walk.
+    + BLE events (no radio attempts; needs SD event synthesis).
+    NEXT: capture r4 at `0x30C18` + fiber walk.
+    Strobe-OR proof (plan P52): 200-sample OR over +1M post-172M is
+    all-zero — truly blank, not a multiplex alias. OUT never produces
+    an on-phase; init stalls before display construction.
 5. **SPIM2/3 tap routing** — done (RXD register returns the MISO
    queue for SPI names; DMA frames already routed; stale "still open"
    comment corrected).
@@ -215,7 +245,7 @@ protection, publish to npm.
 ## 8. Verify
 
 ```
-cargo test                       # 185 green (crate dir)
+cargo test                       # 188 green (crate dir)
 node demo/parts/smoke.mjs        # parts green
 wasm-pack build nrf52833-periph-wasm --target web --out-dir ../demo/pkg
 ```
