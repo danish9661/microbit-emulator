@@ -2,8 +2,9 @@
 
 Audited 2026-09-12 by cross-checking all 39 `monox/nrf52833.svd`
 peripherals against `src/peripherals/`, running the suite
-(**188 passed, 0 failed** — +3 since audit: SPIM RXD MISO +
-GPIO CNF→DIR + UARTE TX snapshot), reading every model, and replaying the
+(**190 passed, 0 failed** — +5 since audit: SPIM RXD MISO +
+GPIO CNF→DIR + UARTE TX snapshot + TWIM shifted-ADDR match +
+SCB AIRCR SYSRESETREQ), reading every model, and replaying the
 live firmware runs. Grades: **F** = functional (timed, IRQs,
 driver take/complete, firmware proof), **H** = handshake
 (TASKS/EVENTS/INTEN minimum, no timed behavior or no consumer),
@@ -56,15 +57,16 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 188 green (`cargo test`)
+## 3. Tests — 190 green (`cargo test`)
 
 - 108 integration tests (`src/cpu/tests.rs`): 12 GCC-built firmware
   proofs (`blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
   `dma_nrf`, `air_nrf`, `c_irq_nrf.c`, `usbep_nrf`, `usbdev_nrf.c`,
   `i2s_nrf`, `wdt_nrf`, `nfct_nrf`, +2nd-run reset-state checks each).
-- ~80 unit tests at the peripheral level (register handshake,
+- ~82 unit tests at the peripheral level (register handshake,
   SHORTS/NACK/OVERRUN/CAPTURE, FIPS-197, reboot latch, TXSTOPPED,
   SPIM RXD MISO, GPIO CNF→DIR, UARTE TX STARTTX-snapshot,
+  TWIM shifted-ADDR match, SCB AIRCR SYSRESETREQ,
   COMP/QDEC/NFCT/MWU/RADIO/SAADC/CCM depth, EGU slots).
 - One rare parallel flake seen once
   (`unaligned_device_faults_without_trap`, 1/10 runs, never
@@ -245,7 +247,7 @@ protection, publish to npm.
 ## 8. Verify
 
 ```
-cargo test                       # 188 green (crate dir)
+cargo test                       # 190 green (crate dir)
 node demo/parts/smoke.mjs        # parts green
 wasm-pack build nrf52833-periph-wasm --target web --out-dir ../demo/pkg
 ```

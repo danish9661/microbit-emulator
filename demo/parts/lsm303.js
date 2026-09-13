@@ -10,6 +10,9 @@
 
 const ACCEL = 0x19;
 const MAG = 0x1E;
+// nrfx writes ADDRESS shifted (addr<<1: 0x32/0x3C); the Rust model hands
+// take_* the raw register value. Normalize both forms here.
+function normAddr(a) { return a > 0x7F ? (a >> 1) : a; }
 
 function le16(v) {
   v = Math.max(-32768, Math.min(32767, Math.round(v)));
@@ -34,6 +37,17 @@ export class LSM303 {
   register() {
     this.wasm.i2c_register_slave(this.peripheral, ACCEL);
     this.wasm.i2c_register_slave(this.peripheral, MAG);
+    // KL27 USB interface chip (MicroBitPowerManager, polled UIPM addr
+    // 0x70): shares irq1/P0.25 with the sensors. With no tap the model
+    // NACKs the version/board-revision probes and boot degrades — answer
+    // empty (no event).
+    // KL27 USB-FLASH chip (USBFlashManager, addr 0x39 / shifted 0x72):
+    // MUST also be stubbed, with FAIL-FAST bytes (see sample()): NACK
+    // there does NOT fail fast — i2cBus.read returns DEVICE_I2C_ERROR
+    // which hits `break`, but a NACK-free zero frame means "NOT READY"
+    // → busy → rx_attempts=0 forever (P53d: 1217 reads/100M, no banner).
+    this.wasm.i2c_register_slave(this.peripheral, 0x70);
+    this.wasm.i2c_register_slave(this.peripheral, 0x39);
   }
 
   setAccel(mg) { this.accel = { ...mg }; this.auto = false; }
@@ -59,6 +73,16 @@ export class LSM303 {
 
   // Sample bytes for (addr, startReg, len), MSB-masked auto-increment.
   sample(addr, reg, len) {
+    addr = normAddr(addr);
+    // KL27 UIPM stub: empty frame (no event).
+    if (addr === 0x70) return new Array(len).fill(0);
+    // KL27 USB-FLASH stub: FAIL-FAST, not busy. _transact treats
+    // b[0]==0x20 (ERROR_RESPONSE) with b[1]!=0x39 as NOT-busy → break
+    // (one RX attempt) instead of resetting rx_attempts=0 forever.
+    // (BUSY_FLAG_SUPPORTED is never set — version probe reads zeros —
+    // so the inferred branch b[0]==0x20 && b[1] not in {request[0],0}
+    // is the one that exits. Zeros would mean "NOT READY"→busy→retry.)
+    if (addr === 0x39) { const f = [0x20, 0x01]; while (f.length < len) f.push(0); return f.slice(0, len); }
     const out = [];
     const a = this.liveAccel();
     for (let k = 0; k < len; k++) {
@@ -83,13 +107,18 @@ export class LSM303 {
   poll(cpu) {
     const w = this.wasm, P = this.peripheral;
     // DRDY (P0.25 = MICROBIT_PIN_SENSOR_DATA_READY, irq1, active-lo):
-    // our synthetic sample is always ready, so hold INT1 low. Else
-    // LSM303Accelerometer/Magnetometer::requestUpdate() spins forever
-    // in its awaitSample first-sample loop on getDigitalValue (the
-    // post-banner MPY REPL pin-poll stall: pc 0x28744 + 0x266Dx).
-    if (typeof w.gpio_set_input === 'function') w.gpio_set_input(0, 25, false);
+    // PULSE, never permanent low. irq1 is shared with the KL27 USB
+    // interface chip: MicroBitPowerManager::idleCallback treats a
+    // sustained low (>30 consecutive idle ticks) as a USB event and
+    // hammers I2C 0x70/0x72 (which NACKs here — no KL27), while the
+    // LSM303 requestUpdate awaitSample spin only needs a brief active
+    // window to latch its first sample. 60ms low / 140ms high: the
+    // tight sensor spin exits within ~2 frames of a low window, and
+    // the USB threshold (30 ticks) can never fill.
+    if (typeof w.gpio_set_input === 'function') w.gpio_set_input(0, 25, (Date.now() % 200) < 60 ? false : true);
     // --- EASYDMA path (nrfx drivers): staged transfers with addresses ---
     let t = w.twim_take_txdma(P);
+    if (t.length) t[0] = normAddr(t[0]);
     if (t.length) {
       const bytes = cpu.mem_read(t[1], t[2]);
       if (bytes.length === 1) {
@@ -104,6 +133,7 @@ export class LSM303 {
       w.twim_complete_txdma(P, bytes);
     }
     t = w.twim_take_rxdma(P);
+    if (t.length) t[0] = normAddr(t[0]);
     if (t.length) {
       const reg = this.regptr[t[0]] ?? 0;
       const bytes = this.sample(t[0], reg, t[2]);
@@ -127,7 +157,7 @@ export class LSM303 {
     };
     for (const e of evs) {
       if (e & 0x80000000) {
-        if (e & 0x40000000) { flush(); addr = e & 0x7F; }
+        if (e & 0x40000000) { flush(); addr = normAddr(e & 0x7F); }
         else { flush(); addr = null; }
       } else if (addr !== null) {
         buf.push(e & 0xFF);

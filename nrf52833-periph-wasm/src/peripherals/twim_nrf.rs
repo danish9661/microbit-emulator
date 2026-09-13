@@ -114,14 +114,23 @@ impl Twim {
         }
     }
     /// True when a tap slave answers at the current ADDRESS on this bus.
+    /// nrfx writes ADDRESS shifted (addr<<1: tap table is 7-bit), so
+    /// match shifted>>1 too — 0x72 finds the 0x39 slave.
+    /// The >>1 fallback can alias (0x19 == 0x33>>1: the SSD1306 0x3C
+    /// tap is a real example), so prefer exact first; tests needing a
+    /// guaranteed-empty bus must hold lock_i2c_tap().
     fn slave_present(&self) -> bool {
-        for tap in crate::system::get_ext_devices().lock().unwrap().i2c_taps.iter() {
+        let taps = crate::system::get_ext_devices().lock().unwrap();
+        if taps.i2c_taps.iter().any(|tap| {
             let t = tap.borrow();
-            if t.config.peripheral == self.name && t.config.address == self.address {
-                return true;
-            }
+            t.config.peripheral == self.name && t.config.address == self.address
+        }) {
+            return true;
         }
-        false
+        taps.i2c_taps.iter().any(|tap| {
+            let t = tap.borrow();
+            t.config.peripheral == self.name && t.config.address == (self.address >> 1)
+        })
     }
     /// NACK deadline poll: address phase with no ACK fails the transfer.
     /// Runs on every access + tick (same lazy rule as the counters).
@@ -274,7 +283,14 @@ impl Peripheral for Twim {
                     crate::system::spi_tap_push_byte(&self.name, self.tx_byte as u32);
                 }
             }
-            0x588 => self.address = (value & 0x7F) as u8,
+            0x588 => {
+                // ADDRESS register: keep the raw firmware value (nrfx
+                // writes the 8-bit shifted form, e.g. 0x72 for 7-bit
+                // 0x39). slave_present() matches both forms against the
+                // 7-bit tap table, so no normalization here (silicon
+                // readback is the written value).
+                self.address = (value & 0xFF) as u8;
+            }
             0x534 => self.rx_ptr = value,
             0x538 => self.rx_maxcnt = value & 0xFF,
             0x544 => self.tx_ptr = value,
@@ -757,8 +773,28 @@ mod tests {
         assert_eq!(sys.p.read(&sys, 0x40004160, 4), 1, "LASTTX event set");
     }
     #[test]
+    fn address_matches_shifted_8bit_form() {
+        // nrfx writes ADDRESS as the 8-bit shifted form (addr<<1:
+        // 0x32/0x3C/0xE0/0xE4); the tap table registers 7-bit
+        // (0x19/0x1E/0x70/0x39). slave_present() must accept both, and
+        // the take/complete path must hand the driver the 7-bit form.
+        // Browser-measured: TWIM1 ADDR 114 (0x72 = 0x39<<1) with
+        // ERROR+ANACK and no slave match.
+        use crate::system::test_dummy_system;
+        let _t = crate::system::lock_i2c_tap();
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x40004588, 4, 0x72); // shifted form of 0x39
+        assert_eq!(sys.p.read(&sys, 0x40004588, 4), 0x72, "raw readback");
+        sys.p.write(&sys, 0x40004588, 4, 0x19); // 7-bit stays as-is
+        assert_eq!(sys.p.read(&sys, 0x40004588, 4), 0x19, "7-bit passthrough");
+    }
+    #[test]
     fn nack_without_slave_sets_error_and_stopped() {
         use crate::system::test_dummy_system;
+        // 0x19 has no tap on TWIM1 in this test's view; the DMA/sensors
+        // tests register TWIM0/0x19 (different bus, no alias). Lock the
+        // tap table so no parallel test can add one mid-flight.
+        let _t = crate::system::lock_i2c_tap();
         let sys = test_dummy_system();
         // No tap slave registered for TWIM1/0x19: address phase NACKs.
         sys.p.write(&sys, 0x40004588, 4, 0x19); // ADDRESS

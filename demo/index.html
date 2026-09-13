@@ -400,9 +400,13 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   }
   function frame() {
     if (cpu) {
-      // Throughput: several 20K step+tick slices per frame (100K), duties
-      // once. Single-slice frames cap at ~60fps*20K (vsync-bound); batching
-      // raises wall throughput ~2-3x with unchanged 20K tick granularity.
+      // Throughput: several step+tick slices per frame with DMA duties
+      // INSIDE the sub-loop. Duties-once-per-frame starves polled
+      // firmware: a 1-byte STARTTX staged at slice 0 waited ~100K instr
+      // for completion, so putc's polled ENDTX/entry spins burned whole
+      // frames and the 60/140ms DRDY pulse could never land inside a
+      // 20K wait window (P54: banner needs 160-180M but browser reparks
+      // at 0x200021b8/bb with u_txmax=0 at 6 MIPS).
       for (let k = 0; k < 5; k++) {
         mipsN += cpu.step(20000);
         wasm.tick_peripherals();
@@ -415,12 +419,12 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
           wasm.tick_n(20000);
           if (wasm.has_pending_interrupt()) cpu.wake();
         }
+        pumpDma();
       }
       const fpc = cpu.fault_pc();
       if (fpc !== 0xFFFFFFFF) {
         status.textContent = `CPU fault pc=${(fpc >>> 0).toString(16)} op=${cpu.fault_op1().toString(16)} (see console-style UART above)`;
       }
-      pumpDma();
       // Drip one typed byte per consumed RXDRDY (see above). The byte is
       // mirrored into the DMA buffer (RXD.PTR+AMOUNT) so DMA-mode firmware
       // (MicroPython reads exclusively from that ring) receives it too.

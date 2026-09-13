@@ -1271,3 +1271,57 @@ Temp native probes reverted (`git checkout -- .../cpu/tests.rs`).
    `NRF52LEDMatrix::enable` (ctor) never runs, init stalls in an
    earlier member. Still open, but the fix is NOT timing/pump (any
    init-order change now would be guessing).
+
+## 53. P53 browser-banner gap + TX tail-shift (2026-09-13, uncommitted)
+
+TEMP probes used throughout (`window.__dbg` one-liner + native
+`tmp_l1`/`tmp_p53i`/`p53d` harnesses, `/tmp/opencode/probe/*.py`
+re-created — /tmp is ephemeral); all reverted
+(`grep __dbg/tmp_l1/tmp_p53i/p53d` = 0). Suite 190 green, smoke
+green. No commits per order.
+
+1. Browser banner gap — GATE IS TWIM-SIDE, UARTE-SIDE CLEAR.
+   Dense browser run (browser pkg, this tree): pc pinned
+   `0x200021b8/bb` (RAM delay-fn countdown, lr `0x26039`,
+   `0x20ab1` on stack), uartLen=0 through 100s, while the native
+   L1 probe with the same recipe banners at 160–180M
+   (`0x266D4`, 106B). Browser peripherals at stall: TWIM1 ADDR
+   114 (`0x72` = `0x39<<1`, firmware asking for the USB-FLASH
+   chip), ERROR=1/ANACK=1 (before ADDR fix; now 0/0 with endtx/rx
+   1/1), UARTE `u_txmax=0/endtx=0` (never staged — symptom, not
+   cause), NVMC READY=1/CONFIG=0 with no staged erase, RESETREAS
+   `0x4` (SREQ: AIRCR resets ARE honored now). Root cause chain:
+   nrfx writes TWIM ADDRESS shifted (`addr<<1`) but the model
+   masked `&0x7F` (114→50) AND `slave_present` required exact
+   match — no tap at 50, so every sensor/USB transaction NACKed
+   and firmware parked in the USB-flash wait loop. FIX (this
+   tree): ADDRESS keeps the raw value (`&0xFF`, silicon readback),
+   `slave_present` prefers exact then `>>1` (so `0x72` finds the
+   `0x39` tap); demo `lsm303.js` gained `normAddr` + a KL27-UIPM
+   `0x70` stub (empty = no event; `0x39/0x72` deliberately NOT
+   stubbed — NACK there is the correct "no flash op" answer) and
+   DRDY now PULSES 60ms-low/140ms-high (permanent low trips the
+   KL27 `idleCallback` >30-tick USB threshold on shared irq1).
+   Post-fix browser: TWIM ACKs (`t=114/0/2`, endtx/rx=1), but
+   uartLen still 0 at 100s — banner needs a longer run to confirm
+   (native threshold 160–180M ≈ 30s at 6 MIPS; browser reparks
+   identically, so wall-time, not model, is now suspect #1).
+2. TX tail-shift — SNAPSHOT ACTIVE, DRIVER PATH CLEAN.
+   L1 native banner (snapshot path live via `WasmCpu::step`)
+   still shows holes at 19/39/59/79 (always `0x20`) PLUS a tail
+   shift (`\r\n>` → `\0 >`, len 106 vs 105). TEMP P53i audit
+   (take-time vs complete-time vs uart bytes, 106 takes): 0
+   mismatches of 106 — the deferred driver read is byte-clean,
+   so the corruption lands BEFORE STARTTX (firmware-side slot
+   reuse, P49 mechanism) or in prompt staging, not in our take.
+   Do NOT change the `Peripheral::write` trait; snapshot stays as
+   the (partial) mitigation. Live verification blocked behind (1).
+3. REPL exec + MakeCode — BOTH CONFIRMED BLOCKED BEHIND (1),
+   deferred. MC L4 probe: waiter `0x30C18` 0 hits over 260M,
+   pc `0x20002078/7A` → `0x37AFA` WFE-idle, DIR0 sticky
+   `0x01788000`, TIMER4 CC0/EV0 untouched — stall is pre-scroll
+   (init never reaches scroll setup), not a missed wakeup.
+4. Housekeeping: STATUS 188→190 (+TWIM shifted-ADDR match, +SCB
+   AIRCR SYSRESETREQ test); pkg rebuilt with this tree's fixes.
+   Shelved stays shelved: sd_evt (0×svc82), full MBR→BL→SD→app
+   (needs SD priorities), npm publish (401).

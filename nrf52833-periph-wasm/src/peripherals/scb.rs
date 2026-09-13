@@ -55,17 +55,22 @@ impl Scb {
         // checked the LOW half, so no AIRCR write ever applied (PRIGROUP
         // stuck at reset 0, SYSRESETREQ dead).
         if (value >> 16) & 0xFFFF == 0x05FA {
-            // Keep only the writable low bits (PRIGROUP [10:8]); the high
-            // half always reads VECTKEYSTAT (0xFA05). The old mask kept the
-            // high halfword instead, which silently dropped PRIGROUP even
-            // past a correct key (second half of the dead-AIRCR bug).
-            self.aircr = (0xFA05 << 16) | (value & 0x0000_0F00);
+            // Keep the writable low bits: PRIGROUP [10:8] + SYSRESETREQ
+            // [2] (self-clearing on silicon; the flag is consumed below
+            // so the latch never sticks). The high half always reads
+            // VECTKEYSTAT (0xFA05). Masking [2] out here dropped the
+            // reset bit before the check below could see it — every
+            // AIRCR SYSRESETREQ (e.g. MicroPython's 0x29CC8:
+            // 0x05FA0004) was silently swallowed.
+            self.aircr = (0xFA05 << 16) | (value & 0x0000_0F04);
             let vectkey = (value >> 16) & 0xFFFF;
             if vectkey == 0x05FA {
                 let sysreset = (value >> 2) & 1;
                 if sysreset == 1 {
                     // System reset request (AIRCR SYSRESETREQ) — reboot the
                     // guest but don't latch a watchdog-specific cause bit.
+                    // Clear the self-clearing bit so AIRCR reads clean.
+                    self.aircr &= !(1 << 2);
                     crate::system::request_watchdog_reset(0);
                 }
             }
@@ -191,5 +196,26 @@ impl Peripheral for Scb {
             0x88 => self.cpacr = value & 0x00F0_0000,
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::system::test_dummy_system;
+    #[test]
+    fn aircr_sysresetreq_fires_and_self_clears() {
+        // MicroPython's 0x29CC8 sequence writes 0x05FA0004: the SYSRESETREQ
+        // bit must reach the reset latch even though PRIGROUP is 0.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000ED0C, 4, 0x05FA0004);
+        assert!(crate::system::is_watchdog_reset_requested(), "reset latched");
+        assert_eq!(sys.p.read(&sys, 0xE000ED0C, 4) & (1 << 2), 0, "self-clears");
+        // PRIGROUP still applies through the same write path.
+        sys.p.write(&sys, 0xE000ED0C, 4, 0x05FA0700);
+        assert_eq!(sys.p.read(&sys, 0xE000ED0C, 4) & 0x700, 0x700, "PRIGROUP kept");
+        // Wrong key: ignored entirely.
+        sys.p.write(&sys, 0xE000ED0C, 4, 0x00000700);
+        assert_eq!(sys.p.read(&sys, 0xE000ED0C, 4) & 0x700, 0x700, "bad key ignored");
     }
 }

@@ -47,11 +47,13 @@ check(ROWS.length === 5 && COLS.length === 5, '5x5 matrix map');
 {
   const wasm = mockWasm(), cpu = mockCpu(), imu = new LSM303(wasm);
   imu.register();
-  check(wasm.slaves.join() === 'TWIM1,25,TWIM1,30', 'registers 0x19 + 0x1E');
+  check(wasm.slaves.join() === 'TWIM1,25,TWIM1,30,TWIM1,112,TWIM1,57', 'registers 0x19 + 0x1E + KL27 UIPM 0x70 + USB-FLASH 0x39');
   // TX: set pointer 0x0F, then read it back through sample()
   imu.feedWrite(0x19, [0x0F]);
   check(imu.sample(0x19, 0x0F, 1)[0] === 0x33, 'accel WHO_AM_I');
   check(imu.sample(0x1E, 0x0F, 1)[0] === 0x40, 'mag WHO_AM_I');
+  check(imu.sample(0x70, 0x00, 4).join() === '0,0,0,0', 'KL27 UIPM empty frame');
+  check(imu.sample(0x39, 0x00, 2).join() === '32,1', 'USB-FLASH fail-fast frame');
   imu.feedWrite(0x19, [0x20, 0x57]); // CTRL_REG1 write
   check(imu.sample(0x19, 0x20, 1)[0] === 0x57, 'CTRL echo');
   // tilt changes output
@@ -64,7 +66,13 @@ check(ROWS.length === 5 && COLS.length === 5, '5x5 matrix map');
   cpu._ram.set([0x0F], 0);
   imu.poll(cpu);
   check((wasm._rxStaged ?? null) === null, 'no rx staged spontaneously');
-  check(wasm.inputs.some(([p, n, v]) => p === 0 && n === 25 && v === false), 'DRDY holds P0.25 low');
+  // DRDY pulse (60ms low / 140ms high): poll until both phases seen.
+  for (let i = 0; i < 40 && !(wasm.inputs.some(([p, n, v]) => p === 0 && n === 25 && v === false) && wasm.inputs.some(([p, n, v]) => p === 0 && n === 25 && v === true)); i++) {
+    imu.poll(cpu);
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  check(wasm.inputs.some(([p, n, v]) => p === 0 && n === 25 && v === false), 'DRDY pulses P0.25 low');
+  check(wasm.inputs.some(([p, n, v]) => p === 0 && n === 25 && v === true), 'DRDY releases P0.25 high');
 }
 
 // --- LSM303 byte path: pointer-set anticipates the read ---
