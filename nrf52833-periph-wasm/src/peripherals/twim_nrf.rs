@@ -113,12 +113,30 @@ impl Twim {
             sys.p.nvic.borrow_mut().set_intr_pending(self.irq);
         }
     }
+    /// 7-bit form of the current ADDRESS for tap matching: nrfx writes
+    /// ADDRESS shifted (addr<<1 — and the shifted forms 0x32/0x3C/0x72
+    /// are all <0x80, so masking with 0x7F alone keeps them shifted;
+    /// P86: 0x72 events never matched the 0x39 stub). Shared with
+    /// take_* consumers (JS normAddr has the same table).
+    pub fn norm7_addr(raw: u8) -> u8 {
+        match raw {
+            0x32 => 0x19,
+            0x3C => 0x1E,
+            0x72 => 0x39,
+            0xE0 => 0x70,
+            _ if raw > 0x7F => raw >> 1,
+            _ => raw,
+        }
+    }
     /// True when a tap slave answers at the current ADDRESS on this bus.
-    /// nrfx writes ADDRESS shifted (addr<<1: tap table is 7-bit), so
-    /// match shifted>>1 too — 0x72 finds the 0x39 slave.
-    /// The >>1 fallback can alias (0x19 == 0x33>>1: the SSD1306 0x3C
-    /// tap is a real example), so prefer exact first; tests needing a
-    /// guaranteed-empty bus must hold lock_i2c_tap().
+    /// nrfx writes ADDRESS shifted (addr<<1 — and the shifted forms
+    /// 0x32/0x3C/0x72 are all <0x80, so a plain `>0x7F` test misses them;
+    /// P86: 0x72 traffic never matched the 0x39 tap and flash reads got
+    /// zeros = busy = the whole pre-banner boot time). Match exact, then
+    /// the normalized 7-bit form; the >>1 fallback can alias
+    /// (0x19 == 0x33>>1: the SSD1306 0x3C tap is a real example), so
+    /// prefer exact first; tests needing a guaranteed-empty bus must
+    /// hold lock_i2c_tap().
     fn slave_present(&self) -> bool {
         let taps = crate::system::get_ext_devices().lock().unwrap();
         if taps.i2c_taps.iter().any(|tap| {
@@ -127,9 +145,10 @@ impl Twim {
         }) {
             return true;
         }
+        let norm = Self::norm7_addr(self.address);
         taps.i2c_taps.iter().any(|tap| {
             let t = tap.borrow();
-            t.config.peripheral == self.name && t.config.address == (self.address >> 1)
+            t.config.peripheral == self.name && t.config.address == norm
         })
     }
     /// NACK deadline poll: address phase with no ACK fails the transfer.
@@ -224,7 +243,9 @@ impl Peripheral for Twim {
                 self.arm_nack();
                 // START boundary carries the 7-bit slave address in bits
                 // 6..0 (boundary detection via bits 31/30 is unaffected).
-                crate::system::i2c_tap_push_event(&self.name, (1 << 31) | (1 << 30) | (self.address as u32 & 0x7F));
+                // Normalize: nrfx writes ADDRESS shifted (P86: raw 0x72
+                // must arrive as 0x39 or the JS stub never answers).
+                crate::system::i2c_tap_push_event(&self.name, (1 << 31) | (1 << 30) | (Self::norm7_addr(self.address) as u32));
             }
             0x008 => { // STARTTX
                 self.started_tx = true;
@@ -235,7 +256,7 @@ impl Peripheral for Twim {
                 self.tx_amount = 0;
                 self.tx_pending = self.tx_maxcnt > 0;
                 self.arm_nack();
-                crate::system::i2c_tap_push_event(&self.name, (1 << 31) | (1 << 30) | (self.address as u32 & 0x7F));
+                crate::system::i2c_tap_push_event(&self.name, (1 << 31) | (1 << 30) | (Self::norm7_addr(self.address) as u32));
             }
             0x010 => { self.started_tx = true; self.ev_stopped = false; } // SPIM TASKS_START
             0x014 => { // STOP -> STOPPED event
@@ -476,13 +497,15 @@ fn base_of(name: &str) -> Option<u32> {
 }
 
 /// Take a staged TX DMA transfer (addr, ptr, maxcnt); None when idle.
+/// The address is the normalized 7-bit form (P86: raw 0x72 arrives as
+/// 0x39 — the take_* consumer must see what the tap table sees).
 pub fn take_txdma(sys: &System, name: &str) -> Option<(u8, u32, u32)> {
     let base = base_of(name)?;
     with_twim(sys, base, |t| {
         if t.tx_pending {
             t.tx_pending = false;
             t.nack_at = None; // driver owns it now: no bus-error timeout
-            Some((t.address, t.tx_ptr, t.tx_maxcnt))
+            Some((Twim::norm7_addr(t.address), t.tx_ptr, t.tx_maxcnt))
         } else {
             None
         }
@@ -538,13 +561,14 @@ pub fn complete_txdma(sys: &System, name: &str, data: &[u8]) {
 }
 
 /// Take a staged RX DMA transfer (addr, ptr, maxcnt); None when idle.
+/// Normalized 7-bit address, same contract as take_txdma (P86).
 pub fn take_rxdma(sys: &System, name: &str) -> Option<(u8, u32, u32)> {
     let base = base_of(name)?;
     with_twim(sys, base, |t| {
         if t.rx_pending {
             t.rx_pending = false;
             t.nack_at = None;
-            Some((t.address, t.rx_ptr, t.rx_maxcnt))
+            Some((Twim::norm7_addr(t.address), t.rx_ptr, t.rx_maxcnt))
         } else {
             None
         }
@@ -775,11 +799,14 @@ mod tests {
     #[test]
     fn address_matches_shifted_8bit_form() {
         // nrfx writes ADDRESS as the 8-bit shifted form (addr<<1:
-        // 0x32/0x3C/0xE0/0xE4); the tap table registers 7-bit
+        // 0x32/0x3C/0xE0/0x72 — note the first three are <0x80, so a
+        // plain `>0x7F` test misses them); the tap table registers 7-bit
         // (0x19/0x1E/0x70/0x39). slave_present() must accept both, and
         // the take/complete path must hand the driver the 7-bit form.
         // Browser-measured: TWIM1 ADDR 114 (0x72 = 0x39<<1) with
-        // ERROR+ANACK and no slave match.
+        // ERROR+ANACK and no slave match (P86: `&0x7F` masking kept
+        // the shifted value shifted, so neither the ACK check nor the
+        // driver handoff ever saw 0x39).
         use crate::system::test_dummy_system;
         let _t = crate::system::lock_i2c_tap();
         let sys = test_dummy_system();
@@ -787,6 +814,19 @@ mod tests {
         assert_eq!(sys.p.read(&sys, 0x40004588, 4), 0x72, "raw readback");
         sys.p.write(&sys, 0x40004588, 4, 0x19); // 7-bit stays as-is
         assert_eq!(sys.p.read(&sys, 0x40004588, 4), 0x19, "7-bit passthrough");
+        // Normalized handoff: take_* reports the 7-bit address the tap
+        // table (and the JS part) matches on.
+        for (raw, want) in [(0x32u32, 0x19u8), (0x3Cu32, 0x1E), (0x72, 0x39), (0xE0, 0x70), (0x19, 0x19)] {
+            sys.p.write(&sys, 0x40004588, 4, raw);
+            sys.p.write(&sys, 0x40004544, 4, 0x20001000);
+            sys.p.write(&sys, 0x40004548, 4, 1);
+            sys.p.write(&sys, 0x40004008, 4, 1); // STARTTX
+            let t = take_txdma(&sys, "TWIM1").expect("staged");
+            assert_eq!(t.0, want, "take normalizes {raw:#x}");
+            // Drain the staged RX twin too (STARTTX doesn't stage RX;
+            // this just keeps the slot clean for the next iteration).
+            sys.p.write(&sys, 0x40004120, 4, 0);
+        }
     }
     #[test]
     fn nack_without_slave_sets_error_and_stopped() {

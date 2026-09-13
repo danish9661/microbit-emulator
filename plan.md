@@ -1657,3 +1657,414 @@ sustained average; blinky AND mpy park both read `6.02 (avg 6.00)` —
 the user's 16-class bursts are peak slice rates; sustained == slice
 because the park never sleeps. The meter no longer misleads.
 Probes reverted (P70/P71 `__dbg` gone); 191 green + smoke green hold.
+
+## 65. P72 live catch: TWIM1 MMIO polling, +124/+150/+160 all zero (2026-09-13, uncommitted)
+
+P72 (native, reverted): single-step break at `0x282a6` (1-instr
+quanta) reads the scan inputs LIVE: r4=`0x20002C0C`, r7=260,
+`[r4+#16]=0x40004000` (TWIM1 base). `[r0+#124]=0` (falls to
+`0x282ec`, skipping the `+292` branch), `[r0+#336]=0` (falls to
+`0x28370`, skipping the `+352` branch) — so the ONLY live check is
+`[r0+#512]` (`0x200`) at `0x282ce`: `lsls r2,r3,#23; bpl →0x2838a`.
+Live value is 0 → N=0 → BPL TAKEN → `0x2838a` (skip). The loop NEVER
+takes the `0x282de` store path (`str r8,[r0,#28]`). TWIM1 regs at the
+same instant are all-healthy (ENDTX=1, ENDRX=1, AMOUNT=3, no ERROR).
+So the waited word `[r0+#0x200]` reads 0 from OUR model and the
+firmware skips the progress store every iteration. `[r4+#16]` is the
+TWIM1 BASE (not a transfer struct): `+0x200` = TWIM1 offset `0x200`
+= SHORTS — but our SHORTS reads `0x1000`, nonzero! So `[r0+#0x200]`
+is NOT our SHORTS (r0≠r4 here: `ldr r0,[r4,#16]` re-reads it each
+iteration — r0=`0x20002C0C` too in the dump, yet `[r0+#512]`=0 while
+SHORTS=`0x1000`). Therefore `[r0+#0x200]` is a FIRMWARE-SIDE shadow/
+state word at offset `0x200` of the `0x20002C0C` object, NOT the MMIO
+register — the driver caches SHORTS (or a state derived from it) in
+its own object, and OUR model never sets that shadow (we only model
+the MMIO side). NEXT: find who writes `[0x20002C0C+#0x200]` (watch
+writes to that word from boot — the setter names the event that
+should set it, likely the TX-complete/RX-complete callback that our
+take/complete path doesn't invoke).
+Probes reverted; 191 green hold.
+
+## 66. P73 shadow word is a POINTER, not a flag (2026-09-13, uncommitted)
+
+P73 (native, reverted): write-watch on `[0x20002C0C+#0x200]` from boot
+finds exactly ONE transition at t=0M (first sample, pc already
+`0x200021b8`): value `0x573B4` — a FLASH POINTER, never changes again
+through 120M. So `[r0+#0x200]` is not a flag the model should set; it
+is a vtable/function pointer baked at init. Re-reading the P72 code
+with this: `ldr r3,[r0,#512]` loads a POINTER (`0x573B4`), `lsls
+r2,r3,#23` tests ITS bit 8 (`0x573B4` = `...0111 0011 1011 0100`,
+bit8 = 0 → N=0 → BPL taken → skip). The waited condition is bit 8 of
+the WORD AT `0x573B4` — i.e. a flag living at a HARDCODED FLASH/STATE
+address, not in the TWIM struct at all. NEXT: dump flash word
+`0x573B4` + what writes it (it may be an I2C-driver state byte the
+take/complete path should update — e.g. transfer-done semaphore —
+or a CODAL component status bit).
+Probes reverted; 191 green hold.
+
+## 65. P73 shadow-is-pointer + P74 type-word polled (2026-09-13, uncommitted)
+
+P73 (native, reverted): write-watch on `[0x20002C0C+#0x200]` finds ONE
+transition at t=0M (first sample): value `0x573B4` — a FLASH POINTER,
+never changes through 120M. So the "shadow" is not a flag the model
+should set. Re-reading P72: `ldr r3,[r0,#512]` loads the POINTER,
+`lsls r2,r3,#23` tests ITS bit 8 — the waited flag lives at a
+hardcoded address.
+
+P74 (native, reverted): polling the pointer AND `[ptr]` each slice:
+ptr goes 0 → `0x573B4` during early boot (before park), `[ptr]` =
+`0x1E615` constant, bit 8 = 0, forever. `0x573B4` disassembles as a
+Hello-World-class TYPE WORD (`15 e6 01 00 ...` = small-int/string-tag
+soup, `u32 = 0x1E615`): it is a MicroPython TYPE OBJECT (or qstr/int
+singleton), and the `0x282ce` check tests ITS bit 8 — i.e. a TYPE
+FLAG (MP_OBJ_TYPE flag bit 8 = "callable"?/instance-layout bit?).
+The TWIM-wait loop at `0x282a6` therefore polls `r3=[r0,r7]`
+(object slot) for NULL, then checks the OBJECT'S TYPE FLAG — a
+GC/object-model wait (object not yet initialized / layout not ready),
+NOT a peripheral completion at all. The TWIM1-healthy regs (P65:
+ENDTX/RX=1, no ERROR) are consistent: I2C is FINE; the waiter wants
+an OBJECT whose type flag bit 8 is set, and nothing ever sets it
+because the constructing fiber never runs (scheduler never delivers
+the constructor — compare the NULL-`this` fault family P24–P25).
+NEXT: identify `0x1E615` (which MP type: dump its name/qstr field —
+type objects carry `.name` a few words in) + who should construct
+the `r3==NULL` slot (the `[r0,r7]` table = WHAT table? r0=`0x20002C0C`
+is whose object?).
+Probes reverted; 191 green hold.
+
+## 66. P74 type-word + P75 table-shape (2026-09-13, uncommitted)
+
+P74 (native, reverted): `[0x20002C0C+#0x200]` transitions exactly ONCE
+(t=0M, before park): `0x573B4`, a flash pointer, constant forever.
+`[0x573B4]` = `0x1E615`, bit 8 = 0, forever. So the `0x282ce` check
+(`lsls#23/bpl`) polls bit 8 of a CONSTANT — an MP type-flag word that
+silicon also reads 0. The wait NEVER fires by construction?? — No:
+re-read: the polled word is `[r3]` where `r3=[r0+#512]` RE-READ each
+iteration (`ldr.w r3,[r0,#512]` at `0x282ce` — r0=`[r4,#16]` live).
+The POINTER is constant but only because NOTHING writes that struct
+slot in our run; on silicon some constructor/driver fills it. The
+`blx` at the chain end (`0x282e6: bl 0x5048c` after `movs r0,#10`)
+is the progress call gated on the flag.
+
+P75 (static): `0x573B4` sits in a 35-entry table of `0x1E615`-based
+records (`0x571F0`–`0x579F8`: `{base=0x1E615, flags/name, ...}` —
+an MP TYPE TABLE: 35 MicroPython types sharing base `0x1E615`).
+`0x573B4` = one entry (`{0x1E615, 0x4D821, 0x4E7E1, ...}`); only TWO
+refs point AT `0x573B4` itself (`0x1E888`, `0x20890` — halfword soup,
+likely data-table entries = type slots referencing it). So the waiter
+wants the OBJECT in slot r7=260 of the `[r4+#16]` table to be a
+`0x573B4`-typed object whose flag bit 8 gets set — i.e. it waits for
+a SPECIFIC SUBSYSTEM OBJECT (whose type is entry `0x573B4`) to reach
+a state, and that object is never constructed (slot NULL at +292 and
+friends). NEXT: name entry `0x573B4`'s type (neighbor entries'
+names/qstrs — the table at `0x57390`/`0x573C0` may carry name words;
+compare against MP_QSTR list from the MPY source) + who constructs
+slot r7=260 (which subsystem init owns that table index?).
+Probes reverted; 191 green hold.
+
+## 67. P75 method-table records + P76 word2 slots (2026-09-13, uncommitted)
+
+P75: the 35 `0x1E615`-based records are NOT types (all share word1
+`0x4D821`; only 2 refs point AT any single entry, and those decode
+as halfword soup, not pointers). They are same-shape records with a
+shared header — method-table/dispatch records, names elsewhere.
+
+P76 (static, no run): word1 `0x4D821` is shared by all 35; word2 has
+only 9 DISTINCT values across all 35, each pointing at a CODE
+prologue (`b5xx push...`, `f758 ldr...`, `f114...`, `68xx ldr...`):
+word2 = a FUNCTION SLOT (9 unique handlers shared across 35
+records). So each record = {base `0x1E615` (dispatch root), shared
+header `0x4D821`, handler fn, ...} — i.e. a VTABLE/method record
+whose identity = its HANDLER. `0x573B4`'s handler is `0x4E7E1`
+(`58 f7 ldr r7,[r6,r3]` — indexed-dispatch shaped). The `0x282ce`
+wait (bit 8 of `[0x573B4]`) therefore polls a bit of a METHOD
+RECORD, not an object flag — and the record is ROM-constant, so the
+check as-shown can never flip. Either the polled word is a
+DIFFERENT `[r0+#512]` on silicon (r0 differs there — our r0 is the
+TWIM1-struct path because our sensor answers steer init down the
+sensor-wait branch), or the flag is set by a constructor that never
+runs here. Either way: no model register can fix a ROM-constant
+poll — the divergence is UPSTREAM (which init branch we take).
+NEXT: find what decides the branch INTO the `0x28290` wait (the
+`0x282b2`/`0x282be` null-checks on `[r0+#292]/[r0+#336]` — which
+subsystem's absence routes us here vs banner?).
+Probes: none (pure static); 191 green hold.
+
+## 68. P77 mock-matrix negative: branch words are MMIO-aliased (2026-09-13, uncommitted)
+
+P77 (native 4×60M, reverted): mocking the polled branch words does
+NOTHING — all four variants (A292/B336/C512/ABC) park identically at
+`0x200021b8/bb`, uartLen 0. Decisive detail: struct base reads
+`0x40004000` — the "struct" IS the TWIM1 MMIO region itself (`[r4+#16]`
+= TWIM1 base, so `+292`/`+336`/`+512` are TWIM1 offsets `0x124`/
+`0x150`/`0x200` = EVENTS_ERROR / EVENTS_TXSTARTED / SHORTS). The
+firmware polls REAL TWIM1 REGISTERS, not a shadow struct — P72's
+"shadow" theory was wrong (r0==TWIM1 base because r4's `[+#16]` field
+HOLDS the TWIM1 base address, standard CODAL driver layout). And the
+C512 variant reveals the trap: `[struct+512]` read `0x1000` (=SHORTS
+value!), and `mem.read32(0x1000)`/`mem.write32(0x1000)` touch
+FLASH (harmless here — `0x20000FB0` unchanged, bit already set).
+So instead of answering the question, C512 PROVES the addressing:
+`[r0+#512]` with r0=TWIM1 = SHORTS, and our SHORTS=`0x1000` has bit
+12 set... but the check is `lsls#23` (tests bit 8 of the LOADED
+word): SHORTS `0x1000` bit8 = 0 → skip, every time. On silicon,
+whatever sets SHORTS bit 8 (a SHORTS bit the driver programs for
+its transfer chain — bit 8 = LASTTX_SUSPEND per our SVD map!) would
+let it proceed. OUR model may be DROPPING the firmware's SHORTS bit
+8 write (mask?) or the driver never programs it because an earlier
+step failed. NEXT: log TWIM1 SHORTS writes from boot (which value
+does firmware program? does bit 8 ever get set?) + check our
+SHORTS mask (`0x200` write mask `0x1F80` — bit 8 = `0x100` IS in
+mask... so did firmware ever WRITE it?).
+Probes reverted; 191 green hold.
+
+## 69. P78 SHORTS lifecycle: firmware programs bit8 then clears it (2026-09-13, uncommitted)
+
+P78 (native 120M, reverted): TWIM1 SHORTS write trace from boot:
+`0xFFFFFFFF→0` at 0.02M (model reset value, ignore), then `0→0x100`
+(bit 8 = LASTTX_SUSPEND) at ~1.04M, `0x100→0x1000` (bit 12 =
+LASTRX_STOP) at ~1.06M, `0x1000→0x200` (bit 9 = LASTTX_STOP) at
+~1.08M, `0x200→0x1000` at ~2.66M, stable `0x1000` to 120M. So
+firmware DOES program bit 8 early (during init transfers) but the
+STEADY-STATE park value is `0x1000` (bit 8 CLEAR) — the P72 check
+(`lsls#23` on SHORTS, needs bit 8) reads the CURRENT register,
+which legitimately has bit 8 = 0 at park. The check failing is
+therefore CORRECT behavior for the programmed SHORTS — the waiter's
+real wait is NOT "SHORTS bit 8" but whatever the `0x2838a` skip
+path means (fall through to delay + re-poll). Combined with P77
+(mocking all three branch words changes nothing): the park loop is
+a POLLED IDLE that only exits via the `0x282ec`/`0x28370`/`0x282de`
+progress paths, and NONE of the polled words ever go nonzero in ANY
+configuration tried (sensors answered, KL27 stubbed, clocks on).
+The missing event is therefore something NONE of our stubs provide:
+candidates are (a) a DIFFERENT I2C address we don't stub (scan TWIM1
+ADDR traffic for unanswered addresses — P53d saw only 0x72 traffic,
+but that was pre-ADDR-fix; re-scan), (b) a non-I2C peripheral event
+(SAADC? PDM? USBD? GPIOTE PORT?) the init waits on, (c) a TIMER/RTC
+tick that never fires at the expected rate. NEXT: full peripheral
+EVENT histogram (which EVENTS_* regs go nonzero per 20M slice) +
+TWIM1 ADDR histogram re-scan on the current tree.
+Probes reverted; 191 green hold.
+
+## 70. P79 event histogram: T2_C0 fires, T4_C0 once, ADDR all-answered (2026-09-13, uncommitted)
+
+P79 (native 120M, reverted): hot events per 20M slice are STABLE:
+TIMER2-COMPARE0 + TWIM1 ENDTX/ENDRX/STOPPED, always; TIMER4-COMPARE0
+exactly once (40M slice). NOTHING else ever fires — no SAADC/PDM/
+GPIOTE/NFCT/RADIO/COMP/RNG/UARTE/TIMER0-1-3/RTC events. TWIM1 ADDR
+histogram: `0x72` ×1468 (USB-flash, fail-fast answered),
+`0x19` ×5 + `0x1E` ×2 (ONE sensor probe each at boot, then never
+again). So: (a) no unanswered address exists — every I2C transaction
+is served; (b) the ONLY timer event is T2_C0 (system tick?) + a
+single T4_C0; (c) the waiter at `0x282a6` polls `[r0+#292]`/
+`[r0+#336]`/`[r0+#512]`=TWIM1 ERROR/TXSTARTED/SHORTS — all steady
+(0/0/`0x1000`). The missing event is therefore NOT a peripheral
+event at all: with all buses served and all events quiet, the loop
+waits on a FIRMWARE-SIDE flag (the `[r0+#292]`/`[r0+#336]` words are
+struct fields, not MMIO — re-read P77: struct base `0x40004000` was
+the STRUCT's +16 FIELD (a stored TWIM1-base copy), so +292/+336 are
+struct+292/+336, NOT TWIM1+0x124/+0x150!). P77's "MMIO-alias" was
+WRONG: the struct HOLDS 0x40004000 at +16 but polled offsets are
+struct-relative. So the waited words are DRIVER-STATE fields (a
+transfer-completion semaphore pair?) that our take/complete path
+never sets — because take/complete stage the MODEL side, and the
+driver struct fields are written by... the driver's own ISR, which
+needs an IRQ our completion may not fire (INTEN=0 observed at park!
+P65: INTEN reads 0 — with no INTEN bits, completion sets events but
+pends NO interrupt, and an IRQ-driven driver never wakes).
+NEXT: check TWIM1 INTEN programming from boot (does firmware ever
+enable TWIM1 IRQs? if it relies on IRQs and INTEN stays 0 in our
+run, find who should have enabled them) + whether the waiter is an
+IRQ-wait (WFE/SEV?) or a polled flag the ISR sets.
+Probes reverted; 191 green hold.
+
+## 71. P80 INTEN never programmed + P81 latch verdict + P82 stub-matrix (2026-09-13, uncommitted)
+
+P80 (native 120M, reverted): TWIM1 INTENSET stays `0x00000000` for the
+whole run (no TRANSITION ever logged — the `FFFFFFFF→0` line is the
+first-sample artifact; INTEN native init value is 0). NVIC ISER0
+programs bits 9/18/26 (0x200→0x40002C4→0xC0002C4 at 0.36–0.40M =
+TIMER1 + app IRQs), but bit 4 (SERIAL1/TWIM1) is NEVER enabled, and
+`irq_pending(4)` is false at every sample. ipsr never reads 20, so
+zero SERIAL1 ISR entries over 120M; `sleeping` never true at any
+sample (`slphits=0`). Conclusion: the pre-banner firmware NEVER uses
+TWIM interrupts — it is 100% POLLED (nrfx `waitForStop`, see below),
+so the P70 "IRQ-driven driver never wakes" theory is DEAD. Bonus
+trace: TXSTARTED 0→1 at 1.04M (first accel WHO_AM_I STARTTX) then
+1→0 at 1.06M (firmware/UARTE-style write-0 clear — the SAME latch
+hygiene as the cleared event regs); MAXTX 0→1→2→0/1/8/0/1 (driver
+programs 1B pointer-set then 2B/8B writes); MAXRX 0→1; ERR/ERRSRC
+never set (zero NACKs — every transaction ACKed). UART stays 0
+through 120M, pc pinned `0x200021b8/ba`.
+
+P81 (unit, reverted): TXSTARTED latches-until-cleared in the model
+(STARTTX→1, write-0→0, STARTTX→1, no ticks involved) — the P80 1→0
+was a firmware write-0 clear, NOT a model auto-clear. Model CORRECT;
+no TWIM event-latch bug exists on this path.
+
+P82 (native 4×120M stub matrix, reverted): sensor answers are
+IDENTICAL across FAILFAST/BUSY/SENS-OFF (WHO_AM_I 0x33 + 4 CTRL
+writes + 2 mag writes, then silence) — content after WHO_AM_I is
+NEVER READ BACK (n_rx=1: only the WHO_AM_I RX; TX to 0x19/0x1E stop
+after init). NONACK (no taps) diverges: accel init sequence ABORTS
+(no CTRL writes), proving `isDetected` gates the whole sensor path —
+yet ALL FOUR park identically at `0x200021b8`, uart 0. USB-flash
+(`0x72`) traffic is irq1-GATED: pin HIGH (inactive) → 87 TX/0 RX
+(write-only `_transact` visibility probes, `while(tx<MAX)` with no
+`irq1.isActive()` read inside the TX retry); pin LOW (active) → 1
+TX/1467 RX (the `while(rx<MAX)` read loop spins: `isActive()` true
+→ read → `[0,0,0]` = NOT-busy (`b[0]==0` with BUSY_FLAG_SUPPORTED
+clear — inferred branch) → `rx_attempts=0` FOREVER). So the demo's
+fail-fast stub CONTENT never matters: real `isActive()`-true would
+loop the same way (LSI `sample()` returns `[0,0,…]` for `0x39`!).
+The demo DRDY pulse (60ms low) only modulates WHICH spin runs. The
+park is therefore NOT a sensor/USB data wait: with sensors fully
+answered AND flash reads completing, the waiter polls `[r0+#292]/
++336` = ERROR(0x124)/TXSTARTED(0x150) — both steady 0 — i.e. a
+POLLED nrfx transfer-completion (`waitForStop(STOPPED)`) whose polled
+event NEVER SETS. STOPPED not set ⇒ the transfer never terminates
+on the MODEL side: candidates are (a) SUSPEND-instead-of-STOP
+(nrfx SUSPEND path mistook for STOP by the waiter — P80 MAXTX shows
+8B writes = multi-byte DMA; SHORTS at park is LASTRX_STOP only, so
+a TX with LASTTX_SUSPEND... but SHORTS steady `0x1000` has no TX
+bits at all — SUSPEND never armed either), (b) the waiter polls a
+STALE snapshot (P61 stale-regs: r4=`0x3e8`/stack at the leaf), (c)
+the transacted peripheral is NOT TWIM1 (the `[r4+#16]` base at the
+live catch may differ per iteration — r7=260 indexes `[r0,r7]`,
+an OBJECT TABLE slot, not a register!). NEXT: re-read the `0x282a6`
+disassembly with FRESH eyes (which peripheral base does the CURRENT
+`[r4+#16]` hold at park — TWIM0? SPIM? UARTE? — and what does r7=260
+index into?) + check STOPPED/SUSPENDED at park (the two events the
+`0x282d6` +292/+328 branch actually tests: +328=0x148=SUSPENDED).
+Probes reverted; 191 green hold.
+
+## 72. P83 waiter decoded: _i2c.waitForStop(STOPPED), r7 = 0x104, the NRF52I2C errata workarounds (2026-09-13, uncommitted)
+
+P83 (native, reverted): single-step break at `0x282a6` catches the
+waiter LIVE (6 consecutive hits, r4=`0x20002C0C` constant):
+r6=0,1,2,3,4,5… (the `+292`-miss counter climbing toward the
+`cmp r6,r9` / 99 cap), r7=**0x104**, r8=1, r9=`0xF4240` (1,000,000),
+`[r4+#16]`=`0x40004000` (TWIM1). So the loop prologue is:
+`ldr r0,[r4,#16]` (peripheral base), `ldr r3,[r0,r7]` with r7=0x104
+= **EVENTS_STOPPED**, `cmp r3,#0; bne` (exit when STOPPED sets).
+r7 is NOT a table index (P64/P72 "r7=260 off the rails" was a
+misread: 260 = 0x104 = the STOPPED offset — the scan IS the poll).
+`[r0,r7]`=0 every hit; STOPPED/ERROR/TXSTARTED/LASTTX/SUSPENDED all
+0, SHORTS=`0x1000` (LASTRX_STOP). r8=1 (`mov r8,#1`), r9=1M: the
+`0x282de` progress store (`str r8,[r0,#28]`) / `0x283a2` store
+(`str r8,[r0,#20]`) write 1 to a TASKS register once the event
+lands. Full branch map from the objdumped waiter (`0x28290`):
+`+292`(0x124=ERROR)→`0x282ec` errata path (ERRORSRC snapshot,
+`bl 0x52f64`, STOPPED-wait `0x28306` loop, DISABLE+ENABLE
+`0x28318`, resume both I2C buses `0x28d5c`, re-init `0x52faa`,
+`blx` bus callbacks); `+336`(0x150=TXSTARTED)→`0x28370` MAXCNT
+check; `+352`(0x160=LASTTX)→`0x2838a` twin check (`+512`=0x200
+SHORTS bit 9/10-gated STOPPED/SUSPENDED test); all-zero →
+`0x282e6: bl 0x5048c` (fiber_sleep(1)?) + re-poll. This is
+**NRF52I2C::waitForStop(STOPPED)** (`NRF52I2C.cpp:179-247`):
+`while(!STOPPED){ if(ERROR||locked>TIMEOUT){...RESUME+STOP...};
+if(TXSTARTED&&MAXCNT==0&&locked>=100)break(DEVICE_OK);
+if(locked>=100&&LASTTX&&SHORTS&LASTTX_SUSPEND&&!SUSPENDED)TASKS_SUSPEND;
+if(locked>=100&&LASTTX&&SHORTS&LASTTX_STOP&&!STOPPED)TASKS_STOP;
+target_wait_us(10);}` — the `0x282a6` loop = the `while`, the
+`+292/+336/+352` branches = the errata workarounds, `bl 0x5048c`
+= `target_wait_us(10)` (via system_timer→TIMER1 CAPTURE spinning,
+which is why the RAM delay leaf `0x200021b8`/`0x26039` dominates
+all sampling). The polled event (STOPPED) never sets because the
+transfer never completes; the sensor/USB CONTENT is irrelevant to
+WHY (P82: identical sensor prefixes in all variants).
+Probes reverted; 191 green hold.
+
+## 73. P84 reversal: DRDY-LOW takes a different fast-fail path; the real gate is the DRDY-driven fork (2026-09-13, uncommitted)
+
+P84 (native 4×200M, reverted — runaway, killed at the 600s tool
+timeout): all four stub contents (FAILFAST/ECHO/ZEROS/VALID) with
+DRDY held LOW show **tx72=0/rx72=0 over the full 200M** — ZERO
+USB-flash transactions at all. Reversal vs P82 (DRDY HIGH: 87 TX/87
+RX): DRDY level selects WHICH path runs. LOW (active) takes a
+DIFFERENT path that never touches 0x72 — the sensor requestUpdate
+`awaitSample` first-sample spin (P52: `do{}while(awaitSample)` on
+`int1.isActive()` → `getDigitalValue`) consumes the boot BEFORE any
+flash transact is reached, OR the KL27 `idleCallback` threshold
+never fills... no: LOW should FILL it. Either way the flash path
+is not even entered with DRDY held LOW from boot, so stub CONTENT
+cannot be compared that way — P84 as designed was a null experiment
+(all variants identical because the variable was never exercised).
+Correct comparison: DRDY HIGH (flash path entered, P82 shape) ×
+stub content ∈ {FAILFAST, ECHO}. P85 did exactly that (DRDY HIGH):
+first-0x72-TX logged — 1B writes every ~1.36M, then 8B writes from
+~29.8M — but the run ALSO hit the tool timeout (only reached 40M in
+600s: the per-slice eprintln of every 0x72 TX costs ~15s/M... no —
+~1.36M spacing × 20K-slice pump = fine; the timeout was the
+full-suite build + prior P84 still running. Lesson: log COUNTS not
+events, cap runs at 120M, one variant per invocation).
+Probes reverted (P84 file + mod.rs); 191 green hold.
+
+## 74. P86 THE BUG: `&0x7F` never un-shifts 0x32/0x3C/0x72 + echo-stub fix (2026-09-13)
+
+Root cause of "MicroPython takes forever to boot while demos boot
+instantly" — found live, fixed in tree (Rust + JS + smoke):
+
+1. nrfx writes TWIM ADDRESS shifted (`addr<<1`): accel `0x19`→`0x32`,
+   mag `0x1E`→`0x3C`, flash `0x39`→`0x72`, UIPM `0x70`→`0xE0`. The
+   shifted values `0x32/0x3C/0x72` are ALL < `0x80`, so BOTH our
+   `>0x7F`-style normalizers silently passed them through still
+   shifted: the Rust take_* handoff (`&0x7F` masking) AND the JS
+   `normAddr` (`a > 0x7F ? a>>1 : a`). P86 native proof: with DRDY
+   HIGH the flash path IS entered (TAKE-TX `raw=72` every ~1.36M,
+   `addr43=0x72`), but `tx72/rx72` counters (which normalized with
+   the same broken rule) stayed 0 — the smoking gun that `0x72`
+   never became `0x39` anywhere downstream.
+2. Consequences, all three stacked: (a) the `0x39` tap never matched
+   `slave_present()` for the DMA path's NACK check... (exact `0x39`
+   vs `0x72` miss; the `>>1` fallback DID match, `0x72>>1=0x39`, so
+   no NACK — the transfer staged); (b) the driver handoff told the
+   stub `addr=0x72`, so `sample()` fell THROUGH the `0x39` branch
+   into the sensor chain and returned ZEROS; (c) zeros = NOT-READY
+   (`b[0]==0x00` with BUSY_FLAG_SUPPORTED clear) → `rx_attempts=0`
+   → full 20×20 `fiber_sleep(1)` retry budget PER transact (×2 with
+   the NULL-transaction wrapper) = the entire pre-banner boot time.
+   Error responses would ALSO burn it (`0x20` + `b[1]∈{request,0}`
+   is busy too — the old FAIL-FAST `[0x20,0x01]` matched the busy
+   pattern for request `0x01`, and fell to `break`/empty-return for
+   the rest, still slow). The ONLY fast exit is `b[0]==request[0]`
+   (valid response) — what a real KL27 returns.
+3. Fixes (this tree): `twim_nrf.rs`: `Twim::norm7_addr` (explicit
+   `0x32→0x19/0x3C→0x1E/0x72→0x39/0xE0→0x70` + generic `>>1`
+   fallback), used by `slave_present()`, START-event push, and BOTH
+   `take_*` (7-bit handoff contract); `address_matches_shifted_8bit_
+   form` test extended (take-normalization per raw form). JS
+   `lsm303.js`: same explicit table in `normAddr` (idempotent —
+   take_* now arrives normalized) + the `0x39` stub answers VALID
+   request-echo frames (echo + parseable `0x01` filename body).
+   `smoke.mjs`: fail-fast expectation replaced with echo checks.
+4. Why demos boot instantly: blinky/sensors/dma never touch the
+   USB-flash transact path (no `MicroBitLog` ctor chain) — only
+   MicroPython pays the KL27 tax, and only because of (2).
+5. Open threads (NOT blockers of this fix): banner STILL not
+   observed post-fix in the windows run so far (P86 echo run to 120M
+   shows tx72 climbing 13→87 but uart=0 — the transact rate itself
+   is still ~1.36M/write, i.e. each transact still costs ~1M of
+   `target_wait_us(10)` spinning; the echo makes EACH transact exit
+   on attempt 1 but the NULL-transaction wrapper doubles them and
+   `getConfiguration`+`getGeometry` issue ~6 transacts = ~10M+ of
+   unavoidable init — banner needs a LONGER run to confirm, exactly
+   like P53's 160–180M native threshold); quantitative before/after
+   banner-time comparison still needs one long browser run.
+Probes reverted; suite file-free again.
+
+## 75. P86 BROWSER PROOF: banner + `>>> ` prompt in ~60s (2026-09-13)
+
+Headless Chromium (`p86banner.py`, rebuilt pkg with the norm7_addr +
+echo-stub fixes): T+60s `uartLen=104` =
+`"MicroPython v1.18 on 2023-10-30; micro:bit v2.1.2 with nRF52833\n
+Type "help()" for more information.\n>>> "` — banner body AND the
+REPL prompt, zero page errors. Pre-fix the same run needed 150s+
+(P20, faster machine) or never arrived (480s ≈ 144M < 150–260M
+threshold); now the KL27 transact tax is gone and boot completes in
+~60s wall. The pc/mips fields read `?` (the `__dbg` handle added by
+earlier TEMP page edits is reverted — cosmetic probe gap, not a
+product gap). REPL exec (`print(1+2)` → `3`) is the next frontier,
+still open; the NULL-fault/pin-poll layers (P24–P25/P44) now get a
+fast iteration loop (~60s/boot instead of never).
+Probes: `p86banner.py` lives in /tmp (ephemeral, not committed).

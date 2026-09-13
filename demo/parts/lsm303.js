@@ -10,9 +10,19 @@
 
 const ACCEL = 0x19;
 const MAG = 0x1E;
-// nrfx writes ADDRESS shifted (addr<<1: 0x32/0x3C); the Rust model hands
-// take_* the raw register value. Normalize both forms here.
-function normAddr(a) { return a > 0x7F ? (a >> 1) : a; }
+// nrfx writes ADDRESS shifted (7-bit addr<<1: 0x19->0x32, 0x1E->0x3C,
+// 0x39->0x72, 0x70->0xE0); the Rust model hands take_* the raw register
+// value. Normalize BOTH forms here. NOTE: a plain `a > 0x7F` check is
+// WRONG — shifted 0x32/0x3C/0x72 are all < 0x80 yet still shifted
+// (P86: 0x72 traffic never reached the 0x39 stub, so flash reads got
+// zeros = busy = the whole pre-banner boot time).
+function normAddr(a) {
+  if (a === 0x32) return 0x19;
+  if (a === 0x3C) return 0x1E;
+  if (a === 0x72) return 0x39;
+  if (a === 0xE0) return 0x70;
+  return a > 0x7F ? (a >> 1) : a;
+}
 
 function le16(v) {
   v = Math.max(-32768, Math.min(32767, Math.round(v)));
@@ -42,10 +52,11 @@ export class LSM303 {
     // NACKs the version/board-revision probes and boot degrades — answer
     // empty (no event).
     // KL27 USB-FLASH chip (USBFlashManager, addr 0x39 / shifted 0x72):
-    // MUST also be stubbed, with FAIL-FAST bytes (see sample()): NACK
-    // there does NOT fail fast — i2cBus.read returns DEVICE_I2C_ERROR
-    // which hits `break`, but a NACK-free zero frame means "NOT READY"
-    // → busy → rx_attempts=0 forever (P53d: 1217 reads/100M, no banner).
+    // MUST also be stubbed, with VALID request-echo frames (see
+    // sample()): the old FAIL-FAST bytes ([0x20,0x01]) never matched
+    // the request echo, so _transact read them as busy/not-ready and
+    // burned the full 20x20 retry budget per transact (P85: the whole
+    // pre-banner boot time). An echo exits on the first RX attempt.
     this.wasm.i2c_register_slave(this.peripheral, 0x70);
     this.wasm.i2c_register_slave(this.peripheral, 0x39);
   }
@@ -76,13 +87,24 @@ export class LSM303 {
     addr = normAddr(addr);
     // KL27 UIPM stub: empty frame (no event).
     if (addr === 0x70) return new Array(len).fill(0);
-    // KL27 USB-FLASH stub: FAIL-FAST, not busy. _transact treats
-    // b[0]==0x20 (ERROR_RESPONSE) with b[1]!=0x39 as NOT-busy → break
-    // (one RX attempt) instead of resetting rx_attempts=0 forever.
-    // (BUSY_FLAG_SUPPORTED is never set — version probe reads zeros —
-    // so the inferred branch b[0]==0x20 && b[1] not in {request[0],0}
-    // is the one that exits. Zeros would mean "NOT READY"→busy→retry.)
-    if (addr === 0x39) { const f = [0x20, 0x01]; while (f.length < len) f.push(0); return f.slice(0, len); }
+    // KL27 USB-FLASH stub: answer VALID request-echo frames so _transact
+    // EXITS on the first RX attempt (P85: b[0]==request[0] → return).
+    // The old FAIL-FAST bytes ([0x20,0x01] = ERROR_RESPONSE) never
+    // matched the request echo: with BUSY_FLAG_SUPPORTED clear the
+    // firmware treats b[0]==0x00 OR (0x20 && b[1] in {request[0],0})
+    // as busy → rx_attempts=0 → 20×20 fiber_sleep(1) retries per
+    // transact (×2 with the NULL-transaction wrapper) = the whole
+    // pre-banner MicroPython boot time. An echo is what a real KL27
+    // returns for a live register read, and it advances instantly.
+    // (reg) here is the pointer-set byte = the command: echo it back.
+    if (addr === 0x39) {
+      const f = [reg & 0xFF];
+      // Filename query (0x01): needs length>5 to parse: echo + an
+      // 8.3-ish name body so getConfiguration proceeds.
+      if ((reg & 0xFF) === 0x01) { f.push(...[...'DATA    TXT'].map((c) => c.charCodeAt(0)), 0); }
+      while (f.length < len) f.push(0);
+      return f.slice(0, len);
+    }
     const out = [];
     const a = this.liveAccel();
     for (let k = 0; k < len; k++) {
@@ -133,6 +155,9 @@ export class LSM303 {
       w.twim_complete_txdma(P, bytes);
     }
     t = w.twim_take_rxdma(P);
+    // take_* already hands the normalized 7-bit address (P86: the Rust
+    // model normalizes at the source, so 0x72 arrives as 0x39); the
+    // local normAddr is a harmless idempotent belt-and-braces.
     if (t.length) t[0] = normAddr(t[0]);
     if (t.length) {
       const reg = this.regptr[t[0]] ?? 0;

@@ -17,7 +17,7 @@ driver take/complete, firmware proof), **H** = handshake
 | CLOCK, POWER (shared `0x40000000`) | `clock_nrf.rs` | F | HF/LF STARTED events+STAT, USBDETECTED/USBPWRRDY, RESETREAS+SREQ latch, GPREGRET, RAMSTATUS, LFCLKSRC; POWER_CLOCK IRQ 0 |
 | RADIO `0x40001000` | `radio_nrf.rs` | F | PCNF-length TX take / RX completion+inject, CRCERROR inject, RSSI, SHORTS; bare-metal loopback proven (`air_nrf`) |
 | UARTE0+UART0, UARTE1 | `uarte_nrf.rs` | F | 1-byte TX DMA + RXDMA ring; OVERRUN, ERROR, TXSTOPPED (`0x158`/INTEN 22, fixed P20); UARTE1 TX/RX fully routed (was UARTE0-locked), no dedicated UARTE1 proof |
-| TWIM0/TWI0/SPIM0/SPIS0/TWIS0/SPI0, TWIM1 family, SPIM2, SPIM3 | `twim_nrf.rs` | F | Mode-blind shared-base; SHORTS, NACK-after-~6000-instr without slave, LASTTX/STARTRX/SUSPEND; TWIS/SPIS slave engines (`twis_master_write/read`, `spis_exchange`); SPIM tap routing incl. SPIM2/3; register-mode RXD returns MISO for SPI names, I2C queue for TWI (`rxd_polling_reads_slave_response_line`) |
+| TWIM0/TWI0/SPIM0/SPIS0/TWIS0/SPI0, TWIM1 family, SPIM2, SPIM3 | `twim_nrf.rs` | F | Mode-blind shared-base; SHORTS, NACK-after-~6000-instr without slave, LASTTX/STARTRX/SUSPEND; TWIS/SPIS slave engines (`twis_master_write/read`, `spis_exchange`); SPIM tap routing incl. SPIM2/3; register-mode RXD returns MISO for SPI names, I2C queue for TWI (`rxd_polling_reads_slave_response_line`); 7-bit `norm7_addr` on take_*/events/slave-match (nrfx shifted `0x32/0x3C/0x72` are <0x80 — P86 boot-time bug) |
 | NFCT | `nfct_nrf.rs` | F | Field-detect/select state machine, frame TX/RX take-complete, C+S proof (`nfct_nrf.s/.bin`, `nrf_nfct_field_select_and_frames`) |
 | GPIOTE | `gpiote_nrf.rs` | F | 8 ch event/task, edge detect vs pull-up inputs, PORT event, OUT tasks drive GPIO |
 | SAADC | `saadc_nrf.rs` | F | CH config/limits, LIMIT events, RESULTDONE/STOPPED, EASYDMA take/complete + result pump |
@@ -104,15 +104,13 @@ beyond proof-level driving remain future work.
 ## 5. Real-firmware results (all executed, zero CPU faults except MPY §6.1)
 
 - MicroPython v2.1.2: boots (MBR-param seeds + sleep-aware pump),
-  uBit.init() completes, **banner body prints** natively; the
-  headless-Chrome P20 run (banner+prompt, no fault) does NOT
-  reproduce in the current environment — old and fresh pkgs stall
-  identically pre-banner (measured ~300K instr/s vs a ~150–260M
-  threshold; 480s runs ≈144M never arrive). P20 = faster machine,
-  not a different build (a fine-grained 20x5K demo pump was tried
-  and reverted — it faults at app entry, see item 1). Natively the prompt is composed in the TX ring
-   but never DMA-staged (queued + `is_tx` false, no kick source found);
-   input bytes land in the DMA buffer but the ring stays empty.
+  uBit.init() completes, **banner body prints** natively; headless
+  Chrome banners in ~60s wall with the REPL prompt (P86, 2026-09-13:
+  the pre-banner boot time was a KL27 USB-flash transact retry storm —
+  nrfx shifted ADDRs `0x32/0x3C/0x72` never normalized to 7-bit so the
+  `0x39` stub answered zeros = NOT-READY = 20×20 retries per
+  transact; fixed via `norm7_addr` + request-echo stub). REPL exec
+  (`print(1+2)` → `3`) is the next frontier.
    Post-banner pin-poll stall NAMED+F fixed (plan P52): main loops
    `NRF52Pin::getDigitalValue@0x28744` inside
    `LSM303Accelerometer/Magnetometer::requestUpdate()` (`0x266B8`/

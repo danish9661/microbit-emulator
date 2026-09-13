@@ -53,7 +53,11 @@ check(ROWS.length === 5 && COLS.length === 5, '5x5 matrix map');
   check(imu.sample(0x19, 0x0F, 1)[0] === 0x33, 'accel WHO_AM_I');
   check(imu.sample(0x1E, 0x0F, 1)[0] === 0x40, 'mag WHO_AM_I');
   check(imu.sample(0x70, 0x00, 4).join() === '0,0,0,0', 'KL27 UIPM empty frame');
-  check(imu.sample(0x39, 0x00, 2).join() === '32,1', 'USB-FLASH fail-fast frame');
+  // USB-FLASH answers VALID request-echo frames (P86): the command byte
+  // echoed back, so _transact exits on the first RX attempt instead of
+  // burning the 20x20 retry budget.
+  check(imu.sample(0x39, 0x03, 2).join() === '3,0', 'USB-FLASH request-echo frame');
+  check(imu.sample(0x39, 0x01, 12).length === 12 && imu.sample(0x39, 0x01, 12)[0] === 1, 'USB-FLASH filename echo parses');
   imu.feedWrite(0x19, [0x20, 0x57]); // CTRL_REG1 write
   check(imu.sample(0x19, 0x20, 1)[0] === 0x57, 'CTRL echo');
   // tilt changes output
