@@ -49,6 +49,7 @@ export const radio_complete_rx: () => void;
 export const radio_complete_tx: () => void;
 export const radio_inject_corrupt: (a: number, b: number) => void;
 export const radio_inject_rx: (a: number, b: number) => void;
+export const radio_set_ed_dbm: (a: number) => void;
 export const radio_set_rssi_dbm: (a: number) => void;
 export const radio_take_rx: (a: number) => void;
 export const radio_take_tx: (a: number) => void;

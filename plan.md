@@ -1325,3 +1325,335 @@ green. No commits per order.
    AIRCR SYSRESETREQ test); pkg rebuilt with this tree's fixes.
    Shelved stays shelved: sd_evt (0×svc82), full MBR→BL→SD→app
    (needs SD priorities), npm publish (401).
+
+## 54. P54 pump duties in-loop + P55 HFCLK rule-out + P56 sampling fix + P57 MC zero-touch (2026-09-13, uncommitted)
+
+Pump fix (demo/index.html, working tree): `pumpDma()` moved INSIDE the
+5×[20K step+tick] sub-loop (was once/frame). Duties-once-per-frame
+starved polled firmware: a 1B STARTTX staged at slice 0 waited ~100K
+instr for completion, so `putc`'s polled ENDTX/entry spins burned whole
+frames and the 60/140ms DRDY pulse could never land inside a 20K wait
+window. P54 live-verify caught a tap-wipe artifact instead (ANACK back
+= `bootMicroPythonApp` re-init clearing taps; native behavior
+unchanged), then reverted TEMP; 190 green + smoke green hold.
+
+HFCLK wait decoded + RULED OUT (clock_nrf.rs, working tree): the
+pre-banner park `0x200021b8/bb` disassembles as a RAM countdown
+(`01 38 fd d1 70 47`: `subs r0,#1; bne; bx lr`), called from the
+`0x20980` 20-iteration helper (`movs r7,#20` loop, rets `0x20ab1`/
+`0x20b37` bl-validated, lr `0x26039` = u64-compare helper). Model
+boots WITH both clocks on + events set now (post-ramp silicon;
+re-arm via TASKS still works; `nrf_boot_flash_at_zero` updated for
+boot-set events). P55b native to 600M: park PERSISTS with
+hf_ev=1/hf_run=1 — HFCLK is not the gate. Browser P55c confirms
+(hf_ev=1/hf_run=1, same park). r0 at park (`0x92b`–`0x719e`) is the
+live countdown, r4=`0x3e8` (1000). NEXT: name the `0x20980` helper's
+caller (which init phase waits 20× countdown — sensor-settle?
+power-stable?) via an r7-entry watch.
+
+P56 sampling fix (methodology, no model change): 1M-slice sampling
+catches the pc BETWEEN ram-spin iterations (loop body <20K), so
+"EXIT" hits at 1M with identical lr/stack are sampling race, not
+exits — require 5 consecutive non-spin slices before declaring.
+P57 MakeCode zero-touch (native 300M, reverted): first-touch ledger
+for TIMER4-CC0/GPIOTE-CONFIG[1..5]/PPI-CHENSET/TWIM1-ADDR/NVMC-CONFIG/
+UARTE-TXMAX/waiter-`0x30C04` ALL ZERO; pc `0x20002078/7A`→`0x37AFA`
+WFE-idle, DIR0 sticky. No member init touches hardware in 300M —
+stall is pre-scroll sequencing (main never issues scroll), not a
+missed wakeup. Probes reverted; suite file-free again.
+
+## 55. P55 HFCLK rule-out + P56 sampling fix + P57 MC zero-touch + P58 r7-watch constraint (2026-09-13, uncommitted)
+
+HFCLK wait decoded + RULED OUT (clock_nrf.rs, working tree): the
+pre-banner park `0x200021b8/bb` disassembles as a RAM countdown
+(`01 38 fd d1 70 47`: `subs r0,#1; bne; bx lr`), called from the
+`0x20980` 20-iteration helper (`movs r7,#20` loop, rets `0x20ab1`/
+`0x20b37` bl-validated, lr `0x26039` = u64-compare helper). Model
+boots WITH both clocks on + events set now (post-ramp silicon;
+re-arm via TASKS still works; `nrf_boot_flash_at_zero` updated for
+boot-set events). P55b native to 600M: park PERSISTS with
+hf_ev=1/hf_run=1 — HFCLK is not the gate. Browser P55c confirms
+(hf_ev=1/hf_run=1, same park). r0 at park (`0x92b`–`0x719e`) is the
+live countdown, r4=`0x3e8` (1000). Probes reverted; 190 green hold.
+
+P56 sampling fix (methodology, no model change): 1M-slice sampling
+catches the pc BETWEEN ram-spin iterations (loop body <20K), so
+"EXIT" hits at 1M with identical lr/stack are sampling race, not
+exits — require 5 consecutive non-spin slices before declaring.
+P57 MakeCode zero-touch (native 300M, reverted): first-touch ledger
+for TIMER4-CC0/GPIOTE-CONFIG[1..5]/PPI-CHENSET/TWIM1-ADDR/NVMC-CONFIG/
+UARTE-TXMAX/waiter-`0x30C04` ALL ZERO; pc `0x20002078/7A`→`0x37AFA`
+WFE-idle, DIR0 sticky. No member init touches hardware in 300M —
+stall is pre-scroll sequencing (main never issues scroll), not a
+missed wakeup. Probes reverted; suite file-free again.
+
+P58 r7-watch constraint (native 120M, reverted): watch on
+pc==`0x20980` entry finds ZERO entries — the helper was entered ONCE,
+early (<20M, before first sample), never re-entered; the 20× loop is
+a single long init wait, not a recurring poll. Entry pc never equals
+`0x20980` in sampling (preceding `0x20978` padding `movs r5,r0` may be
+the true entry, or `cpu.run` quanta step over the prologue). NEXT:
+sample lr==`0x20981` (bl return) or fine-comb 0–20M from boot.
+
+## 56. P58 BLE/BT feasibility verdict (2026-09-13, uncommitted — NO build)
+
+Question: start working on BLE/BT. Evidence gathered, no code touched.
+
+1. MPY config DISABLES BLE: `src/codal_app/codal.json` sets
+   `MICROBIT_BLE_ENABLED: 0` (pairing mode 1, partial flashing 1 are
+   inert with it off). `MicroBit::init` skips `bleManager.init` and
+   the pairing-mode branch entirely when disabled — BLE contributes
+   ZERO pre-banner instructions in the MPY image. There is nothing
+   BLE-gated on the banner path to fix.
+2. MPY radio is BARE-METAL, not SoftDevice: `drv_radio.c`
+   (`microbit_radio_enable`) drives `NRF_RADIO` registers directly
+   (HFCLKSTART wait → TXPOWER/FREQUENCY/MODE/BASE0/PREFIX0/PCNF0-1/
+   CRCCNF/CRCINIT/CRCPOLY/DATAWHITEIV/PACKETPTR) + `NRF_RADIO->IRQ`
+   via `microbit_radio_irq_handler` (re-vectored in `main.cpp` AFTER
+   `uBit.init`). Our RADIO model already covers exactly this surface
+   (TASKS/EVENTS/SHORTS/INTEN/PCNF/addresses/CRC/RSSI + loopback
+   take/complete/inject). No model gap for the MPY radio path.
+3. `svc 82` (sd_evt_get) is CONFIRMED ABSENT, not just unscanned:
+   even-aligned halfword scan of `mpy_full.bin` finds ZERO `DF52`
+   sites (the 2 prior hits at `0x19c07`/`0x1abb9` are ODD-addressed
+   data false-positives inside non-code bytes). So no firmware in
+   this image can ever observe an SD event — the P32/P51 shelve
+   stands on aligned evidence. `docs/sd_evt_design.md` stays a
+   corrected reference (phase-1 transport design valid IF a future
+   image calls it; today it would be dead code — do not build).
+4. SCOPE if BLE/BT is wanted anyway (all future work, none started):
+   (a) needs a BLE-ENABLED image first (MPY codal.json flip or a
+   MakeCode BLE program — today's images never init the stack);
+   (b) then SoftDevice SVC surface beyond enable/is_enabled (GAP/GATT
+   SVCs, observer callbacks `NRF_SDH_*_OBSERVER`, connection event
+   pump) — an order of magnitude past the flash-only sd_evt transport;
+   (c) then a host-side BT peer (WebBluetooth or a second loopback
+   endpoint) to talk to. The RADIO model needs no changes for any of
+   this (bare-metal air path already looped back); the work is all
+   SoftDevice-state synthesis, currently shelved by evidence.
+   NEXT when asked: build a BLE-enabled image + rescan SVCs (expect
+   nonzero svc82 + GAP/GATT SVC traffic) BEFORE writing any model code.
+## 57. P59 RADIO 802.15.4 helpers + air-peer bridge (2026-09-13, uncommitted)
+
+BLE/BT work without WebBluetooth and without touching the shelved
+SoftDevice path: the MPY radio is bare-metal `NRF_RADIO` (`drv_radio.c`
++ custom IRQ), so the air model — not the SD — is the lever.
+
+RADIO model (`radio_nrf.rs`, working tree): ED (EDSTART→EDEND +
+EDSAMPLE/EDCNT from host `radio_set_ed_dbm`, EDSTOP→EDSTOPPED), CCA
+(CCASTART→CCAIDLE/CCABUSY vs CCACTRL thresholds, CCASTOP→CCASTOPPED),
+DEVMATCH/DEVMISS (+RXMATCH/RXCRC/PDUSTAT) via programmed DAB/DAP,
+MHRMATCH via CONF/MAS, FRAMESTART alongside ADDRESS, BCMATCH,
+TIFS/BCC/SFD/MODECNF0/POWER stored (POWER=0 gates tasks), full
+SHORTS (READY_EDSTART, EDEND_DISABLE, RXREADY_CCASTART, CCAIDLE_TXEN,
+CCABUSY_DISABLE, CCAIDLE_STOP, TXREADY/RXREADY_START, PHYEND_*) and
+INTEN (SVD lsb map incl. 5/6 DEVMATCH/MISS, 10 BCMATCH, 14–19
+FRAMESTART/ED/CCA, 23 MHRMATCH) bit maps, new test
+`ed_cca_mhr_devmatch_framestart`. RATEBOOST/SYNC/PHYEND/CTE events
+stay unmodeled (BLE-test/DFE, no air behavior); DAI/DACNF stored.
+Demo air (`demo/index.html` pumpDma): two-instance bridge —
+`window.__airPeer(bytes)->bytes[]` supplies FOREIGN bytes (second tab
+/ harness); empty return = same-instance loopback (default). New wasm
+export `radio_set_ed_dbm` (API.md needs one line when docs resume).
+Suite 191 green (new test kept), smoke green. No commits per order.
+
+## 58. P58 r7-watch constraint + P60 caller named + r0 wrapping (2026-09-13, uncommitted)
+
+P58: r7-entry watch (pc==`0x20980`, 5K quanta, 120M) finds ZERO entries
+— the helper was entered ONCE, early (<20M, before first sample),
+never re-entered; the 20× loop is a single long init wait, not a
+recurring poll. (Entry pc may never equal `0x20980`: preceding
+`0x20978` padding `movs r5,r0`, or quanta stepping over the
+2-halfword prologue.)
+
+P60 (static + live, both reverted): bl-scan finds exactly TWO
+`bl→0x20980` sites, `0x20b32`+`0x20b58`, both inside ONE function
+(`0x20ae8`, GC-shape: `bl 0x528e8` alloc + `bl 0x528d8`/`0x52908`
+field init + `strb [r3,#4]` type-tag store). Live r0-at-park across
+2M samples wraps (`0xb3a→0x990→0x8ff→…→0x92b` — never monotonic,
+never stuck): the inner countdown completes and the 20× loop
+re-arms — a tight re-poll whose exit condition (r7-driven,
+`0x209aa`-region compares) never fires. NEXT: catch the r7 countdown
++ the `0x209aa` compare inputs (which flag/word the loop tests).
+Probes reverted; 191 green hold.
+
+## 59. P59 RADIO helpers + P60 caller named + P61 stale-regs (2026-09-13, uncommitted)
+
+P59: see §57 note (RADIO ED/CCA/DEVMATCH/MHR/FRAMESTART + air-peer
+bridge, `ed_cca_mhr_devmatch_framestart` green, suite 191).
+
+P60: bl-scan names the `0x20980` caller statically — exactly TWO
+`bl→0x20980` sites (`0x20b32`+`0x20b58`), both inside ONE function
+(`0x20ae8`, GC-shape); live r0-at-park wraps (alive, re-arming
+re-poll, exit condition never fires).
+
+P61 (native, reverted): sampled regs AT the park pc are STALE —
+r4=`0x3e8`/r6=stack are the DELAY call's args, not the helper's
+(`[r4+20]` reads flash, `[r6]` a stack word); the helper frame is
+gone because we sample the delay-fn leaf, not the loop body. So r7
++ `0x209aa` compare inputs are NOT observable at
+`0x200021b8/bb`. NEXT: pc-break INSIDE `0x209aa–0x209de` (live
+r4/r6 + fp target + r0 at `0x209b2`/`0x209c2`), not at the leaf.
+Probes reverted; 191 green hold.
+
+## 60. P60 caller named + P61 stale-regs + P62 silent band (2026-09-13, uncommitted)
+
+P60: bl-scan names the `0x20980` caller statically — exactly TWO
+`bl→0x20980` sites (`0x20b32`+`0x20b58`), both inside ONE function
+(`0x20ae8`, GC-shape); live r0-at-park wraps (alive, re-arming
+re-poll, exit condition never fires).
+
+P61 (native, reverted): sampled regs AT the park pc are STALE —
+r4=`0x3e8`/r6=stack are the DELAY call's args, not the helper's
+(`[r4+20]` reads flash, `[r6]` a stack word); the helper frame is
+gone because we sample the delay-fn leaf, not the loop body. So r7
++ `0x209aa` compare inputs are NOT observable at
+`0x200021b8/bb`.
+
+P62 (native 200M, reverted): pc-break INSIDE `0x209aa–0x209de` with
+200-instr quanta gets ZERO hits — the band is never observed. The
+park pc (`0x200021b8/bb`) is the ONLY observable pc from 20M to
+200M: instruction-level sampling (20K, 5K, 200 quanta) never catches
+the loop body, only the leaf. Either the loop body executes between
+samples at a duty cycle below sampling resolution, or pc reads while
+inside get folded (sleep/exception path?). NEXT: single-step from a
+20M snapshot (1-instr quanta for 1K) to catch the body, or trace
+buffer (`trace_start/stop/take_trace`) around the park.
+Probes reverted; 191 green hold.
+
+## 61. P61 stale-regs + P62 silent band + P63 fiber scan (2026-09-13, uncommitted)
+
+P61 (native, reverted): sampled regs AT the park pc are STALE —
+r4=`0x3e8`/r6=stack are the DELAY call's args, not the helper's;
+the helper frame is gone (we sample the delay-fn leaf). So r7 +
+`0x209aa` inputs are NOT observable at `0x200021b8/bb`.
+
+P62 (native 200M, reverted): pc-break INSIDE `0x209aa–0x209de`
+with 200-instr quanta gets ZERO hits — the band is never observed
+at any quantum (20K/5K/200). Either sub-resolution duty cycle or
+folded pc reads.
+
+P63 (native, reverted): 5K single-steps from the park show the park
+is NOT a pure spin — each ~4800-iteration block runs the RAM delay
+leaf plus a 48-instr FIBER SCAN (`0x28290`-region: `ldr r0,[r4,#16]`
+→ table `[r0,r7]` → null-check → `+292/+336/+352` chain,
+`cmp r6,#99` bounded scan, `blx` dispatch at the end). Trace ring
+(2000): `0x200021b8/bb` ×952 each + scan pcs ×3 each
+(`0x282a6/b4/b8/bc/be/c2/c4`, `0x26020/26/2c/2e/32/34/36/38/3a`,
+`0x200021bc`). So EVERY outer iteration: delay-leaf countdown +
+one fiber-table scan step that finds nothing (null → next index).
+The wait that never fires is a FIBER/event wait scanned under
+`0x28290`, not a sensor/clock/pin wait. NEXT: dump r4 (`[r4,#16]`
+table base) + r7 (index) + `[r0+#292/+336/+352]` (which table entry
+is null) live at `0x282a6`, and name the event id the scan waits
+for (fiber-wait `(7,1)`-shaped? compare P50 `0x30C04` waiter).
+Probes reverted; 191 green hold.
+
+## 62. P63 fiber scan + P64 TWIM-wait named (2026-09-13, uncommitted)
+
+P63 (native, reverted): 5K single-steps from the park show the park
+is NOT a pure spin — each ~4800-iteration block runs the RAM delay
+leaf PLUS a 48-instr FIBER SCAN (`0x28290`-region). Trace ring
+(2000): `0x200021b8/bb` ×952 each + scan pcs ×3 each. So EVERY outer
+iteration = delay countdown + one fiber-table scan step finding
+nothing. The wait that never fires is a FIBER/event wait scanned
+under `0x28290`, not sensor/clock/pin.
+
+P64 (native, reverted): single-step break at `0x282a6` reads the
+scan inputs live: r4=`0x20002C0C` (a PERIPHERAL struct, not a fiber
+table — `[r4+#16]=0x40004000` = TWIM1 base!), r7=260 (index — past
+any table end; scan walks off the rails), slot=0 with
++292/+336/+352 ALL ZERO. So the "fiber scan" is the TWIM driver's
+wait loop polling a TWIM1 transfer/control block that never
+completes: the driver was programmed (PACKETPTR-style struct at
+`0x40004000`+16?) but our TWIM1 model never stages the completion
+it waits for (P53d histogram: 1217 USB-flash reads were the SYMPTOM
+— this struct wait is the DISEASE). NEXT: dump the full
+`0x20002C0C` struct + the TWIM1 regs it mirrors (ADDRESS? PTR?
+MAXCNT? EVENTS?) at `0x282a6`, and compare against a native sensor
+read that DOES complete (STATUS/OUT path) — the missing completion
+event names the exact model gap.
+Probes reverted; 191 green hold.
+
+## 63. P64 TWIM-wait struct + P65 missing-RXSTARTRX (2026-09-13, uncommitted)
+
+P64 (native, reverted): single-step break at `0x282a6` shows r4 =
+`0x20002C0C` is NOT a fiber table — `[r4+#16]=0x40004000` (TWIM1
+base), r7=260 (index walked off the rails), slot + all of
++292/+336/+352 ZERO. The "fiber scan" is a TWIM-driver wait loop
+polling a TWIM1 transfer block that never completes.
+
+P65 (native, reverted): full struct dump at `0x20002C0C` names it —
+a CODAL I2C transaction/link object: `[+0]=0x57838` (vtable),
+`[+16]=0x40004000` (TWIM1), `[+36]=0x40003000` (TWIM0),
+`[+40]=0x40050028`, self-link `[+64]=0x20002C0C`, heap neighbors,
+`[+160]=0x74000/1/0x1000` (NVMC page/len/base — the SAME
+`0x74000` flash-op family as the P26 fds waiter). Live TWIM1 regs
+at the same instant: ADDRESS=`0x72` (USB-flash, answered fail-fast),
+ERROR=0, ENDTX=1, ENDRX=**0**, RXSTARTED=1, RXD.PTR=`0x2001660C`,
+MAXCNT=3, AMOUNT=**0**, SHORTS=`0x1000` (=LASTTX_STOP). So: a 1-byte
+TX completed, LASTTX_STOP fired STOPPED, but the chained 3-byte RX
+(STARTRX via SHORTS LASTTX_STARTRX) NEVER COMPLETED — ENDRX=0,
+AMOUNT=0 — and the driver spins waiting for it. The RX was staged
+(P53d: 1217 reads) and our pump completes it with `complete_rxdma`
+— but ENDRX evidently never latches or never wakes the waiter
+(the waiter polls a flag our completion doesn't set, or polls
+RXSTARTED/AMOUNT instead of ENDRX). NEXT: trace what the waiter
+actually polls after STARTRX (EVENTS_ENDRX? AMOUNT? RXSTARTED?) at
+`0x282a6`+ — read the compared word live — and check SHORTS bit 7
+(LASTTX_STARTRX) handling + `rx_pending`/`rx_taken` lifecycle in
+`twim_nrf.rs` against this exact sequence (TX+LASTTX_STOP, then
+RX with no explicit STARTRX write from firmware).
+Probes reverted; 191 green hold.
+
+## 64. P66 lr/pc comb negative + what it proves (2026-09-13, uncommitted)
+
+P66 (native 20M, reverted): fine comb (1K quanta) from boot watching
+pc∈`[0x20980,0x20986)` AND lr∈{`0x20B33`,`0x20B59`} finds ZERO hits
+of either kind — yet the park (same `0x20ab1/0x20b37` stack, same
+`0x200021b8/bb` leaf) is fully established by 20M. Combined with P58
+(zero pc==`0x20980` entries over 120M) and P63 (body never sampled):
+the `0x20980` helper is NOT on the hot path at all. The TWO static
+`bl` sites + the `0x20ab1/0x20b37` stack slots are therefore STALE
+slots (called once during early init, returned, slots never
+overwritten — P17's stale-slot rule), NOT live frames. The live park
+loop is something else that merely LEAVES those words on the stack.
+So: stop chasing `0x20980`/`0x20ae8` — the countdown wait's DRIVER is
+unidentified. The r0-wrapping proof (P60) still holds (SOME countdown
+runs), but its owner is unknown. NEXT: single-step FROM the park
+(P63 showed the fiber scan `0x28290` runs every outer iteration —
+catch r4/`[r4+#16]`/`[r4+#292]` LIVE at `0x282a6` with 1-instr
+quanta, not 20K slices that only ever sample the leaf).
+Probes reverted; 191 green hold.
+
+## 65. P67 current-tree banner re-run + P68 MBR pass-2 + P69 MC re-run + P70 stubs browser + P71 meter (2026-09-13, uncommitted)
+
+P67 (native 600M, reverted): current tree (clocks boot ON, ADDR raw,
+AIRCR honored) still parks at `0x200021b8/bb` through 600M, uartLen 0,
+TWIM clean (`t_addr=114/err=0/endtx/rx=1`), UARTE never staged
+(`u_max=0/u_end=0`). Banner gate is NOT clocks/ADDR/AIRCR. L2 TX
+consequence: with zero banner takes the snapshot path never fires —
+TX item CLOSED as model-clean (unit green + P53i 0/106; old holes are
+firmware-side pre-STARTTX by elimination; no trait change, ever).
+
+P68 (native 30M, reverted): MBR entry with seeded UICR 18/18 + IPR22
+`0x40404040` → 1 reset, then parks at APP vector `0x29C7A` (the P51
+entry-fault address, no fault) with ZERO hits on `0x7B5B4`/`0x772F9`/
+`0x783FE`. Pass 2 never reaches BL validation — MBR jumps straight
+to the app vector table (MBR→app-direct, not MBR→BL→app). BL loop
+theory narrowed: validation is bypassed, not failed.
+
+P69 (native 300M, reverted): MakeCode re-run IDENTICAL on current
+tree — 0 `0x30C04` hits, `0x20002078/7A`→`0x3569C` WFE-idle at 300M,
+DIR0 sticky, TIMER4 untouched. Pre-scroll stall confirmed, not a
+regression from clock/ADDR/AIRCR changes.
+
+P70 (browser, reverted): extended `stubs_nrf` preset prints
+`STUBS:OK` in 10s (`s2stop=1/s3stop=1`, pc `0xa3`, no fault, no page
+errors) — SPIM2/3 firmware-proven live, L5 closed.
+
+P71 (browser, KEPT — meter change only): MIPS meter now shows slice +
+sustained average; blinky AND mpy park both read `6.02 (avg 6.00)` —
+the user's 16-class bursts are peak slice rates; sustained == slice
+because the park never sleeps. The meter no longer misleads.
+Probes reverted (P70/P71 `__dbg` gone); 191 green + smoke green hold.

@@ -832,6 +832,15 @@ export function radio_inject_rx(bytes) {
 }
 
 /**
+ * Set the 802.15.4 energy-detect sample level in dBm (negative).
+ * Reported via EDSAMPLE on the next EDSTART; defaults to RSSI level.
+ * @param {number} dbm
+ */
+export function radio_set_ed_dbm(dbm) {
+    wasm.radio_set_ed_dbm(dbm);
+}
+
+/**
  * @param {number} dbm
  */
 export function radio_set_rssi_dbm(dbm) {

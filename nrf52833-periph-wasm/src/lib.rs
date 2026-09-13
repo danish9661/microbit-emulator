@@ -283,6 +283,13 @@ pub fn radio_set_rssi_dbm(dbm: i32) {
     crate::peripherals::radio_nrf::set_rssi_dbm(sys(), dbm);
 }
 
+/// Set the 802.15.4 energy-detect sample level in dBm (negative).
+/// Reported via EDSAMPLE on the next EDSTART; defaults to RSSI level.
+#[wasm_bindgen]
+pub fn radio_set_ed_dbm(dbm: i32) {
+    crate::peripherals::radio_nrf::set_ed_dbm(sys(), dbm);
+}
+
 // ── I2S streaming driver API ──
 #[wasm_bindgen]
 pub fn i2s_take_rx() -> Vec<u32> {

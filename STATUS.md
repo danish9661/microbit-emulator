@@ -2,9 +2,9 @@
 
 Audited 2026-09-12 by cross-checking all 39 `monox/nrf52833.svd`
 peripherals against `src/peripherals/`, running the suite
-(**190 passed, 0 failed** — +5 since audit: SPIM RXD MISO +
+(**191 passed, 0 failed** — +6 since audit: SPIM RXD MISO +
 GPIO CNF→DIR + UARTE TX snapshot + TWIM shifted-ADDR match +
-SCB AIRCR SYSRESETREQ), reading every model, and replaying the
+SCB AIRCR SYSRESETREQ + RADIO 802.15.4 helpers), reading every model, and replaying the
 live firmware runs. Grades: **F** = functional (timed, IRQs,
 driver take/complete, firmware proof), **H** = handshake
 (TASKS/EVENTS/INTEN minimum, no timed behavior or no consumer),
@@ -57,7 +57,7 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 190 green (`cargo test`)
+## 3. Tests — 191 green (`cargo test`)
 
 - 108 integration tests (`src/cpu/tests.rs`): 12 GCC-built firmware
   proofs (`blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
@@ -154,10 +154,38 @@ beyond proof-level driving remain future work.
 
 ## 6. LEFT — prioritized
 
-1. **REPL exec (`print(1+2)` → `3`)**. Deterministic post-banner NULL
-   fault, narrowed hard (plan P24–P25; all native):
-   - `bx r3` with r3=0 @`0x4F75A` (`ldr r0,[r0,#2340]; ldr r3,[r0];
-     ldr r3,[r3,#40]; bx r3` — C++ virtual call, vtable slot 10).
+1. **REPL exec (`print(1+2)` → `3`)**. BLOCKED BEHIND BANNER (P55–P57,
+   P67): native re-run on the CURRENT tree (clocks boot ON, ADDR raw,
+   AIRCR honored) still parks at `0x200021b8/bb` through 600M, uartLen
+   0, TWIM clean (`t_addr=114/err=0/endtx/rx=1`), UARTE never staged
+   (`u_max=0/u_end=0`) — so the banner gate is NOT clocks/ADDR/AIRCR.
+   Pre-banner park is a countdown wait, not a hang: pc `0x200021b8/bb`
+   = RAM delay-fn (`01 38 fd d1 70 47`: `subs r0,#1; bne; bx lr`),
+   called from the `0x20980` 20-iteration helper (`movs r7,#20` loop,
+   rets `0x20ab1`/`0x20b37` both `bl`-validated) with lr `0x26039`
+   (the u64-compare-then-branch helper `0x26020`: returns 0 or falls
+   into `0x2603e` time-add path). HFCLK wait RULED OUT (P55b: clocks
+   boot ON yet park persists to 600M). r0 at park (`0x92b`–`0x719e`)
+   is the live countdown, r4=`0x3e8` (1000), r1=3, r2=`0x20016608`.
+    NEXT: name the `0x20980` helper's caller — CONSTRAINED (P58) then
+    STATIC+NAMED (P60): exactly TWO `bl→0x20980` sites exist,
+    `0x20b32`+`0x20b58`, both inside ONE function (`0x20ae8`,
+    GC-shape: `bl 0x528e8` alloc + `bl 0x528d8`/`0x52908` field init +
+    `strb [r3,#4]` type-tag store). r0 at park is ALIVE and WRAPPING
+    (`0xb3a→0x990→0x8ff→…→0x92b` across 2M samples — never monotonic,
+    never stuck): the inner countdown completes and the 20× loop
+    re-arms, i.e. a tight re-poll whose exit condition (r7-driven,
+    `0x209aa`-region compares) never fires. P61: sampled regs at the
+    park are STALE (r4=`0x3e8`/r6=stack — the DELAY call's args, not
+    the helper's; `[r4+20]` reads flash `0xF878F000`, `[r6]` a stack
+    word) — the helper's frame is long gone (we sample the delay-fn
+    leaf, not the loop body). So the r7/compare inputs are NOT
+    observable at pc — need a break INSIDE `0x209aa–0x209de`
+    (pc-triggered reg dump), not at the leaf. NEXT: pc-break at
+    `0x209b2`/`0x209c2` to read the live r4/r6 + fp target + r0.
+   Post-banner NULL fault (plan P24–P25, all native) still open after:
+    - `bx r3` with r3=0 @`0x4F75A` (`ldr r0,[r0,#2340]; ldr r3,[r0];
+      ldr r3,[r3,#40]; bx r3` — C++ virtual call, vtable slot 10).
    - **The object pointer itself is NULL** (r0=0 on entry; reads alias
      flash `0x924`/`0x28`, dies on the null slot). Caller is
      `mp_call_function`-shaped (`blx r4` @`0x4F690`); queue-drain
@@ -193,23 +221,36 @@ beyond proof-level driving remain future work.
      `op=0xDEAD`) while 1x20K spins fault-free — reverted to 1x20K;
      do not re-land without explaining the entry fault.
 2. **TX byte drops** (single-byte →space substitutions, cosmetic).
-    FIXED via synchronous snapshot (no trait/`src/cpu` change):
-    STARTTX latches `MAXCNT` RAM bytes through a thread-local
-    published by `WasmCpu::step`; `complete_txdma` emits the snapshot
-    over the driver's late bytes (`tx_snapshot_freezes_starttx_bytes`
-    proof). Demo pump untouched.
-    Mechanism (plan P49): IRQ-mode `putc` returns right after STARTTX;
-    the caller reuses the `&c` stack slot before the deferred take —
-    aligned N+1 substitution (holes #19/#39/#59/#79, always `0x20`).
+    CLOSED as model-clean (P67): with zero banner takes on the current
+    tree the snapshot path never fires — unit test green + P53i 0/106
+    hold, and there is no live path left to verify until L1 banners.
+    Old holes (19/39/59/79 + tail-shift) are firmware-side pre-STARTTX
+    (P49 `&c` slot reuse) by elimination. No trait change, ever.
 3. **Bootloader full chain** (MBR→BL→SD→app; direct-app boot works
    around it). Decoded (plan P25/P29): entry `0x772F9`, FICR gather,
    UICR writes + deliberate post-UICR reset (benign); 2nd reset is a
    CODED AIRCR via `0x78514` after a tbb validation dispatch (r4==0
    path) — not WDT, not IPR22-caused (no static IPR22 access; r0 stale).
-   NEXT: why r4==0 + the `0x784C4`-flag compare.
+    NEXT: why r4==0 + the `0x784C4`-flag compare — ANSWERED (P49+L3):
+    r4==0 is SD-enable SUCCESS (`bl 0x7B530` = `svc 16; bx lr`;
+    `cbnz r4@0x7B636` skips validation on FAILURE; success → `0x7B5B4`
+    IPR22 check + `bl 0x7B568` → tbb `0x78498` selects reset site #2
+    `0x78514` BY DESIGN, handoff into the SD-enabled state).
+    `0x7B5B4` = IPR22 validator (`ldrb [0xE000E100+#0x316]` = IPR22,
+    pass iff `(236>>a)` odd → IPR22=0 always fails in emulation; needs
+    SD-set app priorities 2/1, silicon state). `0x784C4` = DFU-progress
+    gate (flag `[0x20002DF1]`; `r4=[0x2DFC]-[0x2DF4]` vs 59; `r1=0/1`
+    into `bl 0x78760`; copy `[r6]→[r5]` when in range) — not the r4
+    cause. MBR pass-2 needs SD priorities: SHELVED with sd_evt.
     (P30: both resets proven AIRCR-coded via caller markers; seeding
     BL-programmed UICR (`0x10001200/204`=18) stalls direct-app boot at
     a register-called HALT (`0x29CD1`) — UICR-gated halt caller open.)
+    P68 MBR pass-2 (seeded UICR 18/18 + IPR22 `0x40404040`, MBR entry):
+    1 reset then parks at app vector `0x29C7A` (the P51 entry-fault
+    address, no fault here) with ZERO hits on `0x7B5B4`/`0x772F9`/
+    `0x783FE` — pass 2 never reaches BL validation at all (MBR jumps
+    straight to the app vector table). So the loop is MBR→app-direct,
+    not MBR→BL→app; BL validation is bypassed, not failed.
     CLOSED-static (plan P52): the MBR selector (`0x417`: `*(0xFF8)`/
     `*(0xFFC)` chain, UICR `0x10001014`/`0x10001018`, `0xAA` marker,
     `*(r5)==4`→boot-app) NEVER reads `0x10001200/204` (full `0x0–0xB00`
@@ -217,23 +258,33 @@ beyond proof-level driving remain future work.
     cannot skip BL (native seeded run: 1 reset, parks `0x77332`).
     Blocker is BL-side `0x7B5B4` needing nonzero IPR22 (SD-set
     priorities — silicon state, out of scope); direct-app boot stays.
-4. **MakeCode display content** (TIMER4 never STARTs because the
-   display object is never constructed — `enable()` runs in the
-   `NRF52LEDMatrix` constructor, so the stall is in an earlier member
-   init; live waiter is `0x30C04` busy-`[r4+20]`)
-    + BLE events (no radio attempts; needs SD event synthesis).
-    NEXT: capture r4 at `0x30C18` + fiber walk.
+4. **MakeCode display content** (ZERO-TOUCH proof, P57; re-run P69 on
+   current tree: IDENTICAL — 300M, 0 `0x30C04` hits, `0x20002078/7A`→
+   `0x3569C` WFE-idle at 300M, DIR0 sticky, TIMER4 untouched). So NO
+   member init before the scroll call touches hardware — stall is
+   pre-scroll sequencing (main never issues the scroll), not a missed
+   wakeup or display-construct gap. NEXT: why main never calls scroll
+   (event/subscription?); (7,1) producer ID secondary.
     Strobe-OR proof (plan P52): 200-sample OR over +1M post-172M is
     all-zero — truly blank, not a multiplex alias. OUT never produces
     an on-phase; init stalls before display construction.
-5. **SPIM2/3 tap routing** — done (RXD register returns the MISO
-   queue for SPI names; DMA frames already routed; stale "still open"
-   comment corrected).
-6. **Demo wall-time**: banner needs ~150–260M at ~300K–1.5M instr/s
-   in this Chromium — 600s+ per boot. Pkg profile question closed:
-   dev and --release builds are byte-identical in this wasm-pack
-   setup (single profile); speed is environmental. Demo pump stays
-   1x20K (see item 1).
+5. **SPIM2/3 tap routing** — done, firmware-proven AND browser-proven
+   (P70): extended `stubs_nrf` (START/STOP→STOPPED on SPIM0/2/3, 326B,
+   preset base64 byte-identical) prints `STUBS:OK` in-browser in 10s
+   (`s2stop=1/s3stop=1`, no fault, no page errors). Demo pump covers
+   SPIM2/3 DMA frames. No edge-SPI part wired (no consumer) — stays H
+   by decision, not by gap.
+   RADIO 802.15.4 (P59, NEW): ED/CCA/DEVMATCH-MISS/MHRMATCH/
+   FRAMESTART + full SHORTS/INTEN maps (`ed_cca_mhr_devmatch_
+   framestart` green); demo air = two-instance bridge via
+   `window.__airPeer` (foreign bytes) with loopback default — BLE/BT
+   without WebBluetooth; new export `radio_set_ed_dbm`.
+6. **Demo wall-time**: meter now shows slice + sustained average
+   (`6.02 MIPS (avg 6.00)` on both blinky AND mpy park — P71: the
+   16-class bursts the user saw are peak slice rates; sustained == slice
+   here because the park never sleeps). Banner math stands (~150–260M
+   needed; native L1 bannered 160–180M). Pkg profile closed
+   (byte-identical dev/release); speed is environmental.
 
 ## 7. Deliberately out of scope
 
@@ -247,7 +298,7 @@ protection, publish to npm.
 ## 8. Verify
 
 ```
-cargo test                       # 190 green (crate dir)
+cargo test                       # 191 green (crate dir)
 node demo/parts/smoke.mjs        # parts green
 wasm-pack build nrf52833-periph-wasm --target web --out-dir ../demo/pkg
 ```

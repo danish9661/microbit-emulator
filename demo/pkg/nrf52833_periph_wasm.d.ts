@@ -162,6 +162,12 @@ export function radio_inject_corrupt(bytes: Uint8Array): void;
 
 export function radio_inject_rx(bytes: Uint8Array): void;
 
+/**
+ * Set the 802.15.4 energy-detect sample level in dBm (negative).
+ * Reported via EDSAMPLE on the next EDSTART; defaults to RSSI level.
+ */
+export function radio_set_ed_dbm(dbm: number): void;
+
 export function radio_set_rssi_dbm(dbm: number): void;
 
 export function radio_take_rx(): Uint32Array;
@@ -284,6 +290,7 @@ export interface InitOutput {
     readonly radio_complete_tx: () => void;
     readonly radio_inject_corrupt: (a: number, b: number) => void;
     readonly radio_inject_rx: (a: number, b: number) => void;
+    readonly radio_set_ed_dbm: (a: number) => void;
     readonly radio_set_rssi_dbm: (a: number) => void;
     readonly radio_take_rx: (a: number) => void;
     readonly radio_take_tx: (a: number) => void;

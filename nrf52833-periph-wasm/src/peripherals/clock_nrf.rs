@@ -33,8 +33,19 @@ pub struct ClockPower {
 
 impl Default for ClockPower {
     fn default() -> Self {
-        Self { events_hfclkstarted: false, events_lfclkstarted: false,
-               hfclk_running: false, lfclk_running: false, lfclksrc: 0,
+        // Silicon boot state: HFINT (not HFCLK) runs the core out of
+        // reset, but our model has a single clock domain — firmware
+        // that polls EVENTS_HFCLKSTARTED after TASKS_HFCLKSTART would
+        // spin ~ms waiting for crystal ramp that we model as instant.
+        // Boot WITH both clocks already running + events set (matches
+        // post-ramp silicon; firmware clears events by write-0 and
+        // re-arms via TASKS when it actually needs an edge).
+        // (P55: native MPY banner run parked at 0x200021b8/bb with
+        // hf_started=0 — the 0x20980 delay loop spins on the STARTED
+        // event that only a TASKS write would set. HFCLKRUN/STAT alone
+        // don't satisfy an event poll.)
+        Self { events_hfclkstarted: true, events_lfclkstarted: true,
+               hfclk_running: true, lfclk_running: true, lfclksrc: 0,
                intenset: 0, gpregret: 0xFF, gpregret2: 0xFF,
                dcdcen: 0, pofcon: 0 }
     }
@@ -128,13 +139,17 @@ mod tests {
     #[test]
     fn hfclk_start_sets_event() {
         let sys = test_dummy_system();
+        // Boot state: clocks already running + events set (P55).
         let mut c = ClockPower::default();
+        assert_eq!(c.read(&sys, 0x100), 1, "HFCLKSTARTED set at boot");
+        assert_eq!(c.read(&sys, 0x408), 1, "HFCLKRUN at boot");
+        assert_eq!(c.read(&sys, 0x104), 1, "LFCLKSTARTED set at boot");
+        c.write(&sys, 0x100, 0); // EVENTS clear by write-0
         assert_eq!(c.read(&sys, 0x100), 0);
+        // Re-arm via TASKS still works (firmware that needs an edge).
         c.write(&sys, 0x000, 1);
         assert_eq!(c.read(&sys, 0x100), 1);
         assert_eq!(c.read(&sys, 0x408), 1);
-        c.write(&sys, 0x100, 0); // EVENTS clear by write-0
-        assert_eq!(c.read(&sys, 0x100), 0);
     }
     #[test]
     fn power_usb_and_resetreas() {

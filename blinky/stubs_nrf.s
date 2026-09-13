@@ -24,6 +24,26 @@ _start:
     ldr r0, =0x40003104
     bl spin_until_set
 
+    /* SPIM2 (dedicated SPI2 @0x40023000): same START/STOP handshake.
+       Proves the SPIM2 slot is live (L5: model routed MISO/DMA but no
+       firmware ever touched the instance). */
+    ldr r0, =0x40023010
+    movs r1, #1
+    str r1, [r0]              /* TASKS_START */
+    ldr r0, =0x40023014
+    str r1, [r0]              /* TASKS_STOP */
+    ldr r0, =0x40023104
+    bl spin_until_set
+
+    /* SPIM3 (@0x4002F000): same handshake, proves the SPIM3 slot. */
+    ldr r0, =0x4002F010
+    movs r1, #1
+    str r1, [r0]              /* TASKS_START */
+    ldr r0, =0x4002F014
+    str r1, [r0]              /* TASKS_STOP */
+    ldr r0, =0x4002F104
+    bl spin_until_set
+
     /* PDM: ENABLE, START, poll STARTED */
     ldr r0, =0x4001D500
     movs r1, #1

@@ -495,11 +495,14 @@ fn nrf_boot_flash_at_zero() {
     sys.p.write(sys, 0x50000514, 4, 0x1);
     sys.p.write(sys, 0x50000508, 4, 0x1);
     assert_eq!(sys.p.read(sys, 0x50000504, 4) & 1, 1, "P0 OUT");
-    // 2nd run: fresh system, events cleared, no leak
+    // 2nd run: fresh system, no leak. (CLOCK events boot set per P55,
+    // so clear-then-check instead of assuming a zero start.)
     let (_cpu2, mem2) = boot(&img);
     let sys2 = crate::sys();
     assert_eq!(mem2.read32(0x00000000), 0x20002000);
-    assert_eq!(sys2.p.read(sys2, 0x40000100, 4), 0, "no event leak");
+    assert_eq!(sys2.p.read(sys2, 0x40000100, 4), 1, "boot HFCLKSTARTED set");
+    sys2.p.write(sys2, 0x40000100, 4, 0);
+    assert_eq!(sys2.p.read(sys2, 0x40000100, 4), 0, "event clears by write-0");
     assert_eq!(sys2.p.read(sys2, 0x50000504, 4) & 1, 0, "no gpio leak");
 }
 

@@ -8,7 +8,7 @@ DAPLink/interface MCU (KL27) is NOT emulated (JS loader + UART only).
 Status key: **F** = functional (timed, IRQs, driver take/complete,
 firmware proof) · **H** = handshake (TASKS/EVENTS/INTEN minimum, no
 timed behavior or no consumer) · **–** = missing / deliberately
-omitted. Counts: `cargo test` **190 green**,
+omitted. Counts: `cargo test` **191 green**,
 `node demo/parts/smoke.mjs` green. Working tree intentionally dirty
 (see §7); do not commit unless asked.
 
@@ -23,7 +23,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | SVD base(s) | SVD peripheral(s) | Model file | St | Remark |
 |---|---|---|---|---|
 | `0x40000000` | CLOCK+POWER | `clock_nrf.rs` | F | HF/LF STARTED+STAT, USBDETECTED/USBPWRRDY, RESETREAS+SREQ latch, GPREGRET, RAMSTATUS, LFCLKSRC; POWER_CLOCK IRQ0. AIRCR SYSRESETREQ fixed P53 (`aircr_sysresetreq_fires_and_self_clears`). |
-| `0x40001000` | RADIO | `radio_nrf.rs` | F | PCNF-length TX take / RX completion+inject, CRCERROR inject, RSSI, SHORTS; `air_nrf` loopback proof. No real air (demo loopback only). |
+| `0x40001000` | RADIO | `radio_nrf.rs` | F | PCNF-length TX take / RX completion+inject, CRCERROR inject, RSSI, SHORTS; `air_nrf` loopback proof. 802.15.4 helpers (P59): ED (EDSTART→EDEND+EDSAMPLE/EDCNT, EDSTOP→EDSTOPPED, `radio_set_ed_dbm`), CCA (CCASTART→CCAIDLE/CCABUSY vs CCACTRL, CCASTOP→CCASTOPPED), DEVMATCH/DEVMISS (+RXMATCH/RXCRC/PDUSTAT) via DAB/DAP, MHRMATCH via CONF/MAS, FRAMESTART+BCMATCH, TIFS/BCC/SFD/MODECNF0/POWER stored, full SHORTS/INTEN SVD bit maps (`ed_cca_mhr_devmatch_framestart`). Demo air = two-instance bridge (`window.__airPeer` foreign bytes, loopback default) — BLE/BT without WebBluetooth. |
 | `0x40002000` | UART0+UARTE0 | `uarte_nrf.rs` | F | 1-byte TX DMA + RXDMA ring; OVERRUN/ERROR/TXSTOPPED (`0x158`/INTEN22, P20 fix); STOPTX never raises ENDTX. STARTTX snapshot (P52, `tx_snapshot_freezes_starttx_bytes`); holes 19/39/59/79 + tail-shift persist (P53i: 0/106 driver mismatches → pre-STARTTX, firmware-side). |
 | `0x40028000` | UARTE1 | `uarte_nrf.rs` | F | TX/RX fully routed (was UARTE0-locked); `uarte1_txdma_roundtrip_targets_instance_1`; no dedicated UARTE1 firmware proof. |
 | `0x40003000` | SPI0/SPIM0/SPIS0/TWI0/TWIM0/TWIS0 | `twim_nrf.rs` | F | Mode-blind shared base; SHORTS, LASTTX/STARTRX/SUSPEND, NACK-after-~6000-instr; TWIS/SPIS engines (`twis_master_write/read`, `spis_exchange`); RXD `0x518` MISO-for-SPI / I2C-queue-for-TWI (`rxd_polling_reads_slave_response_line`). P53: ADDRESS raw, `slave_present` exact-then-`>>1` (`0x72`→`0x39`); `address_matches_shifted_8bit_form`. |
@@ -97,7 +97,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | UICR seeds | BOOTLOADERADDR `0x77000` + settings `0x7E000` |
 | Pump | Pristine re-init + sleep-aware (`tick_n` + wake) |
 | Native banner | 160–180M instr (`0x266D4`, 106B with P49 holes) |
-| Browser park | `0x200021b8/bb` pre-banner, uartLen 0 (wall-time suspect #1; model clear: TWIM ACKs, NVMC idle, RESETREAS SREQ) |
+| Browser park | `0x200021b8/bb` pre-banner, uartLen 0 (P55: countdown wait with lr `0x26039`, caller TBD — not wall-time, not HFCLK, not TWIM/NVMC/UARTE; model clear on all probed state). |
 
 | `microbit.*` surface (`modmicrobit.c` + `microbit_*.c`) | St | Remark |
 |---|---|---|
@@ -110,7 +110,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | `pin0`–`pin16`, `pin19/20`, `pin_logo`, `pin_speaker` | H | `getDigitalValue@0x28744` IS the observed poll — but on CODAL LSM303 driver `0x20003960`, not an MP pin (P52 correction). P0.00 toggles nested under NULL fault. |
 | `i2c` / `spi` / `uart` | H | TWIM/UARTE paths proven (`dma_nrf`, `air_nrf`); MPY objects never reached. |
 | `Image` / `Sound` / `SoundEvent` / `SoundEffect` types | H | Types exist in flash (`MicroBitImage`, `AudioFrame`…); never instantiated (pre-banner). |
-| `reset` / `sleep` / `running_time` / `panic` / `temperature` | H | `sleep` = RAM delay-fn `0x200021b8` (P53: `subs r0,#1; bne; bx lr` — parked-loop, not a hang). `temperature` → TEMP model exists. |
+| `reset` / `sleep` / `running_time` / `panic` / `temperature` | H | `sleep` = RAM delay-fn `0x200021b8` (P53–P55: `subs r0,#1; bne; bx lr`, called from the `0x20980` 20× helper, lr `0x26039`; r0 live countdown, r4=1000 — a wait, not a hang; caller TBD via r7-entry watch). `temperature` → TEMP model exists. |
 | `set_volume` / `ws2812_write` (neopixel) | H | Present in image; never reached. |
 | `run_every` / `scale` / `log` (datalog FS) | H | `log` → NVMC/flash path; fds-waiter divergence is demo-only (P26: native skips, demo waits on SD-event completion nothing delivers). |
 | `radio` (`drv_radio.c`) | H | CODAL radio repoints vector (`0x2E44D` = main:57 ran natively); no RX attempts pre-banner. |
@@ -127,16 +127,16 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | GPIO + MMIO | `periph_read/write`, `gpio_read_output`, `gpio_set_input`, `gpio_read_input` | F | Active-low buttons; `input_state` survives `init()` (P43). |
 | UART | `uart_rx_byte`, `get_uart_output`, `uarte_take/complete_txdma/rxdma` | F | Drip via `RXD.PTR+AMOUNT` mirror, never early ENDRX (P39). |
 | I2C master | `i2c_register_slave`, `i2c_take_events`, `i2c_push_rx`, `twim_take/complete_txdma/rxdma` | F | TWIM0 = OLED, TWIM1 = sensors+KL27. Shifted-form `normAddr` in part. |
-| I2C/SPI slave | `twis_master_write/read`, `spis_exchange` | F | Unit-proven; no demo consumer (only tests drive them). |
+| I2C/SPI slave | `twis_master_write/read`, `spis_exchange` | F | P58 mock audit (TEMP, reverted): TWIS write lands in RAM; SPIS acquire + MISO/MOSI exchange. Unit-proven; no demo consumer (only tests/host drive them). |
 | SPI taps | `spi_tap`, `spi_take_events`, `spi_push_miso` | H | Exported; no edge-SPI part wired (no consumer). |
 | SAADC/PDM/TEMP | `saadc_take/complete_result`, `saadc_check_limits`, `pdm_take/complete_sample`, `temp_set_celsius` | F | Pumped per frame (SAADC/PDM); TEMP/RNG driver-settable. |
-| Crypto | `ccm_take_job`, `ccm_complete`, `aar_take_job`, `aar_complete`, `ecb_take_job`, `ecb_complete` | H | Exported + unit-proven (FIPS-197, CTR+MIC); AAR has no demo consumer; crypto runs driver-side. |
-| COMP/QDEC | `comp_set_input_mv`, `qdec_step` | H | Exported + unit-proven; no demo consumer. |
+| Crypto | `ccm_take_job`, `ccm_complete`, `aar_take_job`, `aar_complete`, `ecb_take_job`, `ecb_complete` | F | P58 mock audit (TEMP, reverted): ECB FIPS-197 block in place + END; AAR RESOLVED + NOTRESOLVED (`0x4000F108`) paths; CCM job fields + decrypt flag + ENDCRYPT. Crypto runs driver-side by design (mock = the driver). No demo consumer (no BLE pairing UI) — F-grade model, H-grade wiring. |
+| COMP/QDEC | `comp_set_input_mv`, `qdec_step` | F | P58 mock audit (TEMP, reverted): COMP Below/Above + UP edge via driver mV; QDEC host steps accumulate (ACC=+3). No demo consumer (no board knob/comparator wired) — F-grade model, H-grade wiring. |
 | USBD | `usbd_signal_reset`, `usbd_take/complete_epin/epout`, `usbd_inject_setup` | F | Pumped per frame; `air` Run pre-signals USBRESET. |
 | QSPI/NVMC | `qspi_register_flash`, `qspi_take/complete_read/write/erase`, `nvmc_take/erase`, `nvmc_complete_erase` | F | Driver applies 0xFF via `mem_write`; NVMC erase pumped per frame. |
-| RADIO | `radio_take/complete_tx/rx`, `radio_inject_rx/corrupt`, `radio_set_rssi_dbm` | H | Demo loopback only; no real air. |
-| I2S | `i2s_take/complete_rx/tx`, `i2s_take_capture` | H | Streaming proof green; demo feeds silence, capture drained (no WebAudio). |
-| NFCT | `nfct_field_present`, `nfct_take/complete_tx/rx` | H | C+S proof green; no demo consumer beyond proof. |
+| RADIO | `radio_take/complete_tx/rx`, `radio_inject_rx/corrupt`, `radio_set_rssi_dbm` | F | P58 BLE verdict: MPY radio is BARE-METAL (`drv_radio.c` drives `NRF_RADIO` directly + custom IRQ handler; SoftDevice never involved) — model covers exactly this surface, loopback proof green. No BLE-enabled image exists (`MICROBIT_BLE_ENABLED: 0` in MPY codal.json; `svc 82` zero even-aligned hits) — BLE stack work needs such an image first (see §8). |
+| I2S | `i2s_take/complete_rx/tx`, `i2s_take_capture` | F | P58 mock audit (TEMP, reverted): RX silence fill + TX capture FIFO. Streaming proof green; demo feeds silence, capture drained (no WebAudio) — F-grade model, H-grade wiring. |
+| NFCT | `nfct_field_present`, `nfct_take/complete_tx/rx` | F | P58 mock audit (TEMP, reverted): field-present → ACTIVATE → STARTTX/ENDTX + ENABLERXDATA/ENDRX + FIELDLOST. C+S proof green; no demo consumer beyond proof (no NFC antenna UI) — F-grade model, H-grade wiring. |
 
 | Firmware proof (`blinky/*.s/.c/.bin`, GCC per `docs/README.md`) | Marker / check | St | Remark |
 |---|---|---|---|
@@ -144,7 +144,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | sensors | SENS:OK + BTN:1/0 level-poll + TWIM + GPIOTE | F | BTN_A P0.14 active-low; `input_state` survives reboot (P43). |
 | dma | TWIM DMA loopback | F | Driver-style take → RAM move → complete, like the JS pump. |
 | extras | SAADC/TEMP/RNG/PWM OK | F | One handshake each (thinnest). |
-| stubs | SPIM/PDM/QSPI/USBD/RADIO OK | F | Alias + pump coverage. |
+| stubs | SPIM0/2/3 + PDM/QSPI/USBD/RADIO OK | F | START/STOP→STOPPED on all three SPIM instances (326B, rebuilt from `.s`); preset base64 byte-identical to `blinky/stubs_nrf.bin`. |
 | air | USB+RADIO loopback+PPI OK | F | Polls USBRESET first (Run replicates pre-signal). |
 | c_irq | C TIMER0 IRQ + UART | F | C toolchain proof (bit-identical rebuild). |
 | usbep / usbdev | SETUP + EPIN flash-DMA | F | `usbdev_nrf.c` flash-source DMA. |
@@ -155,7 +155,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 
 | Wall-time (L6, environmental) | Value | Remark |
 |---|---|---|
-| Pump batching | 5×[20K step+tick+pumpDma] per frame (P54: duties moved INSIDE the sub-loop) | Was 1.20 MIPS vsync-capped; ~6.0 MIPS now. Duties-once-per-frame starved polled firmware (1B STARTTX waited ~100K for completion; DRDY pulse couldn't land in a 20K window). Browser P54c post-fix: TWIM clean (`t_err=0/endrx=1`) but still pre-banner — throughput no longer suspect, gate is elsewhere. |
+| Pump batching | 5×[20K step+tick+pumpDma] per frame (P54: duties moved INSIDE the sub-loop) | Was 1.20 MIPS vsync-capped; meter reads ~6 in-browser (16-class bursts are peak slice rates, not sustained banner throughput). Duties-once-per-frame starved polled firmware (1B STARTTX waited ~100K; DRDY pulse couldn't land in a 20K window). Browser P54c post-fix: TWIM clean (`t_err=0/endrx=1`) but still pre-banner — throughput no longer suspect, gate is elsewhere (P55: countdown wait). |
 | Banner cost | ~150–260M instr | ~30s at 6 MIPS; 600s+ at 300K. Native L1 banners 160–180M (~43s harness). |
 | Profile | dev == release (byte-identical) | wasm-pack single profile; speed is environmental, never the lever. |
 | Remaining gap | Browser reparks pre-banner at identical pc | Throughput, not model, is suspect #1. |
@@ -166,7 +166,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | Firmware | Result | Remark |
 |---|---|---|
 | MicroPython v2.1.2 (direct-app `0x1C000`) | Boots OK; banner 106B natively, pre-banner park in browser | 2 AIRCR resets honored, RESETREAS SREQ, GPIO live, TWIM ACKs, pc `0x282B2` @340M natively. Browser park `0x200021b8/bb`, uartLen 0. *Except post-banner NULL fault (P24–P25, MP-layer, open). |
-| MakeCode `basic.showString("A")` (makecode 1.3.6, `mc/` gitignored) | Scheduler idle; display never enables | Waiter `0x30C04` NEVER entered (0 hits/260M), `0x30C18` unreached, TIMER4 CC0/EV0 untouched, DIR0 sticky `0x01788000`. Stall is pre-scroll init (L4). |
+| MakeCode `basic.showString("A")` (makecode 1.3.6, `mc/` gitignored) | Scheduler idle; display never enables | P57 zero-touch (300M): TIMER4-CC0/GPIOTE-CONFIG[1..5]/PPI-CHENSET/TWIM1-ADDR/NVMC-CONFIG/UARTE-TXMAX/waiter-`0x30C04` ALL untouched; pc `0x20002078/7A`→`0x37AFA` WFE-idle, DIR0 sticky `0x01788000`. Stall is pre-scroll sequencing (main never issues scroll). |
 | Espruino 2v29 | Boots | CoreSight PID fix needed; console is P0.06 bit-bang, nothing TX in early windows. |
 | Bootloader chain (`0x77000`) | Entry + FICR gather + benign post-UICR reset; 2nd reset CODED AIRCR | `0x78514` via tbb `0x78498` (r5=1); `0x783FE` park = post-AIRCR wait. r4==0 is SD-enable SUCCESS (`cbnz r4@0x7B636` skips validation on FAILURE; success → `0x7B5B4`+`0x7B568` → tbb reset #2 BY DESIGN). `0x7B5B4` = IPR22 validator (`236>>a` odd; IPR22=0 always fails — needs SD priorities). `0x784C4` = DFU-progress gate (`[0x20002DF1]`, `[0x2DFC]-[0x2DF4]` vs 59), not the r4 cause. MBR selector (`0x417`) never reads `0x10001200/204` (`0x0–0xB00` sweep) — P42 refuted, direct-app stays. MBR pass-2 needs SD priorities (shelved). |
 
@@ -177,11 +177,20 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | 1 | REPL exec (`print(1+2)` → `3`) | Blocked behind banner (L1) | Long browser run past 160–180M to banner, then `print(1+2)` prompt-kick sampling (pc `0x2874x/0x266Dx` + RXDRDY + ring deltas, P51 pattern). |
 | 2 | TX drops (holes + tail-shift) | Snapshot ACTIVE but incomplete | Firmware-side slot audit (no trait change); live verify needs (1). P53i holds: 0/106 driver mismatches. |
 | 3 | Bootloader full chain | r4==0/DFU decoded (§5); MBR pass-2 needs SD priorities | None without SD event synthesis (explicitly out of scope). |
-| 4 | MakeCode display content | Waiter never entered (L4: 0 hits, pre-scroll stall) | Constructor-order trace (which member init reaches `0x30CD0`) + (7,1) producer ID. |
-| 5 | SPIM2/3 tap routing | Done at model level (unit-green, re-verified) | Wire a part or leave H (no edge-SPI demo consumer). |
+| 4 | MakeCode display content | Zero-touch proven (P57: no member init touches HW in 300M) | Constructor-order trace (which member init reaches `0x30CD0`) + (7,1) producer ID. |
+| 5 | SPIM2/3 tap routing | Done + firmware-proven (START/STOP→STOPPED on both instances via extended `stubs_nrf`; preset base64 byte-identical) | No edge-SPI demo part (no consumer) — stays H by decision. |
 | 6 | Demo wall-time | Environmental (~6 MIPS, banner ~30s at speed) | Re-measure after (1); wasm-opt/pump-quantum only if still slow. |
 
-## 7. Working tree + verify (DO NOT COMMIT unless asked)
+## 8. BLE/BT feasibility verdict (P58 — NO build, evidence only)
+
+| Question | Finding |
+|---|---|
+| Does anything on the banner path need BLE? | No. MPY `codal.json` sets `MICROBIT_BLE_ENABLED: 0` — `MicroBit::init` skips `bleManager.init` + pairing branch entirely. BLE contributes zero pre-banner instructions. |
+| Does the MPY radio path need SoftDevice? | No. `drv_radio.c` (`microbit_radio_enable`) is bare-metal `NRF_RADIO` + custom IRQ (`main.cpp` re-vectors `RADIO_IRQn` post-init). The RADIO model covers exactly this surface (loopback proof green). |
+| Is `sd_evt_get` really absent? | Yes, on aligned evidence: even-address scan finds ZERO `DF52` sites (prior 2 hits were odd-addressed data bytes). No firmware here can observe an SD event — P32/P51 shelve stands. `docs/sd_evt_design.md` stays a corrected reference (valid IF a future image calls it; today dead code — do not build). |
+| What would BLE/BT work need? | (a) A BLE-ENABLED image first (MPY codal.json flip or MakeCode BLE program); (b) rescan SVCs (expect nonzero svc82 + GAP/GATT traffic) BEFORE writing model code; (c) SoftDevice state synthesis (observer callbacks, conn pump — order past flash-only transport); (d) a host-side BT peer (WebBluetooth or 2nd loopback endpoint). RADIO model needs no changes. |
+
+## 9. Working tree + verify (DO NOT COMMIT unless asked)
 
 | File | Change | Remark |
 |---|---|---|
@@ -190,12 +199,13 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | `demo/parts/lsm303.js` | `normAddr` + UIPM `0x70` stub + DRDY pulse | Shifted-form match; empty UIPM frame; 60/140ms pulse satisfies sensor spin + KL27 threshold. |
 | `demo/parts/smoke.mjs` | KL27 + pulse checks | Slave list `0x19/0x1E/0x70`; both DRDY phases observed. |
 | `demo/pkg/nrf52833_periph_wasm_bg.wasm` | Rebuilt (1.5MB) | Built from this tree; `.gitignore` removed (intentional). |
+| `blinky/stubs_nrf.s` + `.bin` | SPIM2/3 START/STOP handshake (270B→326B) | GAS-verified halfwords, rebuilt via `docs/README.md` flags, `nrf_stubs` test green; preset base64 synced byte-identical. |
 | `nrf52833-periph-wasm/src/peripherals/scb.rs` | AIRCR mask `0F04` + self-clear + test | `0x05FA0004` now latches reset (was swallowed). |
 | `nrf52833-periph-wasm/src/peripherals/twim_nrf.rs` | Raw ADDRESS + exact-then-`>>1` + tests | `0x72` finds `0x39` tap; readback = written value (silicon). |
 | `docs/COVERAGE.md` | This file | Table audit (uncommitted, per order). |
 
 ```
-cargo test                       # 190 green (crate dir)
+cargo test                       # 191 green (crate dir)
 node demo/parts/smoke.mjs        # parts green
 wasm-pack build nrf52833-periph-wasm --target web --out-dir ../demo/pkg
 rm -f demo/pkg/.gitignore        # pkg intentionally committed
