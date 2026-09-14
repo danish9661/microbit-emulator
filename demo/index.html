@@ -102,6 +102,11 @@
         <div class="send-row">
           <input type="text" id="bleUrl" value="ws://127.0.0.1:8765" aria-label="BLE bridge WebSocket URL">
         </div>
+        <div class="btn-row">
+          <button id="bleSelftest" type="button">Run BLE self-test</button>
+          <span class="pin-note" id="bleSelftestStatus">not run yet</span>
+        </div>
+        <p class="sub">Stack: <span id="bleStack">down</span> · links: <span id="bleLinks">none</span> · queued events: <span id="bleQueue">0</span> · battery: <span id="bleBatt">87</span></p>
       </section>
       <section class="panel" aria-labelledby="depth-h">
         <h2 id="depth-h">Depth probes</h2>
@@ -185,8 +190,38 @@
   });
 
   await init();
+  // BLE panel: live stack state + loopback self-test. The stack line
+  // mirrors ble_enabled(), the links line ble_conn_handles(), the queue
+  // line ble_queue_len(), the battery line ble_batt_level() — all real
+  // model reads, refreshed after every self-test and depth-probe run.
+  const bleStack = document.getElementById('bleStack');
+  const bleLinks = document.getElementById('bleLinks');
+  const bleQueue = document.getElementById('bleQueue');
+  const bleBatt = document.getElementById('bleBatt');
+  const bleSelftestStatus = document.getElementById('bleSelftestStatus');
+  function refreshBlePanel() {
+    try {
+      bleStack.textContent = wasm.ble_enabled() ? 'up' : 'down';
+      const hs = [...wasm.ble_conn_handles()];
+      bleLinks.textContent = hs.length ? hs.map((h) => '0x' + h.toString(16)).join(', ') : 'none';
+      bleQueue.textContent = String(wasm.ble_queue_len());
+      bleBatt.textContent = String(wasm.ble_batt_level());
+    } catch { /* pre-init: leave placeholders */ }
+  }
+  document.getElementById('bleSelftest').addEventListener('click', () => {
+    if (!cpu) { bleSelftestStatus.textContent = 'boot firmware first (Load + Run)'; return; }
+    const p = new MockBleSvc(wasm);
+    const svcCpu = new wasm.WasmCpu(0x20020000, 0x20000001, 512 * 1024, 128 * 1024);
+    try {
+      for (let i = 0; i < 4 && !p.done; i++) p.poll(svcCpu);
+    } catch (e) { bleSelftestStatus.textContent = 'error: ' + e.message; refreshBlePanel(); return; }
+    bleSelftestStatus.textContent = p.done
+      ? 'pass: enable, table, link, GATT, L2CAP, pairing, scan, RSSI, disconnect'
+      : 'fail: ' + JSON.stringify(p.seen);
+    refreshBlePanel();
+  });
   // Virtual board: parts register BEFORE every init() (taps snapshot once).
-  import { MockTemp, MockComp, MockQdec, MockEcb, MockAar, MockCcm, MockI2s, MockNfct, MockTwis, MockSpis, MockSpiDisplay, MockSaadcLim, MockUsbdSetup, MockRadio154, MockQspi } from './parts/mocks.js';
+  import { MockTemp, MockComp, MockQdec, MockEcb, MockAar, MockCcm, MockI2s, MockNfct, MockTwis, MockSpis, MockSpiDisplay, MockSaadcLim, MockUsbdSetup, MockRadio154, MockQspi, MockBleSvc } from './parts/mocks.js';
   const parts = [
     new LSM303(wasm, 'TWIM1'),
     new SSD1306(wasm, 'TWIM0', document.getElementById('oled')),
@@ -211,6 +246,15 @@
     ['USB setup (USBD)', () => new MockUsbdSetup(wasm), (p, c) => { for (let i = 0; i < 3 && !p.done; i++) p.poll(c); return p.done ? 'GET_DESCRIPTOR regs' : false; }],
     ['Radio helpers (15.4)', () => new MockRadio154(wasm), (p, c) => { for (let i = 0; i < 4 && !p.done; i++) p.poll(c); return p.done ? 'CRCERROR+END' : false; }],
     ['Flash backend (QSPI)', () => new MockQspi(wasm), (p, c) => { for (let i = 0; i < 8 && !p.done; i++) p.poll(c); return p.done ? 'write/read/erase' : false; }],
+    ['BLE stack (SVC face)', () => new MockBleSvc(wasm), (p) => {
+      // MockBleSvc drives REAL svc bytes on its own scratch WasmCpu
+      // (enable, table, connect, discovery, read, write, L2CAP,
+      // pairing, scan, RSSI, disconnect), so the bench cpu is unused —
+      // but the model state is process-global, resolved via loopback.
+      const svcCpu = new wasm.WasmCpu(0x20020000, 0x20000001, 512 * 1024, 128 * 1024);
+      try { for (let i = 0; i < 4 && !p.done; i++) p.poll(svcCpu); } catch (e) { return 'error: ' + e.message; }
+      return p.done ? 'enable, table, link, GATT, L2CAP, pairing' : false;
+    }],
   ];
   document.getElementById('depthRun').addEventListener('click', () => {
     const statusEl = document.getElementById('depthStatus');
@@ -231,6 +275,7 @@
       row.append(n, r, d); tbody.append(row);
     }
     statusEl.textContent = `${pass}/${depthParts.length} probes pass`;
+    refreshBlePanel();
   });
   function initBoard() {
     wasm.reset_state();

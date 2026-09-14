@@ -2402,3 +2402,36 @@ Fixes (all S132-verified, committed in steps below):
 NEXT: firmware-level proof on a BLE-enabled image (today's MPY/MC
 never init the stack, P58); in-demo live-bridge run from the bench
 panel (Enable BLE air + TX/RX + battery over-air line).
+
+## 84. P101 bench-wired BLE: panel, probes, docs, wasm-first verify (2026-09-15)
+
+All five asked, all five done:
+
+1. BLE panel wired to real state: stack (`ble_enabled()`), links
+   (`ble_conn_handles()`), queue (`ble_queue_len()`), battery
+   (`ble_batt_level()`) refresh after every self-test + depth run —
+   no more static "bridge not connected" line as the only signal.
+2. BLE self-test button: runs the full MockBleSvc SVC flow on
+   loopback in-page (enable, table, link, GATT, L2CAP, pairing, scan,
+   RSSI, disconnect). Two real shared-model bugs found by running it
+   in the real page and fixed: hardcoded conn handle 1 (model assigns
+   from its link table — the mock now threads the returned handle
+   everywhere) and CID_IN_USE on re-run (tolerated: the depth probe
+   run holds the same CID on the shared core).
+3. Depth probes include the BLE stack probe (16/16 in real Chromium,
+   zero page errors).
+4. API.md finished: tags 10/11, `ble_complete_gap_connect_ret`,
+   `ble_complete_pairing`/`ble_fail_pairing`, `ble_complete_l2cap_rx`,
+   `ble_conn_handles`/`ble_conn_sec`, `paired`/`l2cap_rx` bridge
+   messages. doc.html board matrix gains the BLE row (F) and the SVC
+   row stops claiming SoftDevice unmodeled; suite count 201.
+5. wasm-first verify: `cargo test` 201 green (native oracle) +
+   rebuilt both pkgs from current src (fixed `build:wasm` /
+   `build:handshake` scripts — they pointed one directory too deep
+   and wrote stray `nrf52833-periph-wasm/{pkg,parts,demo}` trees) +
+   handshake 18/18 + smoke + MPY-idiom face vs the BUILT pkg +
+   real Chromium: blinky `BOOT/BLINK/BLINK` at 6 MIPS, probes 16/16,
+   self-test pass, zero page errors.
+
+NEXT: live-bridge run from the bench (Enable BLE air + Bumble peer);
+firmware-level proof on a BLE-enabled image (MPY/MC still BLE-less).

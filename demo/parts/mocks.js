@@ -680,13 +680,15 @@ export class MockBleSvc {
     return { id, len, body: [...cpu.mem_read(0x20003004, len - 4)] };
   }
   // Stub bridge: resolve one staged job exactly like pumpBleLoopback.
+  // Returns the assigned handle for GapConnect (the bridge learns the
+  // peer's link the same way, via ble_complete_gap_connect_ret).
   resolveJob() {
     const w = this.wasm;
     const bj = w.ble_take_job();
     if (!bj.length) return false;
     const tag = bj[0];
     if (tag === 0) w.ble_complete_gattc_read(bj[1], bj[2], bj[3], [w.ble_batt_level()]);
-    else if (tag === 1) w.ble_complete_gap_connect([...bj.slice(1, 7)]);
+    else if (tag === 1) return w.ble_complete_gap_connect_ret([...bj.slice(1, 7)]);
     else if (tag === 2) w.ble_complete_gap_disconnect(bj[1], bj[2]);
     else if (tag === 3) w.ble_complete_rssi(bj[1], -50);
     else if (tag === 4) w.ble_post_adv_report([0x11, 0x22, 0x33, 0x44, 0x55, 0x66], -50, false, [0x02, 0x01, 0x06, 0x03, 0x03, 0x0F, 0x18]);
@@ -703,6 +705,19 @@ export class MockBleSvc {
     const w = this.wasm;
     if (this.done) return;
     if (typeof w.ble_enabled !== 'function' || typeof cpu.reset_cpu !== 'function') return;
+    // Bench-shared model: the page runs blinky + depth probes on one
+    // process-global core, so a previous run's links/events may still
+    // be live here. Tear everything down first (all links, drain the
+    // queue) so every step below sees exactly the state it creates —
+    // the same isolation handshake.mjs gets from freshBoard().
+    for (const h of [...w.ble_conn_handles()]) w.ble_complete_gap_disconnect(h, 19);
+    // Drain the posted DISCONNECTEDs plus anything else Voices from a
+    // previous run left behind (bounded; NOT_FOUND breaks the loop).
+    for (let i = 0; i < 16 && w.ble_queue_len() > 0; i++) {
+      try { this.drainEvt(cpu); } catch { break; }
+    }
+    // From here every step asserts its own event id strictly: with the
+    // teardown above, nothing stale can sit ahead in the queue.
     const ok = (rc, what) => { if (rc !== 0) throw new Error(`${what} rc=${rc}`); };
     // 1. ENABLE (NULL params: sizing path).
     ok(this.svc(cpu, BLE_SVC.ENABLE, 0, 0), 'enable');
@@ -723,27 +738,32 @@ export class MockBleSvc {
     if (!(valH > svcH)) throw new Error(`value handle ${valH}`);
     this.seen.gatts = true;
     // 3. CONNECT via real SVC (peer addr struct), resolve, drain CONNECTED.
+    // The stub returns the assigned handle; every later step uses THAT
+    // handle, never a hardcoded 1 — the model assigns handles from its
+    // link table, and a previous run's links shift the numbering.
     cpu.mem_write(0x20001200, [0x01, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
     ok(this.svc(cpu, BLE_SVC.CONNECT, 0x20001200, 0, 0), 'connect');
-    this.resolveJob();
+    const connH = this.resolveJob();
+    if (typeof connH !== 'number') throw new Error('connect staged nothing');
     const conn = this.drainEvt(cpu);
     if (!conn || conn.id !== 0x10) throw new Error(`CONNECTED missing ${JSON.stringify(conn)}`);
     if (conn.body[16] !== 2) throw new Error(`role CENTRAL, got ${conn.body[16]}`);
     this.seen.connected = true;
+    const H = connH;
     // 4. PRIM_DISC -> resolve -> drain (battery service present).
-    ok(this.svc(cpu, BLE_SVC.PRIM_DISC, 1, 1, 0), 'prim_disc');
+    ok(this.svc(cpu, BLE_SVC.PRIM_DISC, H, 1, 0), 'prim_disc');
     this.resolveJob();
     const pd = this.drainEvt(cpu);
     if (!pd || pd.id !== 0x30) throw new Error('PRIM_DISC_RSP missing');
     this.seen.disc = true;
     // 5. CHAR_DISC over the service range -> drain.
     cpu.mem_write(0x20001300, [0x10, 0x00, 0x16, 0x00]);
-    ok(this.svc(cpu, BLE_SVC.CHAR_DISC, 1, 0x20001300), 'char_disc');
+    ok(this.svc(cpu, BLE_SVC.CHAR_DISC, H, 0x20001300), 'char_disc');
     this.resolveJob();
     const cd = this.drainEvt(cpu);
     if (!cd || cd.id !== 0x32) throw new Error('CHAR_DISC_RSP missing');
     // 6. READ the battery value -> drain (87 over the stub air).
-    ok(this.svc(cpu, BLE_SVC.READ, 1, valH, 0), 'read');
+    ok(this.svc(cpu, BLE_SVC.READ, H, valH, 0), 'read');
     this.resolveJob();
     const rr = this.drainEvt(cpu);
     if (!rr || rr.id !== 0x36) throw new Error('READ_RSP missing');
@@ -753,22 +773,31 @@ export class MockBleSvc {
     // 7. WRITE two bytes -> drain WRITE_RSP.
     cpu.mem_write(0x20001410, [0xAA, 0xBB]);
     cpu.mem_write(0x20001400, [0x01, 0x00, valH & 0xFF, (valH >> 8) & 0xFF, 0x00, 0x00, 0x02, 0x00, 0x10, 0x14, 0x00, 0x20]);
-    ok(this.svc(cpu, BLE_SVC.WRITE, 1, 0x20001400), 'write');
+    ok(this.svc(cpu, BLE_SVC.WRITE, H, 0x20001400), 'write');
     this.resolveJob();
     const wr = this.drainEvt(cpu);
     if (!wr || wr.id !== 0x38) throw new Error('WRITE_RSP missing');
     this.seen.writeRsp = true;
     // 7b. L2CAP: register CID, TX a frame, drain RX echo, unregister.
-    ok(this.svc(cpu, 0xB0, 0x40, 0, 0), 'l2cap_register');
+    // NOTE: the depth-probe run just before this one on the bench
+    // registers the same CID on the shared model and never unregisters
+    // (its scratch cpu is gone but model state persists) — so tolerate
+    // CID_IN_USE (0x3100) here: the CID is already ours.
+    // (Unregister-then-register would break the probe run still holding
+    // it; registration is idempotent-by-tolerance instead.)
+    {
+      const rc = this.svc(cpu, 0xB0, 0x40, 0, 0);
+      if (rc !== 0 && rc !== 0x3100) throw new Error(`l2cap_register rc=${rc}`);
+    }
     cpu.mem_write(0x20001600, [0x03, 0x00, 0x40, 0x00]); // header{len=3, cid}
     cpu.mem_write(0x20001610, [0xDE, 0xAD, 0xBE]);
-    ok(this.svc(cpu, 0xB2, 1, 0x20001600, 0x20001610), 'l2cap_tx');
+    ok(this.svc(cpu, 0xB2, H, 0x20001600, 0x20001610), 'l2cap_tx');
     this.resolveJob();
     const l2 = this.drainEvt(cpu);
     if (!l2 || l2.id !== 0x70) throw new Error('L2CAP_RX missing');
     if ((l2.body[4] | (l2.body[5] << 8)) !== 0x40 || l2.body[6] !== 0xDE) throw new Error('L2CAP echo transposed');
     // 7c. AUTHENTICATE -> resolve (paired) -> drain AUTH_STATUS + SEC_UPDATE.
-    ok(this.svc(cpu, 0x7E, 1, 0, 0), 'authenticate');
+    ok(this.svc(cpu, 0x7E, H, 0, 0), 'authenticate');
     this.resolveJob();
     const au = this.drainEvt(cpu);
     if (!au || au.id !== 0x19) throw new Error('AUTH_STATUS missing');
@@ -783,12 +812,12 @@ export class MockBleSvc {
     if (adv.body[11] !== 0) throw new Error('adv pad byte nonzero');
     // 9. RSSI_GET answers now; completion posts RSSI_CHANGED.
     cpu.mem_write(0x20001500, [0]);
-    ok(this.svc(cpu, BLE_SVC.RSSI_GET, 1, 0x20001500), 'rssi');
+    ok(this.svc(cpu, BLE_SVC.RSSI_GET, H, 0x20001500), 'rssi');
     this.resolveJob();
     const rc = this.drainEvt(cpu);
     if (!rc || rc.id !== 0x1C) throw new Error('RSSI_CHANGED missing');
     // 10. DISCONNECT -> resolve -> drain DISCONNECTED, queue empties.
-    ok(this.svc(cpu, BLE_SVC.DISCONNECT, 1, 19), 'disconnect');
+    ok(this.svc(cpu, BLE_SVC.DISCONNECT, H, 19), 'disconnect');
     this.resolveJob();
     const dc = this.drainEvt(cpu);
     if (!dc || dc.id !== 0x11 || dc.body[2] !== 19) throw new Error('DISCONNECTED missing');

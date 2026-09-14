@@ -55,7 +55,7 @@
     </ul>
 
     <h2>Board support matrix</h2>
-    <p>Status key: <span class="grade">F</span> runs timed with interrupts and a firmware proof, <span class="grade">H</span> answers the handshake minimum with no timed behavior or no consumer, <span class="grade">–</span> missing or deliberately out of scope. Source: the repo status audit against <code>monox/nrf52833.svd</code>, suite 191 green.</p>
+    <p>Status key: <span class="grade">F</span> runs timed with interrupts and a firmware proof, <span class="grade">H</span> answers the handshake minimum with no timed behavior or no consumer, <span class="grade">–</span> missing or deliberately out of scope. Source: the repo status audit against <code>monox/nrf52833.svd</code>, suite 201 green.</p>
     <div class="table-scroll">
       <table>
         <caption>micro:bit v2 board hardware → what the bench does</caption>
@@ -77,6 +77,7 @@
           <tr><td>QSPI external flash</td><td class="grade">F</td><td>Registered image, program, erase, take/complete API</td><td>No board chip wired</td><td>Model proven, no consumer</td></tr>
           <tr><td>USB device</td><td class="grade">F</td><td>EPIN/EPOUT pump, USBRESET inject, SETUP inject</td><td>Nothing</td><td><code>air</code> preset pre-signals USBRESET on Run</td></tr>
           <tr><td>Radio 2.4 GHz</td><td class="grade">H</td><td>Two-instance loopback bridge, RSSI and corrupt injects</td><td>No real air</td><td>Bare-metal CODAL datagram surface; no WebBluetooth</td></tr>
+          <tr><td>BLE stack (SoftDevice SVC face + Bumble air bridge)</td><td class="grade">F</td><td>SVC-claimed GAP/GATTC/L2CAP jobs with take/complete pump, GATTS table, pairing handshake, multi-link, live model reads on the BLE panel</td><td>Keys are stubbed (AUTH_STATUS pair is real, crypto is not); no BLE-enabled MPY image exists yet</td><td>Self-test button runs the full SVC flow on loopback; depth probe covers it headless; enable BLE air for the live Bumble peer</td></tr>
         </tbody>
       </table>
     </div>
@@ -99,7 +100,7 @@
           <tr><td>SAADC, PDM, QSPI, NVMC, PPI, I2S, USBD, GPIOTE, NFCT</td><td class="grade">F</td><td>Take/complete pumps, state machines, group dispatch, field detect</td><td>MWU/NFCT beyond proof-level driving</td><td>Every take/complete pair is exported. Mock: limit edges, stream silence plus capture, flash program plus erase, tag tap plus frames, SETUP packet</td></tr>
           <tr><td>ECB, AAR, CCM</td><td class="grade">F</td><td>Take/complete with FIPS-197 and roundtrip proofs</td><td>AAR has no wasm export</td><td>Crypto runs driver-side by design. Mock: FIPS-197 block, resolve, CTR plus MIC</td></tr>
           <tr><td>WDT, QDEC, COMP, MWU, FICR/UICR, GPIO, NVIC/SCB/SysTick/MPU/FPU</td><td class="grade">F</td><td>Expiry and reboot, quadrature, thresholds, region watch, UICR store, CNF→DIR</td><td>FPU has no lazy stacking</td><td>Documented, matches the audit. Mock: knob steps, comparator band edges</td></tr>
-          <tr><td>ACL/SPU, SoftDevice SVCs, nRF FPU engine</td><td class="grade">–</td><td>Reads as zero where probed</td><td>Deliberately out of scope</td><td>Protection, BLE stack synthesis, and the engine alias stay unmodeled</td></tr>
+          <tr><td>ACL/SPU, nRF FPU engine</td><td class="grade">–</td><td>Reads as zero where probed</td><td>Deliberately out of scope</td><td>Protection and the engine alias stay unmodeled</td></tr>
         </tbody>
       </table>
     </div>
@@ -109,7 +110,7 @@
     <ul>
       <li>Chip core (Rust to WASM): Cortex-M4F plus every nRF52833 peripheral, timed off a single instruction-count clock. Unlisted register offsets read zero and writes are ignored, because real HALs probe reserved registers. Unknown instructions halt loudly — nothing fails quietly.</li>
       <li>Virtual board (JavaScript): the matrix, the LSM303 motion sensor, the SSD1306 OLED, and the serial line. Each part registers its I2C slaves before init, then answers every frame through take/complete transfers and tap events.</li>
-      <li>EASYDMA pump: firmware stages a transfer, the bench moves bytes between guest RAM and the host, then completes it — UARTE, TWIM, SAADC, PDM, I2S, USBD endpoints, NVMC erases (applied as <code>0xFF</code>), and radio loopback. I2C buses belong to the parts, not the generic pump.</li>
+      <li>EASYDMA pump: firmware stages a transfer, the bench moves bytes between guest RAM and the host, then completes it — UARTE, TWIM, SAADC, PDM, I2S, USBD endpoints, NVMC erases (applied as <code>0xFF</code>), radio loopback, and BLE SVC jobs (GAP/GATTC/L2CAP staged, resolved over the Bumble bridge or loopback, GATTS answered synchronously). I2C buses belong to the parts, not the generic pump.</li>
       <li>Reboots: firmware that requests reset via AIRCR is rebooted from the vector table — the app table after a direct-app boot, so MicroPython never falls back into the MBR loop.</li>
     </ul>
 
