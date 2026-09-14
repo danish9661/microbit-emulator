@@ -268,7 +268,10 @@ beyond proof-level driving remain future work.
    `0x3569C` WFE-idle at 300M, DIR0 sticky, TIMER4 untouched). So NO
    member init before the scroll call touches hardware — stall is
    pre-scroll sequencing (main never issues the scroll), not a missed
-   wakeup or display-construct gap. NEXT: why main never calls scroll
+   wakeup or display-construct gap. P91 (2026-09-14, native, reverted):
+   fiber-wait `0x2e4d8` entered+dispatching, no HardFault (CFSR 0,
+   `fault=None` to 300M); `ipsr=3 @0x37f4e` nondeterministic across
+   runs, cause never captured. NEXT: why main never calls scroll
    (event/subscription?); (7,1) producer ID secondary.
     Strobe-OR proof (plan P52): 200-sample OR over +1M post-172M is
     all-zero — truly blank, not a multiplex alias. OUT never produces

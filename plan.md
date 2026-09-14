@@ -2088,3 +2088,43 @@ untested), not a bring-up gate. Next frontier candidates: MakeCode
 scroll content (LEFT-4, pre-scroll sequencing still open) or the
 bootloader full chain (LEFT-3).
 Probes: `p87repl.py` lives in /tmp (ephemeral, not committed).
+
+## 77. P91 MakeCode pre-scroll gate: fiber-wait alive, no HardFault (2026-09-14, uncommitted probe, reverted)
+
+MC91 native probe (direct-app boot + browser-parity pump, 300M, reverted —
+`tmp_mc91.rs` + `mod.rs` hook deleted, 191 green hold). Three legs:
+
+1. Refined sampling: the 1K-quanta trap got 0 hits (stepped clean over the
+   poll); single-step + flag-byte watch at `0x20004373` (literal @`0x2e4ec`)
+   + stack-pivot watch hit. At ~100M the thread unwinds through a
+   handler->thread EXC_RETURN (`ffffffe9`) trail back into `0x2e0f6`/
+   `0x2e4e0` with r5=`0x20004373` (flag byte `0x01`) — the `0x2e4d8`
+   fiber-wait loop (`bl 0x2e0b8`; poll flag bit31; `bl 0x2e100` scheduler
+   dispatch) is entered AND dispatching, not stuck.
+2. Static decode (full `/tmp/mc_full.dis`, `bl`-target grep — the earlier
+   zero-hit grep was a regex/format mismatch, not missing callers):
+   `0x2e0b8` = flag-set + queue-head check (`0x20003b18`) + yield-or-WFE
+   via `0x25c9c` (which parks in `wfe @0x37af8` when nothing pends, else
+   `bx r3` dispatches); `0x2e100` = scheduler dispatch off qhead
+   @`0x20003b08`; `0x31f80` = timed acquire (`bl 0x31ed4` search, halfword
+   @`[r4,#38]` vs 9, marshal + `bl 0x4303a`). Stack words seen at park
+   (`0x31c51/0x2e4e1/0x2e4d9/0x20873`) are UNVALIDATED (no `bl`-check) —
+   not a call chain, do not cite.
+3. Passive HardFault gate (no single-step distortion, 100M->300M, CFSR/HFSR/
+   stacked-PC dump on `ipsr==3` inside vector[3] window): `fault=None`
+   throughout, CFSR=0; per-round `ipsr=0` at every 20M sample (WFE
+   `0x37afa`, RAM `0x2000207a` 200-260M, back to WFE). `ipsr=3 @0x37f4e`
+   (default-handler self-loop, vector3=`0x37f4f`) appears in SOME runs
+   only — nondeterministic across identical binaries (wall-clock DRDY
+   pulse reschedules); cause never captured with CFSR set (one-shot gate
+   burned its budget while the CPU slept in WFE and exited before the
+   ~100-120M transition). Note: the model never latches HFSR.FORCED (no
+   ED2C write in `cpu/`), so HFSR reads 0 even on a real HF — CFSR is the
+   cause field, and it stayed 0.
+Verdict: no crash behind the blank display; scheduler alive +
+dispatching; gate unchanged = pre-scroll sequencing (main never issues
+scroll; TIMER4 COUNTER 0, DIR0 0, uart 0).
+NEXT: fiber-queue walk — dump the qhead @`0x20003b08` chain + fiber state
+words (`[fiber+#16]` bit31 runnable?, `[#20]`) per round: does the scroll
+fiber exist and is it runnable?
+Probes reverted; 191 green hold.
