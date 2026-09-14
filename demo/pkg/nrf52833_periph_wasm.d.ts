@@ -54,6 +54,22 @@ export function aar_complete(resolved: boolean): void;
 
 export function aar_take_job(): Uint32Array;
 
+export function ble_batt_level(): number;
+
+export function ble_complete_gap_connect(peer: Uint8Array): void;
+
+export function ble_complete_gattc_read(handle: number, offset: number, data: Uint8Array): void;
+
+export function ble_enabled(): boolean;
+
+export function ble_post_adv_report(peer: Uint8Array, rssi: number, data: Uint8Array): void;
+
+export function ble_post_gatts_write(handle: number, uuid16: number, data: Uint8Array): void;
+
+export function ble_queue_len(): number;
+
+export function ble_take_job(): Uint32Array;
+
 export function ccm_complete(mic_ok: boolean): void;
 
 export function ccm_take_job(): Uint32Array;
@@ -163,6 +179,14 @@ export function radio_inject_corrupt(bytes: Uint8Array): void;
 export function radio_inject_rx(bytes: Uint8Array): void;
 
 /**
+ * Inject a received packet addressed to a DAB/DAP entry (air peer).
+ * Convenience over inject_rx for the two-instance bridge: the first
+ * byte is the device-address byte the match unit checks (DEVMATCH
+ * when it equals a programmed, listened DAB entry).
+ */
+export function radio_inject_rx_to(dab_idx: number, bytes: Uint8Array): void;
+
+/**
  * Set the 802.15.4 energy-detect sample level in dBm (negative).
  * Reported via EDSAMPLE on the next EDSTART; defaults to RSSI level.
  */
@@ -245,6 +269,14 @@ export interface InitOutput {
     readonly __wbg_wasmcpu_free: (a: number, b: number) => void;
     readonly aar_complete: (a: number) => void;
     readonly aar_take_job: (a: number) => void;
+    readonly ble_batt_level: () => number;
+    readonly ble_complete_gap_connect: (a: number, b: number) => void;
+    readonly ble_complete_gattc_read: (a: number, b: number, c: number, d: number) => void;
+    readonly ble_enabled: () => number;
+    readonly ble_post_adv_report: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly ble_post_gatts_write: (a: number, b: number, c: number, d: number) => void;
+    readonly ble_queue_len: () => number;
+    readonly ble_take_job: (a: number) => void;
     readonly ccm_complete: (a: number) => void;
     readonly ccm_take_job: (a: number) => void;
     readonly comp_set_input_mv: (a: number) => void;
@@ -290,6 +322,7 @@ export interface InitOutput {
     readonly radio_complete_tx: () => void;
     readonly radio_inject_corrupt: (a: number, b: number) => void;
     readonly radio_inject_rx: (a: number, b: number) => void;
+    readonly radio_inject_rx_to: (a: number, b: number, c: number) => void;
     readonly radio_set_ed_dbm: (a: number) => void;
     readonly radio_set_rssi_dbm: (a: number) => void;
     readonly radio_take_rx: (a: number) => void;

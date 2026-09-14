@@ -347,6 +347,91 @@ export function aar_take_job() {
 }
 
 /**
+ * @returns {number}
+ */
+export function ble_batt_level() {
+    const ret = wasm.ble_batt_level();
+    return ret;
+}
+
+/**
+ * @param {Uint8Array} peer
+ */
+export function ble_complete_gap_connect(peer) {
+    const ptr0 = passArray8ToWasm0(peer, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.ble_complete_gap_connect(ptr0, len0);
+}
+
+/**
+ * @param {number} handle
+ * @param {number} offset
+ * @param {Uint8Array} data
+ */
+export function ble_complete_gattc_read(handle, offset, data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.ble_complete_gattc_read(handle, offset, ptr0, len0);
+}
+
+/**
+ * @returns {boolean}
+ */
+export function ble_enabled() {
+    const ret = wasm.ble_enabled();
+    return ret !== 0;
+}
+
+/**
+ * @param {Uint8Array} peer
+ * @param {number} rssi
+ * @param {Uint8Array} data
+ */
+export function ble_post_adv_report(peer, rssi, data) {
+    const ptr0 = passArray8ToWasm0(peer, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    wasm.ble_post_adv_report(ptr0, len0, rssi, ptr1, len1);
+}
+
+/**
+ * @param {number} handle
+ * @param {number} uuid16
+ * @param {Uint8Array} data
+ */
+export function ble_post_gatts_write(handle, uuid16, data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.ble_post_gatts_write(handle, uuid16, ptr0, len0);
+}
+
+/**
+ * @returns {number}
+ */
+export function ble_queue_len() {
+    const ret = wasm.ble_queue_len();
+    return ret >>> 0;
+}
+
+/**
+ * @returns {Uint32Array}
+ */
+export function ble_take_job() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.ble_take_job(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * @param {boolean} mic_ok
  */
 export function ccm_complete(mic_ok) {
@@ -829,6 +914,20 @@ export function radio_inject_rx(bytes) {
     const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
     wasm.radio_inject_rx(ptr0, len0);
+}
+
+/**
+ * Inject a received packet addressed to a DAB/DAP entry (air peer).
+ * Convenience over inject_rx for the two-instance bridge: the first
+ * byte is the device-address byte the match unit checks (DEVMATCH
+ * when it equals a programmed, listened DAB entry).
+ * @param {number} dab_idx
+ * @param {Uint8Array} bytes
+ */
+export function radio_inject_rx_to(dab_idx, bytes) {
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.radio_inject_rx_to(dab_idx, ptr0, len0);
 }
 
 /**
