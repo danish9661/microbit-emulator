@@ -5,6 +5,7 @@ mod system;
 pub mod peripherals;
 pub mod ext_devices;
 pub mod cpu;
+pub mod sd_ble;
 
 use system::WasmSystem;
 
@@ -263,6 +264,15 @@ pub fn radio_inject_rx(bytes: &[u8]) {
     crate::peripherals::radio_nrf::inject_rx(sys(), bytes.to_vec());
 }
 
+/// Inject a received packet addressed to a DAB/DAP entry (air peer).
+/// Convenience over inject_rx for the two-instance bridge: the first
+/// byte is the device-address byte the match unit checks (DEVMATCH
+/// when it equals a programmed, listened DAB entry).
+#[wasm_bindgen]
+pub fn radio_inject_rx_to(dab_idx: usize, bytes: &[u8]) {
+    crate::peripherals::radio_nrf::inject_rx_to(sys(), dab_idx, bytes.to_vec());
+}
+
 #[wasm_bindgen]
 pub fn radio_inject_corrupt(bytes: &[u8]) {
     crate::peripherals::radio_nrf::inject_corrupt(sys(), bytes.to_vec());
@@ -480,6 +490,65 @@ pub fn nvmc_take_erase() -> Vec<u32> {
 #[wasm_bindgen]
 pub fn nvmc_complete_erase() {
     crate::peripherals::nvmc_nrf::complete_erase(sys());
+}
+
+// ── SoftDevice BLE SVC face (GAP/GATTS/GATTC over the Bumble air bridge) ──
+#[wasm_bindgen]
+pub fn ble_take_job() -> Vec<u32> {
+    match crate::sd_ble::take_job() {
+        Some(crate::sd_ble::BleJob::GattcRead { conn, handle, offset }) => {
+            vec![0, conn as u32, handle as u32, offset as u32]
+        }
+        Some(crate::sd_ble::BleJob::GapConnect { addr }) => {
+            let mut v = vec![1u32];
+            v.extend(addr.iter().map(|&b| b as u32));
+            v
+        }
+        None => Vec::new(),
+    }
+}
+
+#[wasm_bindgen]
+pub fn ble_complete_gattc_read(handle: u16, offset: u16, data: &[u8]) {
+    crate::sd_ble::complete_gattc_read(handle, offset, data);
+}
+
+#[wasm_bindgen]
+pub fn ble_complete_gap_connect(peer: &[u8]) {
+    let mut addr = [0u8; 6];
+    for (i, &b) in peer.iter().take(6).enumerate() {
+        addr[i] = b;
+    }
+    crate::sd_ble::complete_gap_connect(addr);
+}
+
+#[wasm_bindgen]
+pub fn ble_post_adv_report(peer: &[u8], rssi: i8, data: &[u8]) {
+    let mut addr = [0u8; 6];
+    for (i, &b) in peer.iter().take(6).enumerate() {
+        addr[i] = b;
+    }
+    crate::sd_ble::post_adv_report(addr, rssi, data);
+}
+
+#[wasm_bindgen]
+pub fn ble_post_gatts_write(handle: u16, uuid16: u16, data: &[u8]) {
+    crate::sd_ble::post_gatts_write(handle, uuid16, data);
+}
+
+#[wasm_bindgen]
+pub fn ble_enabled() -> bool {
+    crate::sd_ble::is_enabled()
+}
+
+#[wasm_bindgen]
+pub fn ble_queue_len() -> u32 {
+    crate::sd_ble::queue_len() as u32
+}
+
+#[wasm_bindgen]
+pub fn ble_batt_level() -> u8 {
+    crate::sd_ble::batt_level()
 }
 
 // ── I2C bus taps (JS hardware layer: LSM303 accel/mag) ──
