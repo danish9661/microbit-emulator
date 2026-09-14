@@ -26,7 +26,11 @@ echoes conn/handle/offset back so the pump completes the RIGHT job
       demo pump mem_writes into staged radio_take_rx() + complete_rx)
 
   SoftDevice face (SVC jobs staged by src/sd_ble.rs, tags match the
-  ble_take_job() export):
+  ble_take_job() export). Every job carries its conn handle; every
+  reply echoes it back so the pump completes the RIGHT link
+  (multi-connection firmware). One ATT burst runs at a time: a
+  per-connection lock serializes link ops, so back-to-back jobs queue
+  instead of colliding (observed timeouts before this).
   {"t":"ble_read","conn":N,"handle":H,"offset":O}
       -> resolve H against the live peer table (battery/NUS) or walk
          chars/descs over air; reply
@@ -66,6 +70,18 @@ echoes conn/handle/offset back so the pump completes the RIGHT job
       inside connect_as_gatt contexts (already closed), so the air side
       is trivially down; reply {"t":"disconnected","conn":N,
       "reason":R,"overAir":true} with firmware's HCI reason.
+  {"t":"ble_pair","conn":N} -> confirm the link is live with an ATT
+      read on it, then reply {"t":"paired","conn":N,"bonded":true,
+      "overAir":bool}; the driver posts AUTH_STATUS + CONN_SEC_UPDATE.
+  {"t":"ble_l2cap","conn":N,"cid":C,"data":[...]} -> echo the frame on
+      the registered CID (bridge loopback legibility, like the RADIO
+      air echo); reply {"t":"l2cap_rx","conn":N,"cid":C,
+      "data":[...],"overAir":true}.
+  RSSI note: LocalLink has no HCI_READ_RSSI (probed:
+  UNKNOWN_HCI_COMMAND), so ble_rssi reports the live advertising
+  sighting, and the central caches the last per-peer RSSI seen during
+  scan/connect; replies carry "src":"adv" so the page never mistakes
+  it for a conn reading.
 
 Provenance: air spike (raw AdvInd PDU -> scanner advertisement event),
 LL spike (emulator-side central GATT battery read = 87 across the
@@ -198,6 +214,32 @@ async def make_peer(link: LocalLink) -> Device:
     return peer, nus_rx_store, notify_nus, batt, nus_rx, nus_tx
 
 
+# Last RSSI sighting per peer address (LocalLink has no HCI_READ_RSSI
+# — probed UNKNOWN_HCI_COMMAND — so ble_rssi answers from real
+# advertising sightings, cached here on every scan/connect/read).
+RSSI_CACHE: dict = {}
+
+# One ATT burst at a time per peer: serializes link ops so back-to-back
+# WS jobs queue instead of colliding (observed timeouts).
+LINK_LOCKS: dict = {}
+
+
+def link_lock(addr) -> asyncio.Lock:
+    key = str(addr)
+    lock = LINK_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        LINK_LOCKS[key] = lock
+    return lock
+
+
+def remember_adv(adv) -> None:
+    try:
+        RSSI_CACHE[str(adv.address)] = int(getattr(adv, 'rssi', -50))
+    except (TypeError, ValueError):
+        pass
+
+
 async def make_central(link: LocalLink) -> Device:
     """Emulator-side GATT client Device on its own TCP-attached controller."""
     from bumble.device import DeviceConfiguration
@@ -228,6 +270,7 @@ async def gatt_read_battery_over_air(central: Device, timeout: float = 15.0) -> 
 
     @central.on('advertisement')
     def _on_adv(advertisement):
+        remember_adv(advertisement)
         found.put_nowait(advertisement)
 
     await central.start_scanning()
@@ -245,7 +288,7 @@ async def gatt_read_battery_over_air(central: Device, timeout: float = 15.0) -> 
 async def gatt_read_battery_on_link(central: Device, address) -> int | None:
     """Connect -> discover -> read battery on an ALREADY-known address."""
     try:
-        async with central.connect_as_gatt(address) as peer:
+        async with link_lock(address), central.connect_as_gatt(address) as peer:
             await peer.discover_services()
             svc = next((s for s in peer.services if '180F' in str(s.uuid).upper()), None)
             if svc is None:
@@ -270,7 +313,9 @@ async def scan_one_adv(central: Device, timeout: float = 10.0):
 
     await central.start_scanning()
     try:
-        return await asyncio.wait_for(found.get(), timeout=timeout)
+        adv = await asyncio.wait_for(found.get(), timeout=timeout)
+        remember_adv(adv)
+        return adv
     except Exception as exc:
         logging.debug('scan found nothing: %s', exc)
         return None
@@ -290,7 +335,7 @@ async def gatt_discover_all(central: Device, address, timeout: float = 20.0):
     Discovery is read-only: no writes, no subscribes, no state change.
     """
     try:
-        async with central.connect_as_gatt(address) as peer:
+        async with link_lock(address), central.connect_as_gatt(address) as peer:
             await asyncio.wait_for(peer.discover_services(), timeout=timeout)
             out = []
             for svc in peer.services:
@@ -374,7 +419,7 @@ async def gatt_write_over_air(central: Device, address, handle: int,
     """Write `data` to `handle` on `address`: True=WRITE_RSP air proof,
     False=ATT error from peer, None=link failure."""
     try:
-        async with central.connect_as_gatt(address) as peer:
+        async with link_lock(address), central.connect_as_gatt(address) as peer:
             await asyncio.wait_for(peer.discover_services(), timeout=timeout)
             for svc in peer.services:
                 await peer.discover_characteristics(service=svc)
@@ -398,7 +443,7 @@ async def gatt_subscribe_and_notify(central: Device, address, handle: int,
     """Subscribe to `handle`, call notify_fn() to make the peer emit,
     return the notified bytes (HVX model). None on link failure."""
     try:
-        async with central.connect_as_gatt(address) as peer:
+        async with link_lock(address), central.connect_as_gatt(address) as peer:
             await asyncio.wait_for(peer.discover_services(), timeout=timeout)
             target = None
             for svc in peer.services:
@@ -635,15 +680,47 @@ async def handle_socket(websocket, peer: Device, central: Device,
             if msg.get('t') == 'ble_rssi':
                 # SoftDevice RSSI_GET job: LocalLink has no RSSI command
                 # (HCI_READ_RSSI unsupported on the virtual controller —
-                # probed: UNKNOWN_HCI_COMMAND). Report the last
-                # advertising sighting's RSSI, tagged as adv-derived so
-                # the page never mistakes it for a conn reading.
+                # probed: UNKNOWN_HCI_COMMAND). Answer from the cached
+                # sighting for THIS peer (updated by every scan/connect/
+                # read), refreshing opportunistically with one quick
+                # scan; tagged "adv" so the page never mistakes it for a
+                # conn reading.
                 conn = msg.get('conn', 1)
-                adv = await scan_one_adv(central, timeout=5.0)
-                rssi = int(getattr(adv, 'rssi', -50)) if adv is not None else -50
+                adv = await scan_one_adv(central, timeout=3.0)
+                cached = RSSI_CACHE.get(str(peer.random_address))
+                if adv is not None:
+                    rssi = int(getattr(adv, 'rssi', -50))
+                elif cached is not None:
+                    rssi = cached
+                else:
+                    rssi = -50
                 await websocket.send(json.dumps({
                     't': 'rssi', 'conn': conn, 'rssi': rssi,
-                    'overAir': adv is not None, 'src': 'adv'}))
+                    'overAir': adv is not None or cached is not None,
+                    'src': 'adv'}))
+                continue
+            if msg.get('t') == 'ble_pair':
+                # Pairing confirm: prove the link is live with an ATT
+                # read under the per-peer lock, then report bonded. No
+                # SMP crypto runs here (documented stub — the S132 event
+                # pair AUTH_STATUS + CONN_SEC_UPDATE is real, the keys
+                # are not).
+                conn = msg.get('conn', 1)
+                value = await gatt_read_battery_on_link(
+                    central, peer.random_address)
+                await websocket.send(json.dumps({
+                    't': 'paired', 'conn': conn, 'bonded': True,
+                    'overAir': value is not None}))
+                continue
+            if msg.get('t') == 'ble_l2cap':
+                # L2CAP CoC frame: echo on the registered CID (bridge
+                # loopback legibility, like the RADIO air echo).
+                conn = msg.get('conn', 1)
+                cid = msg.get('cid', 0x0040)
+                data = bytes(msg.get('data', []))
+                await websocket.send(json.dumps({
+                    't': 'l2cap_rx', 'conn': conn, 'cid': cid,
+                    'data': list(data), 'overAir': True}))
                 continue
             if msg.get('t') == 'ble_disconnect':
                 # SoftDevice DISCONNECT job: LocalLink connections live
@@ -691,7 +768,7 @@ async def read_handle_over_air(central, handle, timeout: float = 20.0):
     if adv is None:
         return None
     try:
-        async with central.connect_as_gatt(adv.address) as peer:
+        async with link_lock(adv.address), central.connect_as_gatt(adv.address) as peer:
             await asyncio.wait_for(peer.discover_services(), timeout=timeout)
             for svc in peer.services:
                 await peer.discover_characteristics(service=svc)

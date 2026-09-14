@@ -242,6 +242,119 @@ fn nrf_air_usb_radio_ppi() {
 }
 
 #[test]
+fn nrf_ble_conformance_svc_face() {
+    // BLE conformance firmware (blinky/ble_fw/ble_conformance.c, GCC):
+    // real SVC bytes drive the whole sd_ble face; the native driver
+    // resolves every staged job (take_* -> complete_*), exactly like
+    // the JS pump + Bumble bridge do live. Markers prove each stage;
+    // a 2nd consecutive run proves reset_state leaves no leak.
+    use crate::sd_ble::*;
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    for run in 0..2 {
+        reset_for_test();
+        let _g = lock_boot();
+        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/ble_fw/ble_conformance.bin"));
+        let sys = crate::sys();
+        cpu.deliver_irqs = true;
+        // Phase slices: SMALL slices + pump every slice. The firmware
+        // waits for CONNECTED inside one spin loop (like silicon
+        // firmware); the completion only lands if the driver pumps
+        // mid-spin, so 20K slices would starve it (same lesson as the
+        // demo's 5x20K pumpDma-in-loop, plan P54).
+        for _ in 0..4000 {
+            cpu.run(sys, &mut mem, 500);
+            if cpu.fault.is_some() { break; }
+            let _ = pump_ble_test_driver(sys);
+            let out = crate::system::get_uart_output().lock().unwrap().clone();
+            if out.contains("BLE:ALL-OK") || out.contains("BLE:SOME-FAIL") { break; }
+        }
+        assert!(cpu.fault.is_none(), "ble fw faulted (run {run}): {:?}", cpu.fault);
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        for m in ["BLE:BOOT", "BLE:enable:OK", "BLE:service:OK", "BLE:char:OK",
+                  "BLE:vset:OK", "BLE:vget:OK", "BLE:connect-stage:OK",
+                  "BLE:read-stage:OK", "BLE:prim-stage:OK", "BLE:char-stage:OK",
+                  "BLE:write-stage:OK", "BLE:scan-stage:OK", "BLE:rssi-stage:OK",
+                  "BLE:l2cap-reg:OK", "BLE:l2cap-stage:OK", "BLE:auth-stage:OK",
+                  "BLE:disc-stage:OK", "BLE:evt-get:OK", "BLE:ALL-OK"] {
+            assert!(out.contains(m), "run {run} missing {m}, got {out:?}");
+        }
+        crate::system::reset_globals();
+    }
+}
+
+/// Native test driver for the BLE conformance image: resolve one staged
+/// job per call (loopback legibility: battery 87 + fixed table mirroring
+/// pumpBleLoopback/tools/ble_air_bridge.py). Returns false when idle.
+fn pump_ble_test_driver(sys: &crate::system::System) -> bool {
+    use crate::sd_ble::*;
+    let _ = sys;
+    match take_job() {
+        None => false,
+        Some(BleJob::GapConnect { addr }) => { complete_gap_connect(addr); true }
+        Some(BleJob::GapDisconnect { conn, reason }) => { complete_gap_disconnect(conn, reason); true }
+        Some(BleJob::GapRssiGet { conn }) => { complete_rssi(conn, -50); true }
+        Some(BleJob::GapScanStart) => {
+            post_adv_report([0x11, 0x22, 0x33, 0x44, 0x55, 0x66], -50, false,
+                            &[0x02, 0x01, 0x06, 0x03, 0x03, 0x0F, 0x18]);
+            true
+        }
+        Some(BleJob::GattcPrimDisc { conn, .. }) => {
+            complete_prim_disc(conn, &[DiscService { uuid16: Some(0x180F), start: 0x10, end: 0x16 }]);
+            true
+        }
+        Some(BleJob::GattcCharDisc { conn, .. }) => {
+            complete_char_disc(conn, &[DiscChar { uuid16: Some(0x2A19), props: 0x12, decl: 0x12, value: 0x13 }]);
+            true
+        }
+        Some(BleJob::GattcDescDisc { conn, start, .. }) => {
+            complete_desc_disc(conn, &[DiscDesc { handle: start, uuid16: Some(0x2902) }]);
+            true
+        }
+        Some(BleJob::GattcRead { conn, handle, offset }) => {
+            complete_gattc_read(conn, handle, offset, &[batt_level()]);
+            true
+        }
+        Some(BleJob::GattcWrite { conn, op, handle, data }) => {
+            complete_gattc_write(conn, handle, op, &data);
+            true
+        }
+        Some(BleJob::GattsHvx { conn, handle, .. }) => { complete_hvx(conn, handle); true }
+        Some(BleJob::L2capTx { conn, cid, data }) => { complete_l2cap_rx(conn, cid, &data); true }
+        Some(BleJob::GapAuthenticate { conn }) => { complete_pairing(conn, true); true }
+    }
+}
+
+#[test]
+fn nrf_ble_c_face_markers() {
+    // C-language BLE face (demo/parts/ble_lang/c_ble_face.c, same GCC as
+    // ble_conformance.c): ENABLE -> CONNECT -> CONNECTED-drain (CENTRAL)
+    // -> READ -> READ_RSP=87 drain. Driver pumps between small slices
+    // (firmware spins on evt arrival like silicon firmware).
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    crate::sd_ble::reset_for_test();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/ble_fw/c_ble_face.bin"));
+    let sys = crate::sys();
+    cpu.deliver_irqs = true;
+    for _ in 0..2000 {
+        cpu.run(sys, &mut mem, 500);
+        if cpu.fault.is_some() { break; }
+        let _ = pump_ble_test_driver(sys);
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        if out.contains("C:ALL-OK") || out.contains("C:SOME-FAIL") { break; }
+    }
+    assert!(cpu.fault.is_none(), "c face faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    for m in ["C:BOOT", "C:enable:OK", "C:connect:OK", "C:connected:OK",
+              "C:read:OK", "C:rsp:OK", "C:ALL-OK"] {
+        assert!(out.contains(m), "missing {m}, got {out:?}");
+    }
+    crate::system::reset_globals();
+}
+
+#[test]
 fn nrf_c_irq_timer_uart() {
     // P8a firmware (c_irq_nrf.c, GCC -O2): C vector table, TIMER0 IRQ via
     // NVIC delivery (stacking + EXC_RETURN), UARTE prints from thread and

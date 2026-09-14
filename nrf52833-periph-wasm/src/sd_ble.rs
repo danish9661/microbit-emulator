@@ -193,10 +193,16 @@ pub const SVC_GATTS_SYS_ATTR_SET: u8 = 0xA9;
 pub const SVC_GATTS_SYS_ATTR_GET: u8 = 0xAA;
 pub const SVC_GATTS_INITIAL_USER_HANDLE_GET: u8 = 0xAB;
 pub const SVC_GATTS_ATTR_GET: u8 = 0xAC;
+// L2CAP 0xB0.. (ble_l2cap.h enum order)
+pub const SVC_L2CAP_CID_REGISTER: u8 = 0xB0;
+pub const SVC_L2CAP_CID_UNREGISTER: u8 = 0xB1;
+pub const SVC_L2CAP_TX: u8 = 0xB2;
 
 // ---- event ids (S132 ble_ranges.h series) ----
 pub const EVT_GAP_CONNECTED: u16 = 0x10;
 pub const EVT_GAP_DISCONNECTED: u16 = 0x11;
+pub const EVT_GAP_AUTH_STATUS: u16 = 0x19;
+pub const EVT_GAP_CONN_SEC_UPDATE: u16 = 0x1A;
 pub const EVT_GAP_RSSI_CHANGED: u16 = 0x1C;
 pub const EVT_GAP_ADV_REPORT: u16 = 0x1D;
 pub const EVT_GATTC_PRIM_DISC_RSP: u16 = 0x30;
@@ -211,6 +217,7 @@ pub const EVT_GATTC_WRITE_RSP: u16 = 0x38;
 pub const EVT_GATTC_HVX: u16 = 0x39;
 pub const EVT_GATTS_WRITE: u16 = 0x50;
 pub const EVT_GATTS_HVC: u16 = 0x53;
+pub const EVT_L2CAP_RX: u16 = 0x70;
 
 // ---- return codes (S132 nrf_error.h / ble_err.h) ----
 pub const NRF_SUCCESS: u32 = 0;
@@ -226,7 +233,15 @@ pub const NRF_ERROR_DATA_SIZE: u32 = 12;
 pub const BLE_ERROR_INVALID_CONN_HANDLE: u32 = 0x3002;
 pub const BLE_ERROR_NOT_ENABLED: u32 = 0x3001;
 pub const BLE_ERROR_NO_TX_PACKETS: u32 = 0x3004;
+pub const BLE_ERROR_L2CAP_CID_IN_USE: u32 = 0x3100;
 pub const BLE_CONN_HANDLE_INVALID: u16 = 0xFFFF;
+// L2CAP CIDs (ble_l2cap.h): dynamic range + MTU floor.
+pub const L2CAP_CID_DYN_BASE: u16 = 0x0040;
+pub const L2CAP_CID_DYN_MAX: u16 = 8;
+pub const L2CAP_MTU_DEF: u16 = 23;
+// Security status codes (ble_gap.h SEC_STATUS): SUCCESS + pair-fail.
+pub const SEC_STATUS_SUCCESS: u8 = 0x00;
+pub const SEC_STATUS_PAIRING_NOT_SUPP: u8 = 0x29;
 
 // Roles (ble_gap.h): we initiate the bridge connection -> CENTRAL.
 pub const GAP_ROLE_CENTRAL: u8 = 2;
@@ -320,6 +335,13 @@ pub enum BleJob {
     /// GATTS HVX notify/indicate (SVC 0xA6): struct {handle, type,
     /// offset, *len, *data}; driver emits over air, completes HVC.
     GattsHvx { conn: u16, handle: u16, hvx_type: u8, data: Vec<u8> },
+    /// L2CAP TX (SVC 0xB2): (conn, cid, bytes); driver moves the frame
+    /// over air on the registered CID, completes by echoing RX (loopback
+    /// legibility: same shape as the RADIO air echo).
+    L2capTx { conn: u16, cid: u16, data: Vec<u8> },
+    /// GAP authenticate (SVC 0x7E): (conn). Driver runs the pairing
+    /// handshake over air (bridge confirms); reply SVCs complete it.
+    GapAuthenticate { conn: u16 },
 }
 
 /// Local GATTS attribute-table entry. Handles mirror the SoftDevice
@@ -332,6 +354,36 @@ struct Attr {
     uuid16: Option<u16>,
     value: Vec<u8>,
     cccd: bool,
+}
+
+/// One link. S132 supports several concurrent connections; the old
+/// code had a single global (connected/conn_handle/peer/rssi). Every
+/// per-link field lives here now; the GATTS table stays global (server
+/// side, shared across links like silicon).
+#[derive(Clone, Debug, Default)]
+struct Conn {
+    handle: u16,
+    up: bool,
+    peer_addr: [u8; 6],
+    role: u8,
+    rssi_dbm: i8,
+    tx_count: u8,
+    encrypted: bool,
+    bonded: bool,
+    pairing: Pairing,
+    cids: Vec<u16>,
+}
+
+/// Pairing state per link (honest stub, S132-observable behavior):
+/// silicon runs SMP over air (out of scope for the emulator core —
+/// no crypto, no key storage). Idle = no procedure; Requested =
+/// AUTHENTICATE staged, driver resolves; the reply SVCs then complete
+/// or fail it, posting AUTH_STATUS + CONN_SEC_UPDATE like silicon.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+enum Pairing {
+    #[default]
+    Idle,
+    Requested,
 }
 
 /// SoftDevice BLE SVC state. Process-wide singleton (same pattern as
@@ -348,13 +400,30 @@ pub struct SdBle {
     next_handle: u16,
     vs_uuids: Vec<u8>,
     batt_level: u8,
-    connected: bool,
-    conn_handle: u16,
-    peer_addr: [u8; 6],
+    conns: Vec<Conn>,
+    next_conn: u16,
     own_addr: [u8; 6],
     rssi_dbm: i8,
     tx_count: u8,
     app_ram_base: u32,
+    l2cap_cids: Vec<u16>,
+}
+
+impl Conn {
+    fn fresh(handle: u16, peer: [u8; 6]) -> Self {
+        Conn {
+            handle,
+            up: true,
+            peer_addr: peer,
+            role: GAP_ROLE_CENTRAL,
+            rssi_dbm: -50,
+            tx_count: 4,
+            encrypted: false,
+            bonded: false,
+            pairing: Pairing::Idle,
+            cids: Vec::new(),
+        }
+    }
 }
 
 impl SdBle {
@@ -367,14 +436,43 @@ impl SdBle {
             next_handle: 0x10,
             vs_uuids: Vec::new(),
             batt_level: 87,
-            connected: false,
-            conn_handle: BRIDGE_CONN_HANDLE,
-            peer_addr: [0u8; 6],
+            conns: Vec::new(),
+            next_conn: BRIDGE_CONN_HANDLE,
             own_addr: [0u8; 6],
             rssi_dbm: -50,
             tx_count: 4,
             app_ram_base: 0x2000_2000,
+            l2cap_cids: Vec::new(),
         }
+    }
+
+    fn conn(&self, h: u16) -> Option<&Conn> {
+        self.conns.iter().find(|c| c.handle == h && c.up)
+    }
+
+    fn conn_mut(&mut self, h: u16) -> Option<&mut Conn> {
+        self.conns.iter_mut().find(|c| c.handle == h && c.up)
+    }
+
+    /// First live link (legacy single-conn callers: RSSI sync answer,
+    /// loopback pump). None when no link is up.
+    fn first_conn(&self) -> Option<u16> {
+        self.conns.iter().find(|c| c.up).map(|c| c.handle)
+    }
+
+    /// Legacy compat: the old `connected` bool (any link up).
+    fn connected(&self) -> bool {
+        self.conns.iter().any(|c| c.up)
+    }
+
+    /// Legacy compat: old single `conn_handle` (first live link).
+    fn conn_handle(&self) -> u16 {
+        self.first_conn().unwrap_or(BRIDGE_CONN_HANDLE)
+    }
+
+    /// Legacy compat: old single peer_addr (first live link).
+    fn peer_addr(&self) -> [u8; 6] {
+        self.conns.iter().find(|c| c.up).map(|c| c.peer_addr).unwrap_or([0u8; 6])
     }
 
     fn find_attr(&self, handle: u16) -> Option<&Attr> {
@@ -392,13 +490,61 @@ impl SdBle {
         if conn == BLE_CONN_HANDLE_INVALID {
             return Err(BLE_ERROR_INVALID_CONN_HANDLE);
         }
-        if !self.connected {
-            return Err(NRF_ERROR_INVALID_STATE);
+        match self.conn(conn) {
+            Some(_) => Ok(()),
+            None => {
+                // Unknown handle, or a down link: silicon says
+                // INVALID_CONN_HANDLE for a never-handle, INVALID_STATE
+                // when no link is up at all.
+                if self.conns.iter().any(|c| c.handle == conn) {
+                    Err(NRF_ERROR_INVALID_STATE)
+                } else if self.connected() {
+                    Err(BLE_ERROR_INVALID_CONN_HANDLE)
+                } else {
+                    Err(NRF_ERROR_INVALID_STATE)
+                }
+            }
         }
-        if conn != self.conn_handle {
-            return Err(BLE_ERROR_INVALID_CONN_HANDLE);
+    }
+
+    /// Allocate the next connection handle (wraps, skips live + INVALID).
+    fn alloc_conn(&mut self) -> u16 {
+        for _ in 0..0xFFFE {
+            let h = self.next_conn;
+            self.next_conn = self.next_conn.wrapping_add(1);
+            if self.next_conn == BLE_CONN_HANDLE_INVALID || self.next_conn == 0 {
+                self.next_conn = 1;
+            }
+            if h != BLE_CONN_HANDLE_INVALID && h != 0 && self.conn(h).is_none() {
+                return h;
+            }
         }
-        Ok(())
+        BLE_CONN_HANDLE_INVALID
+    }
+
+    /// Bring a link up (driver completed GAP connect over air).
+    fn link_up(&mut self, peer: [u8; 6]) -> u16 {
+        let h = self.alloc_conn();
+        if h == BLE_CONN_HANDLE_INVALID {
+            return h;
+        }
+        let mut c = Conn::fresh(h, peer);
+        c.rssi_dbm = self.rssi_dbm;
+        c.tx_count = self.tx_count;
+        self.conns.push(c);
+        h
+    }
+
+    /// Tear a link down. Returns the HCI reason echo (unchanged).
+    fn link_down(&mut self, handle: u16) -> bool {
+        match self.conn_mut(handle) {
+            Some(c) => {
+                c.up = false;
+                c.pairing = Pairing::Idle;
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -478,13 +624,13 @@ impl SdBle {
     /// connected{peer{type+6}, own{type+6}, role, irk byte,
     /// conn_params{4xu16 min/max/lat/timeout}}}. Role CENTRAL: we
     /// initiate the bridge connection (ble_gap.h roles).
-    fn connected_payload(&self) -> Vec<u8> {
+    fn connected_payload(conn: u16, peer: [u8; 6], own: [u8; 6]) -> Vec<u8> {
         let mut p = Vec::new();
-        p.extend_from_slice(&self.conn_handle.to_le_bytes());
+        p.extend_from_slice(&conn.to_le_bytes());
         p.push(1); // peer type: random static
-        p.extend_from_slice(&self.peer_addr);
+        p.extend_from_slice(&peer);
         p.push(1); // own type: random static
-        p.extend_from_slice(&self.own_addr);
+        p.extend_from_slice(&own);
         p.push(GAP_ROLE_CENTRAL);
         p.push(0); // irk_match 0 + idx 0
         // conn_params: min/max interval 6 (7.5ms), latency 0, timeout 400.
@@ -652,6 +798,36 @@ impl SdBle {
         p.extend_from_slice(&handle.to_le_bytes());
         p
     }
+
+    /// GAP AUTH_STATUS body (ble_gap.h): {auth_status u8, err_src:2 +
+    /// bonded:1 packed u8, sm1 levels u8, sm2 levels u8, kdist_own u8,
+    /// kdist_peer u8}. Levels byte: sec_mode bit0 + encr key size hi.
+    fn auth_status_payload(status: u8, bonded: bool) -> Vec<u8> {
+        vec![
+            status,
+            if bonded { 0x04 } else { 0x00 },
+            0x01, // sm1: mode1 level1 (open link, like our stub)
+            0x01, // sm2: level1
+            0x00, // kdist_own: nothing exchanged
+            0x00, // kdist_peer: nothing exchanged
+        ]
+    }
+
+    /// GAP CONN_SEC_UPDATE body (ble_gap.h): {sec_mode u8, key_size u8}.
+    /// Mode byte packs sec_mode (open = 1: mode1 level1).
+    fn conn_sec_payload() -> Vec<u8> {
+        vec![0x11, 0x10] // mode1 level1, 16-octet key size
+    }
+
+    /// L2CAP RX body (ble_l2cap.h): {u16 conn, len u16, cid u16, data[]}.
+    fn l2cap_rx_payload(conn: u16, cid: u16, data: &[u8]) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&conn.to_le_bytes());
+        p.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        p.extend_from_slice(&cid.to_le_bytes());
+        p.extend_from_slice(data);
+        p
+    }
 }
 
 /// SVC entry: returns Some(r0) when claimed (caller writes r0 + skips
@@ -729,7 +905,7 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             Some(s.evt_get(mem, dest, p_len))
         }
         x if x == SVC_BLE_TX_PACKET_COUNT_GET => {
-            // (conn, *count): one link, TX_COUNT packets always free.
+            // (conn, *count): per-link free packet budget.
             if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
@@ -740,7 +916,7 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             if !is_ram(p_count) {
                 return Some(NRF_ERROR_INVALID_ADDR);
             }
-            mem.write8(p_count, s.tx_count);
+            mem.write8(p_count, s.conn(conn).map(|c| c.tx_count).unwrap_or(0));
             Some(NRF_SUCCESS)
         }
         x if x == SVC_BLE_UUID_VS_ADD => {
@@ -909,23 +1085,126 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             mem.write16(p_len, 0);
             Some(NRF_SUCCESS)
         }
-        x if x == SVC_GAP_AUTHENTICATE
-            || x == SVC_GAP_SEC_PARAMS_REPLY
-            || x == SVC_GAP_AUTH_KEY_REPLY
-            || x == SVC_GAP_LESC_DHKEY_REPLY
-            || x == SVC_GAP_KEYPRESS_NOTIFY
-            || x == SVC_GAP_LESC_OOB_DATA_GET
-            || x == SVC_GAP_LESC_OOB_DATA_SET
-            || x == SVC_GAP_ENCRYPT
-            || x == SVC_GAP_SEC_INFO_REPLY
-            || x == SVC_GAP_CONN_SEC_GET =>
-        {
-            // Pairing/crypto: no SoftDevice crypto here — refuse like
-            // silicon with no keys (INVALID_STATE), never stage air.
+        x if x == SVC_GAP_AUTHENTICATE => {
+            // Initiate pairing: stage the handshake; the driver runs it
+            // over air (bridge confirms) and completes via
+            // complete_pairing / fail_pairing (AUTH_STATUS + SEC_UPDATE).
             if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
-            Some(NRF_ERROR_INVALID_STATE)
+            let conn = r[0] as u16;
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if let Some(c) = s.conn_mut(conn) {
+                if c.pairing != Pairing::Idle {
+                    return Some(NRF_ERROR_BUSY);
+                }
+                c.pairing = Pairing::Requested;
+            }
+            s.staged = Some(BleJob::GapAuthenticate { conn });
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GAP_SEC_PARAMS_REPLY => {
+            // Reply to SEC_PARAMS_REQUEST: NULL params = reject (silicon
+            // pairs-fail path); non-NULL = accept, driver completes.
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let (conn, status, p_params) = (r[0] as u16, r[1] as u8, r[2]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if p_params != 0 && !is_ram(p_params) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            if status != 0 || p_params == 0 {
+                // Reject: AUTH_STATUS pair-fail, link stays up.
+                s.push_evt(
+                    EVT_GAP_AUTH_STATUS,
+                    SdBle::auth_status_payload(SEC_STATUS_PAIRING_NOT_SUPP, false),
+                );
+                if let Some(c) = s.conn_mut(conn) {
+                    c.pairing = Pairing::Idle;
+                }
+                return Some(NRF_SUCCESS);
+            }
+            // Accept: mark requested; the driver handshake completes it.
+            if let Some(c) = s.conn_mut(conn) {
+                c.pairing = Pairing::Requested;
+            }
+            s.staged = Some(BleJob::GapAuthenticate { conn });
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GAP_AUTH_KEY_REPLY
+            || x == SVC_GAP_LESC_DHKEY_REPLY
+            || x == SVC_GAP_KEYPRESS_NOTIFY
+            || x == SVC_GAP_ENCRYPT
+            || x == SVC_GAP_SEC_INFO_REPLY =>
+        {
+            // Key/encrypt replies complete an outstanding pairing
+            // request; with none outstanding there is nothing to reply
+            // to (silicon INVALID_STATE).
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let conn = r[0] as u16;
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            match s.conn(conn) {
+                Some(c) if c.pairing == Pairing::Requested => Some(NRF_SUCCESS),
+                _ => Some(NRF_ERROR_INVALID_STATE),
+            }
+        }
+        x if x == SVC_GAP_LESC_OOB_DATA_GET => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let (conn, p_own) = (r[0] as u16, r[2]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            // OOB data is 16B confirm + 16B random: zeroed stub (no real
+            // crypto — documented; the handshake still completes).
+            if p_own != 0 {
+                if !is_ram(p_own) {
+                    return Some(NRF_ERROR_INVALID_ADDR);
+                }
+                for i in 0..32u32 {
+                    mem.write8(p_own.wrapping_add(i), 0);
+                }
+            }
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GAP_LESC_OOB_DATA_SET => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let conn = r[0] as u16;
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GAP_CONN_SEC_GET => {
+            // (conn, *conn_sec{sec_mode, key_size}): report open link
+            // (mode1 level1) or encrypted-after-pairing per link.
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let (conn, p_sec) = (r[0] as u16, r[1]);
+            if !is_ram(p_sec) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let (mode, size) = match s.conn(conn) {
+                None => return Some(BLE_ERROR_INVALID_CONN_HANDLE),
+                Some(c) if c.encrypted => (0x21u8, 16u8),
+                Some(_) => (0x11u8, 16u8),
+            };
+            mem.write8(p_sec, mode);
+            mem.write8(p_sec.wrapping_add(1), size);
+            Some(NRF_SUCCESS)
         }
         x if x == SVC_GAP_RSSI_START || x == SVC_GAP_RSSI_STOP => {
             if require_enabled(s).is_err() {
@@ -950,9 +1229,10 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
                 return Some(NRF_ERROR_INVALID_ADDR);
             }
             s.staged = Some(BleJob::GapRssiGet { conn });
-            // Synchronous legibility: report last air RSSI now; the
-            // completion posts RSSI_CHANGED for the event drain.
-            mem.write8(p_rssi, s.rssi_dbm as u8);
+            // Synchronous legibility: report the link's last air RSSI
+            // now; the completion posts RSSI_CHANGED for the drain.
+            let level = s.conn(conn).map(|c| c.rssi_dbm).unwrap_or(s.rssi_dbm);
+            mem.write8(p_rssi, level as u8);
             Some(NRF_SUCCESS)
         }
         x if x == SVC_GAP_SCAN_START => {
@@ -979,7 +1259,9 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             for i in 0..6u32 {
                 addr[i as usize] = mem.read8(p.wrapping_add(1 + i));
             }
-            if s.connected {
+            // Silicon allows several concurrent links; BUSY only when
+            // a connect procedure is already staged (one at a time).
+            if matches!(s.staged, Some(BleJob::GapConnect { .. })) {
                 return Some(NRF_ERROR_BUSY);
             }
             s.staged = Some(BleJob::GapConnect { addr });
@@ -1335,10 +1617,16 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
                 }
                 d
             };
-            // Indications without ..., notifications need TX packets:
-            // one link => TX_COUNT>0 always here, else NO_TX_PACKETS.
-            if hvx_type == GATT_HVX_NOTIFICATION && s.tx_count == 0 {
+            // Notifications need TX packets on THIS link (silicon
+            // NO_TX_PACKETS); indications ride the ATT confirm path.
+            let budget = s.conn(conn).map(|c| c.tx_count).unwrap_or(0);
+            if hvx_type == GATT_HVX_NOTIFICATION && budget == 0 {
                 return Some(BLE_ERROR_NO_TX_PACKETS);
+            }
+            if let Some(c) = s.conn_mut(conn) {
+                if hvx_type == GATT_HVX_NOTIFICATION && c.tx_count > 0 {
+                    c.tx_count -= 1;
+                }
             }
             s.staged = Some(BleJob::GattsHvx { conn, handle, hvx_type, data });
             Some(NRF_SUCCESS)
@@ -1361,6 +1649,67 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
                 return Some(NRF_ERROR_INVALID_ADDR);
             }
             mem.write16(p, s.next_handle);
+            Some(NRF_SUCCESS)
+        }
+        // ---- L2CAP (SVC 0xB0..): CoC CID register + TX stage ----
+        x if x == SVC_L2CAP_CID_REGISTER => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let cid = r[0] as u16;
+            // Dynamic range only (silicon INVALID_PARAM below it).
+            if cid < L2CAP_CID_DYN_BASE || cid >= L2CAP_CID_DYN_BASE + L2CAP_CID_DYN_MAX {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            if s.l2cap_cids.contains(&cid) {
+                return Some(BLE_ERROR_L2CAP_CID_IN_USE);
+            }
+            if s.l2cap_cids.len() >= L2CAP_CID_DYN_MAX as usize {
+                return Some(NRF_ERROR_NO_MEM);
+            }
+            s.l2cap_cids.push(cid);
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_L2CAP_CID_UNREGISTER => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let cid = r[0] as u16;
+            match s.l2cap_cids.iter().position(|c| *c == cid) {
+                Some(i) => {
+                    s.l2cap_cids.remove(i);
+                    Some(NRF_SUCCESS)
+                }
+                None => Some(NRF_ERROR_NOT_FOUND),
+            }
+        }
+        x if x == SVC_L2CAP_TX => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            // (conn, *header{len u16, cid u16}, *data): copy NOW.
+            let (conn, p_hdr, p_data) = (r[0] as u16, r[1], r[2]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if !is_ram(p_hdr) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let (len, cid) = (
+                read_u16_le(mem, p_hdr) as usize,
+                read_u16_le(mem, p_hdr.wrapping_add(2)),
+            );
+            if !s.l2cap_cids.contains(&cid) {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            if len != 0 && !is_ram(p_data) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let mut data = vec![0u8; len.min(512)];
+            for (i, b) in data.iter_mut().enumerate() {
+                *b = mem.read8(p_data.wrapping_add(i as u32));
+            }
+            s.staged = Some(BleJob::L2capTx { conn, cid, data });
             Some(NRF_SUCCESS)
         }
         x if x == SVC_GATTS_ATTR_GET => {
@@ -1466,30 +1815,83 @@ pub fn complete_gattc_hvx(conn: u16, handle: u16, hvx_type: u8, data: &[u8]) {
     });
 }
 
-/// Complete a GAP connect: driver connected over air; marks connected
-/// and posts CONNECTED so sd_ble_evt_get reports the new link.
-pub fn complete_gap_connect(peer: [u8; 6]) {
+/// Complete a GAP connect: driver connected over air; brings a new
+/// link up (fresh handle) and posts CONNECTED so sd_ble_evt_get
+/// reports the new link. Returns the assigned handle (bridge echoes
+/// it back; INVALID when the table is full, which never happens with
+/// 64K handles).
+pub fn complete_gap_connect(peer: [u8; 6]) -> u16 {
     with_sd_ble(|s| {
-        s.connected = true;
-        s.peer_addr = peer;
-        s.push_evt(EVT_GAP_CONNECTED, s.connected_payload());
-    });
+        let h = s.link_up(peer);
+        if h == BLE_CONN_HANDLE_INVALID {
+            return h;
+        }
+        let own = s.own_addr;
+        s.push_evt(EVT_GAP_CONNECTED, SdBle::connected_payload(h, peer, own));
+        h
+    })
 }
 
-/// Complete a GAP disconnect: clears the link, posts DISCONNECTED.
+/// Complete a GAP disconnect: tears the link down, posts DISCONNECTED
+/// with firmware's HCI reason.
 pub fn complete_gap_disconnect(conn: u16, reason: u8) {
     with_sd_ble(|s| {
-        s.connected = false;
+        s.link_down(conn);
         s.push_evt(EVT_GAP_DISCONNECTED, SdBle::disconnected_payload(conn, reason));
     });
 }
 
-/// Complete an RSSI sample: updates the cached level, posts
+/// Complete an RSSI sample: updates the link + cached level, posts
 /// RSSI_CHANGED.
 pub fn complete_rssi(conn: u16, rssi: i8) {
     with_sd_ble(|s| {
+        if let Some(c) = s.conn_mut(conn) {
+            c.rssi_dbm = rssi;
+        }
         s.rssi_dbm = rssi;
         s.push_evt(EVT_GAP_RSSI_CHANGED, SdBle::rssi_changed_payload(conn, rssi));
+    });
+}
+
+/// Complete a pairing handshake the driver ran over air: marks the
+/// link bonded+encrypted and posts AUTH_STATUS (success) plus
+/// CONN_SEC_UPDATE, like silicon after SMP completes.
+pub fn complete_pairing(conn: u16, bonded: bool) {
+    with_sd_ble(|s| {
+        if let Some(c) = s.conn_mut(conn) {
+            c.pairing = Pairing::Idle;
+            c.bonded = bonded;
+            c.encrypted = true;
+        }
+        s.push_evt(
+            EVT_GAP_AUTH_STATUS,
+            SdBle::auth_status_payload(SEC_STATUS_SUCCESS, bonded),
+        );
+        // CONN_SEC_UPDATE envelope: {conn, sec_mode, key_size}.
+        let mut p = conn.to_le_bytes().to_vec();
+        p.extend_from_slice(&SdBle::conn_sec_payload());
+        s.push_evt(EVT_GAP_CONN_SEC_UPDATE, p);
+    });
+}
+
+/// Fail a pairing handshake: posts AUTH_STATUS with the S132 status
+/// (e.g. PAIRING_NOT_SUPP) and leaves the link open, unencrypted —
+/// silicon keeps the connection on pairing failure.
+pub fn fail_pairing(conn: u16, status: u8) {
+    with_sd_ble(|s| {
+        if let Some(c) = s.conn_mut(conn) {
+            c.pairing = Pairing::Idle;
+        }
+        s.push_evt(EVT_GAP_AUTH_STATUS, SdBle::auth_status_payload(status, false));
+    });
+}
+
+/// Complete an L2CAP TX: driver moved the frame over air on the
+/// registered CID; posts RX echo (loopback legibility, same shape as
+/// the RADIO air echo: bridge peers echo CoC frames in tests).
+pub fn complete_l2cap_rx(conn: u16, cid: u16, data: &[u8]) {
+    with_sd_ble(|s| {
+        s.push_evt(EVT_L2CAP_RX, SdBle::l2cap_rx_payload(conn, cid, data));
     });
 }
 
@@ -1540,6 +1942,24 @@ pub fn queue_len() -> usize {
 /// Current battery level in the local GATTS table (debug/export).
 pub fn batt_level() -> u8 {
     with_sd_ble(|s| s.batt_level)
+}
+
+/// Live connection handles, ascending (debug/export/pump routing).
+pub fn conn_handles() -> Vec<u16> {
+    with_sd_ble(|s| {
+        let mut v: Vec<u16> = s.conns.iter().filter(|c| c.up).map(|c| c.handle).collect();
+        v.sort_unstable();
+        v
+    })
+}
+
+/// Connection security [sec_mode, key_size] (debug/export).
+pub fn conn_sec(conn: u16) -> Vec<u8> {
+    with_sd_ble(|s| match s.conn(conn) {
+        None => Vec::new(),
+        Some(c) if c.encrypted => vec![0x21, 16],
+        Some(_) => vec![0x11, 16],
+    })
 }
 
 #[cfg(test)]
@@ -1876,5 +2296,187 @@ mod tests {
         assert_eq!(len, 4 + 2 + 7 + 7 + 1 + 1 + 8, "connected wire size");
         assert_eq!(mem.read16(0x20004004), BRIDGE_CONN_HANDLE);
         assert_eq!(mem.read8(0x20004014), GAP_ROLE_CENTRAL, "we dial out");
+    }
+
+    #[test]
+    fn l2cap_register_tx_unregister_roundtrip() {
+        let sys = test_dummy_system();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        reset_for_test();
+        let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
+        // Static CID below the dynamic base: silicon INVALID_PARAM.
+        let r = regs(0x0004, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_L2CAP_CID_REGISTER, &r),
+            Some(NRF_ERROR_INVALID_PARAM)
+        );
+        // Register a dynamic CID; double-register = CID_IN_USE.
+        let r = regs(0x0040, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_L2CAP_CID_REGISTER, &r),
+            Some(NRF_SUCCESS)
+        );
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_L2CAP_CID_REGISTER, &r),
+            Some(BLE_ERROR_L2CAP_CID_IN_USE)
+        );
+        // TX stages with bytes copied at SVC time (header {len, cid}).
+        mem.write16(0x20001000, 3); // len
+        mem.write16(0x20001002, 0x0040); // cid
+        mem.write8(0x20001010, 0xAA);
+        mem.write8(0x20001011, 0xBB);
+        mem.write8(0x20001012, 0xCC);
+        let r = regs(1, 0x20001000, 0x20001010, 0);
+        // Not connected yet: INVALID_STATE (silicon rule, no link).
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_L2CAP_TX, &r),
+            Some(NRF_ERROR_INVALID_STATE)
+        );
+        connect(&sys, &mut mem);
+        let r = regs(1, 0x20001000, 0x20001010, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_L2CAP_TX, &r), Some(NRF_SUCCESS));
+        mem.write8(0x20001010, 0); // corrupt source: staged keeps copy
+        assert_eq!(
+            take_job(),
+            Some(BleJob::L2capTx { conn: 1, cid: 0x0040, data: vec![0xAA, 0xBB, 0xCC] })
+        );
+        complete_l2cap_rx(1, 0x0040, &[0xAA, 0xBB, 0xCC]);
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_L2CAP_RX));
+        assert_eq!(len, 4 + 2 + 2 + 2 + 3, "hdr + conn/len/cid + 3B");
+        assert_eq!(mem.read16(0x20003004), 1, "conn");
+        assert_eq!(mem.read16(0x20003008), 0x0040, "cid echo");
+        assert_eq!(mem.read8(0x2000300A), 0xAA, "frame byte 0");
+        // Unregistered CID: TX refuses INVALID_PARAM, nothing staged.
+        let r = regs(0x0041, 0, 0, 0);
+        let _ = handle_svc(&sys, &mut mem, SVC_L2CAP_CID_UNREGISTER, &r);
+        mem.write16(0x20001002, 0x0041);
+        let r = regs(1, 0x20001000, 0x20001010, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_L2CAP_TX, &r),
+            Some(NRF_ERROR_INVALID_PARAM)
+        );
+        assert_eq!(take_job(), None, "refused TX stages nothing");
+        // Unregister twice: second is NOT_FOUND.
+        let r = regs(0x0040, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_L2CAP_CID_UNREGISTER, &r),
+            Some(NRF_SUCCESS)
+        );
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_L2CAP_CID_UNREGISTER, &r),
+            Some(NRF_ERROR_NOT_FOUND)
+        );
+    }
+
+    #[test]
+    fn pairing_request_reply_complete_lifecycle() {
+        let sys = test_dummy_system();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        reset_for_test();
+        let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
+        connect(&sys, &mut mem);
+        // AUTHENTICATE stages the handshake (BUSY while outstanding).
+        let r = regs(1, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_AUTHENTICATE, &r), Some(NRF_SUCCESS));
+        assert_eq!(take_job(), Some(BleJob::GapAuthenticate { conn: 1 }));
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_AUTHENTICATE, &r),
+            Some(NRF_ERROR_BUSY)
+        );
+        // Key reply with a request outstanding: accepted (driver owns it).
+        let r = regs(1, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_AUTH_KEY_REPLY, &r),
+            Some(NRF_SUCCESS)
+        );
+        // Driver completes over air: AUTH_STATUS success + SEC_UPDATE.
+        complete_pairing(1, true);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_AUTH_STATUS));
+        assert_eq!(mem.read8(0x20003004), SEC_STATUS_SUCCESS);
+        assert_eq!(mem.read8(0x20003005) & 0x04, 0x04, "bonded bit");
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_CONN_SEC_UPDATE));
+        // Link now encrypted: CONN_SEC_GET reports mode1 + 16-octet key.
+        mem.write8(0x20003100, 0);
+        mem.write8(0x20003101, 0);
+        let r = regs(1, 0x20003100, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_CONN_SEC_GET, &r), Some(NRF_SUCCESS));
+        assert_eq!(mem.read8(0x20003100), 0x21, "encrypted mode");
+        assert_eq!(mem.read8(0x20003101), 16);
+        // SEC_PARAMS_REPLY reject path: NULL params -> pair-fail event,
+        // link stays up unencrypted (fresh link to show it).
+        connect(&sys, &mut mem);
+        let h2 = conn_handles().into_iter().max().unwrap();
+        let r = regs(h2 as u32, 1, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_SEC_PARAMS_REPLY, &r),
+            Some(NRF_SUCCESS)
+        );
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_AUTH_STATUS));
+        assert_eq!(mem.read8(0x20003004), SEC_STATUS_PAIRING_NOT_SUPP);
+        // Rejected link still connected: reads stage fine.
+        let r = regs(h2 as u32, 0x13, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_READ, &r), Some(NRF_SUCCESS));
+        let _ = take_job();
+    }
+
+    #[test]
+    fn multi_conn_handles_isolated_state() {
+        let sys = test_dummy_system();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        reset_for_test();
+        let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
+        // Two links up: handles differ, both live.
+        connect(&sys, &mut mem);
+        connect(&sys, &mut mem);
+        let hs = conn_handles();
+        assert_eq!(hs.len(), 2, "two live links, got {hs:?}");
+        assert_ne!(hs[0], hs[1]);
+        // Per-link RSSI: sample each, each sync answer is its own.
+        for &h in &hs {
+            mem.write8(0x20003100, 0);
+            let r = regs(h as u32, 0x20003100, 0, 0);
+            assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_RSSI_GET, &r), Some(NRF_SUCCESS));
+            assert_eq!(take_job(), Some(BleJob::GapRssiGet { conn: h }));
+            complete_rssi(h, -60 - h as i8);
+            // Drain the RSSI_CHANGED now: completions queue in order,
+            // so the later DISCONNECTED assert sees its own event.
+            let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+            assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_RSSI_CHANGED));
+            assert_eq!(mem.read16(0x20003004), h, "rssi carries its conn");
+        }
+        // Reads on each handle stage with THAT conn attached.
+        for &h in &hs {
+            let r = regs(h as u32, 0x13, 0, 0);
+            assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_READ, &r), Some(NRF_SUCCESS));
+            assert_eq!(take_job(), Some(BleJob::GattcRead { conn: h, handle: 0x13, offset: 0 }));
+        }
+        // Unknown handle with links up: INVALID_CONN_HANDLE.
+        let r = regs(0x77, 0x13, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTC_READ, &r),
+            Some(BLE_ERROR_INVALID_CONN_HANDLE)
+        );
+        // Disconnect the first: second stays live, events carry handles.
+        let r = regs(hs[0] as u32, 19, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_DISCONNECT, &r), Some(NRF_SUCCESS));
+        complete_gap_disconnect(hs[0], 19);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_DISCONNECTED));
+        assert_eq!(mem.read16(0x20003004), hs[0], "event carries its conn");
+        assert_eq!(conn_handles(), vec![hs[1]], "one link left");
+        // Down handle now: INVALID_STATE (was live, now torn down).
+        let r = regs(hs[0] as u32, 0x13, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTC_READ, &r),
+            Some(NRF_ERROR_INVALID_STATE)
+        );
+        // Survivor still stages.
+        let r = regs(hs[1] as u32, 0x13, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_READ, &r), Some(NRF_SUCCESS));
+        let _ = take_job();
     }
 }

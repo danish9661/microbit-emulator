@@ -582,6 +582,8 @@
       else if (tag === 6 || tag === 7) { job.conn = bj[1]; job.start = bj[2]; job.end = bj[3]; }
       else if (tag === 8) { job.conn = bj[1]; job.op = bj[2]; job.handle = bj[3]; job.data = [...wasm.ble_take_data()]; }
       else if (tag === 9) { job.conn = bj[1]; job.handle = bj[2]; job.type = bj[3]; job.data = [...wasm.ble_take_data()]; }
+      else if (tag === 10) { job.conn = bj[1]; job.cid = bj[2]; job.data = [...wasm.ble_take_data()]; }
+      else if (tag === 11) { job.conn = bj[1]; }
       if (!bleAir.sendBle(job)) pumpBleLoopback(tag, job);
     }
     // Drain bridge SoftDevice replies into completions (take->complete,
@@ -614,6 +616,11 @@
         wasm.ble_complete_gap_disconnect(air.conn ?? 1, air.reason ?? 19);
       } else if (air.t === 'rssi' && typeof air.rssi === 'number') {
         wasm.ble_complete_rssi(air.conn ?? 1, air.rssi);
+      } else if (air.t === 'paired') {
+        if (air.overAir === false) wasm.ble_fail_pairing(air.conn ?? 1, 0x29);
+        else wasm.ble_complete_pairing(air.conn ?? 1, air.bonded !== false);
+      } else if (air.t === 'l2cap_rx' && Array.isArray(air.data)) {
+        wasm.ble_complete_l2cap_rx(air.conn ?? 1, air.cid ?? 0x40, air.data);
       } else if (air.t === 'cancel') {
         // Link failure: never a ghost event. Reads fall back to the
         // local battery byte (loopback legibility); writes/disc/hvx
@@ -647,6 +654,10 @@
       wasm.ble_complete_gattc_write(job.conn ?? 1, job.handle ?? 0, job.op ?? 1, job.data ?? []);
     } else if (tag === 9) {
       wasm.ble_complete_hvx(job.conn ?? 1, job.handle ?? 0);
+    } else if (tag === 10) {
+      wasm.ble_complete_l2cap_rx(job.conn ?? 1, job.cid ?? 0x40, job.data ?? []);
+    } else if (tag === 11) {
+      wasm.ble_complete_pairing(job.conn ?? 1, true);
     }
   }
   function frame() {

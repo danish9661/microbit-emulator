@@ -506,6 +506,8 @@ pub fn nvmc_complete_erase() {
 //   7 GattcDescDisc [conn, start, end]
 //   8 GattcWrite [conn, op, handle, len] + ble_take_data() bytes
 //   9 GattsHvx [conn, handle, type, len] + ble_take_data() bytes
+//   10 L2capTx [conn, cid, len] + ble_take_data() bytes
+//   11 GapAuthenticate [conn] (pairing handshake over air)
 #[wasm_bindgen]
 pub fn ble_take_job() -> Vec<u32> {
     match crate::sd_ble::take_job() {
@@ -539,6 +541,11 @@ pub fn ble_take_job() -> Vec<u32> {
             crate::sd_ble::stage_take_data(data.clone());
             vec![9, conn as u32, handle as u32, hvx_type as u32, data.len() as u32]
         }
+        Some(crate::sd_ble::BleJob::L2capTx { conn, cid, ref data }) => {
+            crate::sd_ble::stage_take_data(data.clone());
+            vec![10, conn as u32, cid as u32, data.len() as u32]
+        }
+        Some(crate::sd_ble::BleJob::GapAuthenticate { conn }) => vec![11, conn as u32],
         None => Vec::new(),
     }
 }
@@ -639,6 +646,50 @@ pub fn ble_complete_rssi(conn: u16, rssi: i8) {
 #[wasm_bindgen]
 pub fn ble_complete_hvx(conn: u16, handle: u16) {
     crate::sd_ble::complete_hvx(conn, handle);
+}
+
+/// Complete a GAP connect: driver connected over air; returns the
+/// assigned connection handle (INVALID when the table is full).
+#[wasm_bindgen]
+pub fn ble_complete_gap_connect_ret(peer: &[u8]) -> u16 {
+    let mut addr = [0u8; 6];
+    for (i, &b) in peer.iter().take(6).enumerate() {
+        addr[i] = b;
+    }
+    crate::sd_ble::complete_gap_connect(addr)
+}
+
+/// Complete a pairing handshake the driver ran over air: posts
+/// AUTH_STATUS (success) + CONN_SEC_UPDATE, marks link bonded.
+#[wasm_bindgen]
+pub fn ble_complete_pairing(conn: u16, bonded: bool) {
+    crate::sd_ble::complete_pairing(conn, bonded);
+}
+
+/// Fail a pairing handshake: posts AUTH_STATUS with the S132 status
+/// (e.g. 0x29 PAIRING_NOT_SUPP); link stays up, unencrypted.
+#[wasm_bindgen]
+pub fn ble_fail_pairing(conn: u16, status: u8) {
+    crate::sd_ble::fail_pairing(conn, status);
+}
+
+/// Complete an L2CAP TX: posts the RX echo on (conn, cid).
+#[wasm_bindgen]
+pub fn ble_complete_l2cap_rx(conn: u16, cid: u16, data: &[u8]) {
+    crate::sd_ble::complete_l2cap_rx(conn, cid, data);
+}
+
+/// Live connection handles (each u16 one link). Empty = no links.
+#[wasm_bindgen]
+pub fn ble_conn_handles() -> Vec<u16> {
+    crate::sd_ble::conn_handles()
+}
+
+/// Connection security: [sec_mode, key_size] for the link
+/// (mode 0x11 open, 0x21 encrypted-after-pairing).
+#[wasm_bindgen]
+pub fn ble_conn_sec(conn: u16) -> Vec<u8> {
+    crate::sd_ble::conn_sec(conn)
 }
 
 #[wasm_bindgen]

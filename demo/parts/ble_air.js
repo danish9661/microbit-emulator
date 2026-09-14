@@ -129,7 +129,8 @@ export class BleAir {
     } else if (msg.t === 'gatt' || msg.t === 'write_rsp' || msg.t === 'prim_disc_rsp'
         || msg.t === 'char_disc_rsp' || msg.t === 'desc_disc_rsp' || msg.t === 'hvx'
         || msg.t === 'connected' || msg.t === 'adv_report' || msg.t === 'disconnected'
-        || msg.t === 'rssi' || msg.t === 'cancel' || msg.t === 'written') {
+        || msg.t === 'rssi' || msg.t === 'cancel' || msg.t === 'written'
+        || msg.t === 'paired' || msg.t === 'l2cap_rx') {
       // SoftDevice-facing air replies: queued for the BLE pump below,
       // which completes the matching staged job (take/complete, no
       // cross-talk: every reply echoes conn/handle back). 'gatt' also
@@ -160,7 +161,9 @@ export class BleAir {
   // SoftDevice face: ask the bridge to resolve one staged BLE job
   // over air. The job object mirrors the ble_take_job() tags (see
   // lib.rs): {tag, conn, handle, offset, op, data, kind, start, end,
-  // type, addr}. Replies arrive as queued air messages handled above.
+  // type, addr, cid, reason}. Replies arrive as queued air messages
+  // handled above. Every message carries its conn so the pump
+  // completes the right link (multi-connection firmware).
   sendBle(job) {
     if (!this.ws || this.ws.readyState !== 1) return false;
     const m = { t: 'ble_read', conn: job.conn ?? 1, handle: job.handle ?? 0x13, offset: job.offset ?? 0 };
@@ -175,6 +178,8 @@ export class BleAir {
       case 7: m.t = 'ble_disc'; m.kind = 3; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
       case 8: m.t = 'ble_write'; m.op = job.op ?? 1; m.handle = job.handle ?? 0; m.data = [...(job.data ?? [])]; break;
       case 9: m.t = 'ble_hvx'; m.handle = job.handle ?? 0; m.type = job.type ?? 1; m.data = [...(job.data ?? [])]; break;
+      case 10: m.t = 'ble_l2cap'; m.cid = job.cid ?? 0x40; m.data = [...(job.data ?? [])]; break;
+      case 11: m.t = 'ble_pair'; break;
       default: return false;
     }
     this.ws.send(JSON.stringify(m));

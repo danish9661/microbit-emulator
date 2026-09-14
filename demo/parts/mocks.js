@@ -695,6 +695,8 @@ export class MockBleSvc {
     else if (tag === 7) w.ble_complete_desc_disc(bj[1], [0x14], [0x2902]);
     else if (tag === 8) w.ble_complete_gattc_write(bj[1], bj[3], bj[2], [...w.ble_take_data()]);
     else if (tag === 9) w.ble_complete_hvx(bj[1], bj[2]);
+    else if (tag === 10) w.ble_complete_l2cap_rx(bj[1], bj[2], [...w.ble_take_data()]);
+    else if (tag === 11) w.ble_complete_pairing(bj[1], true);
     return true;
   }
   poll(cpu) {
@@ -756,6 +758,23 @@ export class MockBleSvc {
     const wr = this.drainEvt(cpu);
     if (!wr || wr.id !== 0x38) throw new Error('WRITE_RSP missing');
     this.seen.writeRsp = true;
+    // 7b. L2CAP: register CID, TX a frame, drain RX echo, unregister.
+    ok(this.svc(cpu, 0xB0, 0x40, 0, 0), 'l2cap_register');
+    cpu.mem_write(0x20001600, [0x03, 0x00, 0x40, 0x00]); // header{len=3, cid}
+    cpu.mem_write(0x20001610, [0xDE, 0xAD, 0xBE]);
+    ok(this.svc(cpu, 0xB2, 1, 0x20001600, 0x20001610), 'l2cap_tx');
+    this.resolveJob();
+    const l2 = this.drainEvt(cpu);
+    if (!l2 || l2.id !== 0x70) throw new Error('L2CAP_RX missing');
+    if ((l2.body[4] | (l2.body[5] << 8)) !== 0x40 || l2.body[6] !== 0xDE) throw new Error('L2CAP echo transposed');
+    // 7c. AUTHENTICATE -> resolve (paired) -> drain AUTH_STATUS + SEC_UPDATE.
+    ok(this.svc(cpu, 0x7E, 1, 0, 0), 'authenticate');
+    this.resolveJob();
+    const au = this.drainEvt(cpu);
+    if (!au || au.id !== 0x19) throw new Error('AUTH_STATUS missing');
+    const su = this.drainEvt(cpu);
+    if (!su || su.id !== 0x1A) throw new Error('CONN_SEC_UPDATE missing');
+    this.seen.paired = true;
     // 8. SCAN_START -> resolve -> drain ADV_REPORT (padded layout).
     ok(this.svc(cpu, BLE_SVC.SCAN_START, 0), 'scan');
     this.resolveJob();
@@ -775,7 +794,7 @@ export class MockBleSvc {
     if (!dc || dc.id !== 0x11 || dc.body[2] !== 19) throw new Error('DISCONNECTED missing');
     if (this.drainEvt(cpu) !== null) throw new Error('queue not drained');
     this.seen.full = true;
-    this.done = this.seen.gatts && this.seen.connected && this.seen.readRsp && this.seen.writeRsp && this.seen.full;
+    this.done = this.seen.gatts && this.seen.connected && this.seen.readRsp && this.seen.writeRsp && this.seen.paired && this.seen.full;
     void cpu;
   }
 }
