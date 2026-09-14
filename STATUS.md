@@ -281,9 +281,15 @@ beyond proof-level driving remain future work.
    node @`0x20003b3c` present in every dump (heap NOT empty),
    `0x2e99c` is not malloc (all 10 callers clobber r0; live args
    `r0=4/10` are sleep/wait codes), `0x35664: r0=0x20002c10`
-   (TWIM1-base driver object, not uBit). NEXT: awake-gated trap on
-   raise path `0x2e084` + waiter entry `0x2e410`, or static decode of
-   `0x35664`'s caller chain.
+   (TWIM1-base driver object, not uBit). P97 (2026-09-14, native,
+   reverted): `0x35664` statically = member-getter on `[obj+20]`
+   slots (`0x104/0x148/0x15c`), one consuming `bl @0x358c8` + four
+   `b.w` tails; `0x2e084` = flag-gated forward to pump `0x2e01c`;
+   `0x2e410` = NULL-or-flag-gated pump entry (one static `bl`
+   `@0x31f62`, live entries via runtime `blx`). Dynamic trap got
+   ZERO windows — quantum-boundary sampling can't catch the awake
+   bursts (park pc always WFE `0x37afa`). NEXT: wait-queue-OBJECT
+   walk, else park LEFT-4 → LEFT-3 bootloader chain.
     Strobe-OR proof (plan P52): 200-sample OR over +1M post-172M is
     all-zero — truly blank, not a multiplex alias. OUT never produces
     an on-phase; init stalls before display construction.

@@ -2258,3 +2258,64 @@ present, no malloc in path, no NULL-create observed). Waiter-nature of
 decode of `0x35664`'s caller chain (`bl 0x35664 @0x358c8`,
 `b.w` sites `0x357dc/0x35808/0x358b4/0x358e4`).
 Probes reverted; 191 green hold.
+
+## 81. P97 static + awake-gated dynamic: waiter shape decoded, trap starved by WFE duty (2026-09-14, uncommitted probe, reverted)
+
+Static leg (no probe, `/tmp/mc_full.dis` only):
+
+1. `0x35664` caller chain: ONE `bl` site `@0x358c8` (`mov r1,#0x15c;
+   mov r4,r0; bl 0x35664; cbz r0→0x358d2` — retval CONSUMED, so this
+   call's return is a nullable pointer) + four `b.w` TAIL calls
+   (`0x357dc/0x35808/0x358b4/0x358e4`, all with `r1=#0x104/0x148/0x15c`
+   slot immediates + `pop`-then-branch epilogues). Head:
+   `ldr r3,[r0,#20]; uxth r6,r1; ldr r2,[r3,r6]` = slot-table lookup
+   on `[obj+20]` (r0=obj `0x20002c10` live, r1=slot `0x104` live) —
+   a member-getter, not a fiber creator (only TWO `bl 0x2e99c`
+   sleep/wait calls inside, both retvals ignored). NULL path `0x3573a`
+   (`movs r4,#0; b 0x35722`) vs complete path `0x3573e`
+   (`ldr r3,[r5,#0]; ldr r2,[r5,#16]; ldr r3,[r3,#60]; ldr r1,[r5,#12];
+   blx r3` = virtual dispatch + `b 0x35722` shared return) — the live
+   park sits between them, never reaching either.
+2. Raise `0x2e084`: `ldr r3,[0x2e0a4]=[0x20004373]; ldrb; and #1;
+   beq 0x2e0a0-ret0` else `push{r4}; shuffle(r1,r2); pop r4 into
+   caller slot; b.w 0x2e01c` — flag-gated FORWARD to the pump
+   `0x2e01c`, sharing the wait queue @`0x20003b18` (literals `0x2e0b4`/
+   `0x2e080`). Waiter `0x2e410`: `cmp r0,#0; beq 0x2e49a-ret-1000`
+   else flag @`0x20004373` (via `0x2e4ac`), run queue @`0x20003b08`
+   (via `0x2e4a0`), `bl 0x2e01c` pump call — a NULL-or-flag-gated
+   pump ENTRY, not a bare event id wait.
+3. `bl 0x2e410` has exactly ONE static site (`@0x31f62`, inside the
+   `0x31f00` acquire loop `ldr r4,[r4,#36]`); all per-round parked
+   entries arrive via the runtime-constructed `blx`/`bx` dispatch
+   (`0x2e466 blx r5`, `0x2711c blx r4`), so waiter-entry trapping must
+   be by pc, not by caller.
+
+Dynamic leg (P97 probe, P91 pump parity, reverted — `tmp_mc97.rs` +
+`mod.rs` hook deleted, 191 green hold): two-level design (20K-quanta
+level-1 + ≤3000-insn awake-only level-2, 6 windows). Result: 300M,
+`fault=None`, but ZERO windows and ZERO trap hits. Cause: per-round
+park pc is ALWAYS the WFE `0x37afa` and `!cpu.sleeping` is false at
+every 20K boundary — the trigger never fires because the main-thread
+work (pump region, waiter entries, RAM delay `0x20002078/7a`) all
+happens INSIDE the quantum between samples. Widening the trigger to
+dispatch/fiber-wait/RAM pcs fired 24 windows in 0M, all inside the
+PXT RAM delay loop (`0x20002078/7a`, RAM-resident — no flash disasm,
+handler never entered). So the trap geometry is proven wrong, not the
+hypothesis: quantum-boundary sampling cannot catch microsecond-scale
+awake bursts.
+Verdict: waiter-nature of `0x2e410` STILL open. Method options ranked:
+(a) exact-pc break via a `mem.read`-side hook or IPSR/pc-change poll
+inside the quantum (cheap: check `cpu.regs.r[15]` after each
+`run(…,1)` — no, that IS the distortion; instead shrink quanta to
+~200 with pump parity and accept ~100x slowdown for ONE 20M round);
+(b) static-only: decode `0x2e01c` pump + `0x2e314` scheduler entry and
+name the waiter from its queue args (`0x20003b18` wait-queue walk at
+park — P92 dumped heads only, never the waiter OBJECTS on it);
+(c) park LEFT-4 now: pre-scroll sequencing root-caused to
+"main parked in pump waiter, scroll never constructed", display path
+fully characterized as never-touched (TIMER4 0, DIR0 0).
+NEXT (decision for next session): (b)-then-(c) — one wait-queue-object
+walk is the cheapest remaining evidence; if it names a sensor/display
+event id, trap THAT raise site, else park LEFT-4 and switch to LEFT-3
+bootloader chain.
+Probes reverted; 191 green hold.
