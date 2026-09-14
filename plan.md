@@ -2172,3 +2172,40 @@ dump `0x20004373`-adjacent event state + the `0x35664` member-null
 inputs (r0/r5 at the `0x35696` NULL check): is the display member NULL
 (construct skipped) or is the event subscription missing?
 Probes reverted; 191 green hold.
+
+## 79. P93 member-vs-event: the bus pump itself never runs (2026-09-14, uncommitted probe, reverted)
+
+MC93 native probe (P92 recipe + waiter/member dumps, 300M, reverted —
+`tmp_mc93.rs` + `mod.rs` hook deleted, 191 green hold):
+
+1. Waiter inputs (parked main TCB, P92 layout): R0=`0x20006248`
+   (= its OWN TCB pointer, not an event id), R1=0, R2=`0x200063d8`
+   (fiber struct), R3=`0x2000621c` (self). So `0x2e410` was entered
+   via the `bl 0x2e01c` pump path (`r5→r0` message object, `r1`=listener
+   list head), NOT via `fiber_wait_for_event(id,value)` — P92's
+   "event-wait" label was wrong. Main is inside
+   `EventModel::send`→`0x2e450 blx r5` (listener invoke) → the listener
+   blocked (`0x2e484 bl 0x2e314` scheduler entry), i.e. main is
+   delivering/posting an event whose listener parks it.
+2. Heap-guard lasers (the `0x30770` fiber-create pattern:
+   `cbz r6→0x307bc` heap-empty exit; pool words @`0x20003b3c`/
+   @`0x20003b38`; size halfword @`0x20002079`): @20M `b38=0x20`
+   (32 = heap EMPTY — every block consumed), `b3c=0x20002598`,
+   `size2079=0xfd38` (GC'd halfword pair `3801/fd38`, live heap, not
+   zeros). So a later `create_fiber`/`0x2e99c` can NEVER succeed — the
+   allocator's free list is drained before the scroll fiber is made.
+   (Whether 0x20 is genuinely-empty vs corrupt-head is open; the
+   `0x307bc` exit reads the same word.)
+3. The `0x35664` region is downstream noise: the parked stack's
+   `0x35697` return is `0x35696 ldr r3,[r5,#20]` (member re-load after
+   the `bl 0x2e99c` fiber-create attempt), and the `0x2e99c→0x30770`
+   trampoline means the create ATTEMPT happened but returned NULL
+   (heap empty) — the `bne 0x3573a` / `beq 0x3570c` exits are the
+   NULL-fiber paths, taken. Display member NULL-ness was never
+   reached: starvation happens one level below, in the allocator.
+Verdict: gate moves to the HEAP — the scroll fiber create fails for
+lack of memory (or a drained free list), not for lack of subscription.
+NEXT: heap walk — dump the free-list head @`0x20003b3c` chain + block
+headers around `0x20002598`: is the heap truly full (leak?) or is the
+free list corrupt (bad free/unlink)?
+Probes reverted; 191 green hold.

@@ -272,11 +272,14 @@ beyond proof-level driving remain future work.
    fiber-wait `0x2e4d8` entered+dispatching, no HardFault (CFSR 0,
    `fault=None` to 300M); `ipsr=3 @0x37f4e` nondeterministic across
    runs, cause never captured. P92 (2026-09-14, native, reverted):
-   run queue = ONE fiber (main, parked in `0x2e410` event-wait,
+   run queue = ONE fiber (main, parked in `0x2e410` waiter,
    TCB LR `0x2e453`); sleep queue = 2 fibers; event-wait EMPTY — the
-   scroll fiber is never CREATED (main parks waiting for an event that
-   never arrives). NEXT: why main never calls scroll
-   (event/subscription?); (7,1) producer ID secondary.
+   scroll fiber is never CREATED. P93 (2026-09-14, native, reverted):
+   main is inside `EventModel::send` listener-invoke (R0=own TCB, not
+   an event id — P92's "event-wait" label was wrong) and the later
+   `create_fiber` returns NULL: heap-guard word `0x20003b38=0x20`
+   (free list drained) at 20M. NEXT: heap walk — truly full (leak?)
+   or corrupt free list?
     Strobe-OR proof (plan P52): 200-sample OR over +1M post-172M is
     all-zero — truly blank, not a multiplex alias. OUT never produces
     an on-phase; init stalls before display construction.
