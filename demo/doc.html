@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Docs and support matrix — micro:bit v2.2 emulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./bench.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <div>
+        <p class="brand-name">micro:bit v2.2 bench</p>
+        <p class="brand-sub">nRF52833 target only. Loader and serial, no DAPLink</p>
+      </div>
+    </div>
+    <nav class="nav" aria-label="Site">
+      <a href="./index.html">Bench</a>
+      <a href="./doc.html" aria-current="page">Docs</a>
+      <a href="./about.html">About</a>
+    </nav>
+    <div class="meters">
+      <span class="pill">docs, support matrix, 191 tests green</span>
+    </div>
+  </div>
+</header>
+<main class="wrap" id="main">
+  <article class="prose">
+    <h1>Docs</h1>
+    <p class="lede">One bench, two layers: the chip core runs your firmware, the virtual board answers it. Below: how to run it, how to drive the board, what it supports, how it is built, and how to check a run.</p>
+
+    <h2>Run firmware</h2>
+    <ol class="steps">
+      <li>Load a <code>.hex</code> or <code>.bin</code> built for flash <code>0x0</code> with ARM GCC and no SoftDevice — or pick a preset from the bench. The loader parses Intel HEX (type-02 and type-04 addressing, up to 512 KB) and collects <code>0x1000xxxx</code> records as UICR bytes for later; a <code>.bin</code> loads raw at zero. Staging parses and holds the image; nothing executes yet.</li>
+      <li>Press Run. Staging boots through the same <code>bootImage</code> path as a dropped file: re-register taps, build the model, create the CPU from the vector-table SP/PC, load firmware at zero, enable IRQ delivery, apply UICR words. The status line names the vectors it booted.</li>
+      <li>For stock MicroPython, press Boot MicroPython app: the page re-inits pristine (frames between load and click leave dirty timers and NVIC state), re-applies UICR, hand-installs the MBR parameter page (<code>*(0x20000000)=0x1000</code>, <code>*(0x20000004)=0x1C000</code>) the way a real MBR-to-SoftDevice boot would, sanity-checks the vectors at <code>0x1C000</code>, and resets the CPU there. Banner follows on the console.</li>
+    </ol>
+    <p>If Run reports nothing staged, Load a file or pick a preset first. If MicroPython reports no vector table, the image at <code>0x1C000</code> is blank or erased (<code>0xFFFFFFFF</code>). If it reports no <em>valid</em> app, the SP/PC fail the gate (SP inside <code>0x20000000–0x20020000</code>, PC inside <code>0x1C000–0x80000</code>) — the bench refuses to jump into the weeds and says so.</p>
+
+    <h2>Drive the board</h2>
+    <p>Every control on the bench answers through the same peripheral path real firmware uses — there are no shortcuts.</p>
+    <ul>
+      <li>Matrix: the 5×5 grid renders rows sunk low and columns driven high, gated on direction set to output. A toggling latch on an input pin stays dark, exactly as on silicon. Content appears only once firmware constructs the display and starts the TIMER4 strobe.</li>
+      <li>Buttons A and B: pointer down drives the pin low, release returns it high (active-low with pull-ups, <code>P0.14/P0.23</code>). A held button reads pressed across reset because input latches survive re-init.</li>
+      <li>Motion: the Tilt X/Y sliders set the accelerometer in milli-g (Z stays at 1000); Shake randomizes all three axes. The part answers <code>WHO_AM_I</code>, echoes control writes, and pulses data-ready on <code>P0.25</code> — 60 ms low, 140 ms high — because a stuck low trips the shared KL27 threshold and firmware re-polls.</li>
+      <li>Console: type and press Enter to send. Bytes drip one per consumed event and mirror into the DMA ring, the way silicon paces single-slot RX. Bulk-completing early would stall input, so the bench never does.</li>
+      <li>OLED scope: any edge-I2C firmware talking to address <code>0x3C</code> on TWIM0 draws into the 128×64 framebuffer on the page.</li>
+      <li>Speedometer: the header shows slice rate plus sustained average since boot. Tight spins burst high while banner progress needs sustained throughput — trust the average.</li>
+    </ul>
+
+    <h2>Board support matrix</h2>
+    <p>Status key: <span class="grade">F</span> runs timed with interrupts and a firmware proof, <span class="grade">H</span> answers the handshake minimum with no timed behavior or no consumer, <span class="grade">–</span> missing or deliberately out of scope. Source: the repo status audit against <code>monox/nrf52833.svd</code>, suite 191 green.</p>
+    <div class="table-scroll">
+      <table>
+        <caption>micro:bit v2 board hardware → what the bench does</caption>
+        <thead>
+          <tr><th scope="col">Board feature</th><th scope="col">Status</th><th scope="col">What works</th><th scope="col">What is left</th><th scope="col">Remark</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>5×5 LED matrix (TIMER4 + GPIOTE/PPI)</td><td class="grade">F</td><td>DIR+OUT gated render from <code>P0/P1 OUT</code></td><td>Content never drawn pre-scroll</td><td>Init stalls before first show; a toggling latch on an input pin stays dark, as on silicon</td></tr>
+          <tr><td>Buttons A/B (<code>P0.14/P0.23</code>, active-low)</td><td class="grade">F</td><td>Press and release drive inputs; level-poll proof prints <code>BTN:1/0</code></td><td>Nothing</td><td><code>input_state</code> survives re-init, so a held button reads pressed across reset</td></tr>
+          <tr><td>LSM303AGR accel <code>0x19</code> + mag <code>0x1E</code> (TWIM1)</td><td class="grade">F</td><td><code>WHO_AM_I 0x33/0x40</code>, STATUS data-ready, CTRL echo, live tilt</td><td>Nothing</td><td>DRDY pulses 60 ms low / 140 ms high on <code>P0.25</code>; a stuck low trips the shared KL27 threshold</td></tr>
+          <tr><td>KL27 interface, UIPM <code>0x70</code></td><td class="grade">H</td><td>Empty frame answers version probes so boot proceeds</td><td>No real interface behavior</td><td>DAPLink itself is never emulated; this page is the loader</td></tr>
+          <tr><td>KL27 USB flash <code>0x39</code> (shifted <code>0x72</code>)</td><td class="grade">H</td><td>Request-echo frames exit each transact on the first attempt</td><td>No real flash-chip behavior</td><td>Zero bytes read as busy and burned the whole pre-banner boot; echo fixed it</td></tr>
+          <tr><td>Edge I2C + SSD1306 OLED add-on (TWIM0, <code>0x3C</code>)</td><td class="grade">F</td><td>Init, fill, framebuffer and DMA paths render to the scope</td><td>Nothing</td><td>128×64 GDDRAM model</td></tr>
+          <tr><td>Edge SPI (P13–P16, SPIM2/3)</td><td class="grade">H</td><td>MISO routing and DMA frames reach the tap API</td><td>No edge-SPI part wired</td><td>No consumer yet, by decision</td></tr>
+          <tr><td>USB serial (UARTE0)</td><td class="grade">F</td><td>Console drain plus paced RX drip with DMA mirror</td><td>Nothing</td><td>Bulk-completing RX early stalls input, so bytes drip one at a time</td></tr>
+          <tr><td>Speaker, microphone, logo touch</td><td class="grade">–</td><td>Pins mapped</td><td>No audio, mic, or touch parts</td><td>Only if REPL audio matters</td></tr>
+          <tr><td>NFC antenna</td><td class="grade">H</td><td>Pins work as GPIO</td><td>No antenna model</td><td>UICR NFCPINS-as-GPIO path noted</td></tr>
+          <tr><td>Power, deep sleep (WFE/WFI)</td><td class="grade">F</td><td>Sleep-aware pump: <code>tick_n</code> plus wake on pending IRQ</td><td>Nothing</td><td>Without it the core naps forever at first idle</td></tr>
+          <tr><td>QSPI external flash</td><td class="grade">F</td><td>Registered image, program, erase, take/complete API</td><td>No board chip wired</td><td>Model proven, no consumer</td></tr>
+          <tr><td>USB device</td><td class="grade">F</td><td>EPIN/EPOUT pump, USBRESET inject, SETUP inject</td><td>Nothing</td><td><code>air</code> preset pre-signals USBRESET on Run</td></tr>
+          <tr><td>Radio 2.4 GHz</td><td class="grade">H</td><td>Two-instance loopback bridge, RSSI and corrupt injects</td><td>No real air</td><td>Bare-metal CODAL datagram surface; no WebBluetooth</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>Chip peripheral matrix</h2>
+    <p>Every nRF52833 peripheral in the SVD, same status key. Unlisted offsets read as zero and writes are ignored, because real HALs probe reserved registers.</p>
+    <div class="table-scroll">
+      <table>
+        <caption>nRF52833 peripherals → model coverage</caption>
+        <thead>
+          <tr><th scope="col">Peripheral</th><th scope="col">Status</th><th scope="col">What works</th><th scope="col">What is left</th><th scope="col">Remark</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>CLOCK + POWER (<code>0x40000000</code>)</td><td class="grade">F</td><td>HF/LF STARTED, USB detect and ready, RESETREAS, GPREGRET, RAMSTATUS</td><td>Nothing</td><td>AIRCR SYSRESETREQ reboots and self-clears</td></tr>
+          <tr><td>RADIO (<code>0x40001000</code>)</td><td class="grade">F</td><td>TX take, RX completion and inject, CRC error, RSSI, SHORTS, 802.15.4 helpers</td><td>Real air</td><td>Loopback proof green</td></tr>
+          <tr><td>UARTE0 + UARTE1</td><td class="grade">F</td><td>TX DMA, RXDMA ring, OVERRUN, ERROR, TXSTOPPED</td><td>No dedicated UARTE1 firmware proof</td><td>STARTTX snapshots bytes synchronously so late takes cannot smear them</td></tr>
+          <tr><td>TWIM/TWI/SPIM/SPIS/TWIS/SPI families</td><td class="grade">F</td><td>SHORTS, NACK without slave, slave engines, MISO routing, shifted-address match</td><td>Nothing</td><td>nrfx shifted addresses normalize to 7-bit</td></tr>
+          <tr><td>TIMER0–4</td><td class="grade">F</td><td>Prescaler, bitmode, SHORTS-CLEAR, CAPTURE snapshots, interrupts</td><td>TIMER4 never starts in MakeCode</td><td>Display never constructed — not a timer gap</td></tr>
+          <tr><td>RTC0–2, TEMP, RNG, EGU, PWM</td><td class="grade">F</td><td>Full instances, driver-settable values where applicable</td><td>Thinnest proofs (one handshake each)</td><td>Depth, not coverage, is the gap</td></tr>
+          <tr><td>SAADC, PDM, QSPI, NVMC, PPI, I2S, USBD, GPIOTE, NFCT</td><td class="grade">F</td><td>Take/complete pumps, state machines, group dispatch, field detect</td><td>MWU/NFCT beyond proof-level driving</td><td>Every take/complete pair is exported</td></tr>
+          <tr><td>ECB, AAR, CCM</td><td class="grade">F</td><td>Take/complete with FIPS-197 and roundtrip proofs</td><td>AAR has no wasm export</td><td>Crypto runs driver-side by design</td></tr>
+          <tr><td>WDT, QDEC, COMP, MWU, FICR/UICR, GPIO, NVIC/SCB/SysTick/MPU/FPU</td><td class="grade">F</td><td>Expiry and reboot, quadrature, thresholds, region watch, UICR store, CNF→DIR</td><td>FPU has no lazy stacking</td><td>Documented, matches the audit</td></tr>
+          <tr><td>ACL/SPU, SoftDevice SVCs, nRF FPU engine</td><td class="grade">–</td><td>Reads as zero where probed</td><td>Deliberately out of scope</td><td>Protection, BLE stack synthesis, and the engine alias stay unmodeled</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h2>How the bench is built</h2>
+    <p>The page runs a loop you can read in one sitting. Each animation frame steps the core five times — <code>cpu.step(20000)</code>, <code>tick_peripherals()</code>, then the DMA pump — because duties once per frame starve polled firmware: a one-byte transfer staged at slice zero would wait a hundred thousand instructions for completion. When firmware naps in <code>WFE/WFI</code>, the loop advances virtual time and wakes on a pending interrupt; without that the core sleeps forever at its first idle. Faults break the sub-loop and name the program counter on the status line.</p>
+    <ul>
+      <li>Chip core (Rust to WASM): Cortex-M4F plus every nRF52833 peripheral, timed off a single instruction-count clock. Unlisted register offsets read zero and writes are ignored, because real HALs probe reserved registers. Unknown instructions halt loudly — nothing fails quietly.</li>
+      <li>Virtual board (JavaScript): the matrix, the LSM303 motion sensor, the SSD1306 OLED, and the serial line. Each part registers its I2C slaves before init, then answers every frame through take/complete transfers and tap events.</li>
+      <li>EASYDMA pump: firmware stages a transfer, the bench moves bytes between guest RAM and the host, then completes it — UARTE, TWIM, SAADC, PDM, I2S, USBD endpoints, NVMC erases (applied as <code>0xFF</code>), and radio loopback. I2C buses belong to the parts, not the generic pump.</li>
+      <li>Reboots: firmware that requests reset via AIRCR is rebooted from the vector table — the app table after a direct-app boot, so MicroPython never falls back into the MBR loop.</li>
+    </ul>
+
+    <h2>Checks before you trust a run</h2>
+    <ul>
+      <li>Suite green: run <code>cargo test</code> in the crate directory (191 green) and <code>node demo/parts/smoke.mjs</code> for the parts.</li>
+      <li>Rebuild the package after Rust changes with <code>wasm-pack build</code> into <code>demo/pkg</code>, then serve over HTTP — <code>file://</code> cannot load the wasm module.</li>
+      <li>Firmware proofs rebuild with the GCC flags in <code>docs/README.md</code>; the C recipe is verified bit-identical.</li>
+    </ul>
+  </article>
+</main>
+<footer class="colophon">
+  <nav aria-label="Footer">
+    <a href="./index.html">Bench</a>
+    <a href="./doc.html">Docs and support matrix</a>
+    <a href="./about.html">About and scope</a>
+  </nav>
+  <p>Matrix source: repo status audit, 2026-09-12, plus P86–P97 firmware runs. Counts: 191 tests green, parts smoke green.</p>
+</footer>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>About and scope — micro:bit v2.2 emulator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./bench.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <div>
+        <p class="brand-name">micro:bit v2.2 bench</p>
+        <p class="brand-sub">nRF52833 target only. Loader and serial, no DAPLink</p>
+      </div>
+    </div>
+    <nav class="nav" aria-label="Site">
+      <a href="./index.html">Bench</a>
+      <a href="./doc.html">Docs</a>
+      <a href="./about.html" aria-current="page">About</a>
+    </nav>
+    <div class="meters">
+      <span class="pill">about, scope, method</span>
+    </div>
+  </div>
+</header>
+<main class="wrap" id="main">
+  <article class="prose">
+    <h1>About this bench</h1>
+    <p class="lede">A lab bench for one board: the BBC micro:bit v2.2 and its nRF52833. It boots real firmware built for flash zero and shows what the silicon would do — matrix, buttons, sensors, serial — with nothing simulated beyond the chip and its parts.</p>
+
+    <h2>What it is</h2>
+    <p>The bench is two layers. The chip core is Rust compiled to WASM: Cortex-M4F plus every nRF52833 peripheral, timed off one instruction-count clock. The virtual board is JavaScript: the LED matrix, the LSM303 motion sensor, the OLED add-on, and the serial line. Firmware stages a transfer, the bench moves the bytes, then completes it — the same take/complete round trip for UARTE, TWIM, SAADC, PDM, USBD, NVMC, radio, I2S, NFCT, and the crypto engines.</p>
+    <p>It boots MicroPython v2.1.2 to a working REPL, runs MakeCode builds to scheduler idle, and passes twelve GCC-built firmware proofs plus a parts smoke test. Suite reads 191 green.</p>
+
+    <h2>What it is not</h2>
+    <ul>
+      <li>No DAPLink or interface MCU. This page is the loader and the USB serial line.</li>
+      <li>No SoftDevice event synthesis and no BLE stack. Bare-metal radio works; pairing needs a BLE-enabled image first.</li>
+      <li>No STM32, no UNO R4, no speaker, mic, touch, or NFC antenna models. Pins are mapped; parts are not built.</li>
+      <li>No second clock and no silent faults: unimplemented instructions halt loudly by design.</li>
+    </ul>
+
+    <h2>How to read a run</h2>
+    <ol class="steps">
+      <li>Stage firmware and press Run; the status line names the vector table it booted.</li>
+      <li>Watch the matrix and the console together — a toggling latch on an input pin stays dark, exactly as on silicon.</li>
+      <li>Press A or B, tilt or shake the sensor, type into the console; each answers through the same peripheral path real firmware uses.</li>
+      <li>If the core faults, the status line names the program counter and opcode. Nothing fails quietly here.</li>
+    </ol>
+
+    <h2>Docs and method</h2>
+    <p>The <a href="./doc.html">docs page</a> holds the run recipes and both support matrices — board hardware and chip peripherals, each with what works, what is left, and why. Firmware proofs rebuild with the GCC flags in <code>docs/README.md</code>; the C recipe is verified bit-identical. The JS driver contract is frozen as v1 in <code>demo/API.md</code>.</p>
+  </article>
+</main>
+<footer class="colophon">
+  <nav aria-label="Footer">
+    <a href="./index.html">Bench</a>
+    <a href="./doc.html">Docs and support matrix</a>
+    <a href="./about.html">About and scope</a>
+  </nav>
+  <p>nRF52833 Cortex-M4F at 64 MHz, 512 KB flash, 128 KB RAM. One clock, loud faults, small diffs.</p>
+</footer>
+</body>
+</html>

@@ -1,5 +1,9 @@
 # demo/ — browser front-end + virtual parts (micro:bit v2.2)
 
+Pages: `index.html` (bench: loader + matrix + serial), `doc.html`
+(docs + board/chip support matrices), `about.html` (scope + method).
+One shared sheet: `bench.css` (load it on every page).
+
 `index.html` is the loader + USB-serial replacement for the interface MCU:
 drop a `.hex`/`.bin` (flash @ `0x0`, no SoftDevice), 5×5 matrix renders
 from `P0/P1 OUT`, buttons drive `P0.14/P0.23`, UART box drains `UARTE0`,

@@ -3,57 +3,106 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>micro:bit v2.2 emulator (nRF52833)</title>
-<style>
-  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
-  #matrix { display: grid; grid-template-columns: repeat(5, 44px); gap: 6px; margin: 1rem 0; }
-  .led { width: 44px; height: 44px; border-radius: 6px; background: #222; }
-  .led.on { background: #f00; box-shadow: 0 0 12px #f00; }
-  button { font-size: 1rem; margin-right: .5rem; }
-  #uart { width: 100%; height: 140px; font-family: monospace; }
-  #status { color: #555; }
-</style>
+<title>Bench — micro:bit v2.2 emulator (nRF52833)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./bench.css">
 </head>
 <body>
-<h1>micro:bit v2.2 emulator <small>(nRF52833 target only)</small></h1>
-<p>Drop a <code>.hex/.bin</code> built for flash <code>0x0</code> (ARM GCC, no SoftDevice).
-Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB serial.</p>
-<input type="file" id="fw" accept=".hex,.bin" style="display:none">
-<button id="fwload" title="Pick a .hex/.bin file to stage it (does not boot)">Load firmware…</button>
-<button id="fwrun" title="Boot the staged file (or preset)">Run</button>
-<select id="preset" title="Built-in firmware proofs — run instantly, no file needed">
-  <option value="">preset firmware…</option>
-  <option value="blinky">blinky (UART BOOT/BLINK + GPIO)</option>
-  <option value="sensors">sensors (buttons + TWIM + GPIOTE)</option>
-  <option value="dma">dma (TWIM DMA loopback)</option>
-  <option value="extras">extras (SAADC/TEMP/RNG/PWM)</option>
-  <option value="stubs">stubs (SPIM/PDM/QSPI/USBD/RADIO)</option>
-  <option value="air">air (USB + RADIO loopback + PPI)</option>
-  <option value="cirq">c-irq (C TIMER0 IRQ + UART)</option>
-  <option value="mpy">MicroPython v2.1.2 (built-in, auto-boots)</option>
-</select>
-<span id="status">loading wasm…</span> <span id="mips" title="Emulated instructions per wall-clock second"></span>
-<div id="matrix"></div>
-<div>
-  <button id="btnA">A (P0.14)</button>
-  <button id="btnB">B (P0.23)</button>
-  <button id="reset">Reset</button>
-  <button id="mpyboot" title="Boot the app at 0x1C000 with MBR params (see plan.md P16)">Boot MicroPython app</button>
-</div>
-<h2>Motion (LSM303)</h2>
-<div>
-  <label>Tilt X <input type="range" id="tiltX" min="-1000" max="1000" value="0"></label>
-  <label>Tilt Y <input type="range" id="tiltY" min="-1000" max="1000" value="0"></label>
-  <button id="shake">Shake</button>
-</div>
-<h2>OLED (SSD1306, edge I2C)</h2>
-<canvas id="oled" style="width:256px;height:128px;background:#000"></canvas>
-<h2>UART (UARTE0)</h2>
-<textarea id="uart" readonly></textarea>
-<div>
-  <input type="text" id="uartIn" placeholder="type + Enter to send" style="width:80%">
-  <button id="uartSend">Send</button>
-</div>
+<a class="skip" href="#bench">Skip to the bench</a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="mark" aria-hidden="true"><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i class="lit"></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+      <div>
+        <p class="brand-name">micro:bit v2.2 bench</p>
+        <p class="brand-sub">nRF52833 target only. Loader and serial, no DAPLink</p>
+      </div>
+    </div>
+    <nav class="nav" aria-label="Site">
+      <a href="./index.html" aria-current="page">Bench</a>
+      <a href="./doc.html">Docs</a>
+      <a href="./about.html">About</a>
+    </nav>
+    <div class="meters">
+      <span class="pill" id="status">loading wasm…</span>
+      <span class="readout" id="mips" title="Emulated instructions per wall-clock second"></span>
+    </div>
+  </div>
+</header>
+<main class="wrap" id="bench">
+  <section class="panel loader" aria-labelledby="load-h">
+    <h2 id="load-h">Load firmware, then run it</h2>
+    <p class="sub">Drop a <code>.hex</code> / <code>.bin</code> built for flash <code>0x0</code> (ARM GCC, no SoftDevice). Staging loads nothing into the core; Run boots.</p>
+    <div class="loader-row">
+      <input type="file" id="fw" accept=".hex,.bin" hidden>
+      <button id="fwload" type="button">Load firmware…</button>
+      <button id="fwrun" type="button" class="primary">Run</button>
+      <select id="preset" aria-label="Built-in firmware proofs">
+        <option value="">preset firmware…</option>
+        <option value="blinky">blinky (UART BOOT/BLINK + GPIO)</option>
+        <option value="sensors">sensors (buttons + TWIM + GPIOTE)</option>
+        <option value="dma">dma (TWIM DMA loopback)</option>
+        <option value="extras">extras (SAADC/TEMP/RNG/PWM)</option>
+        <option value="stubs">stubs (SPIM/PDM/QSPI/USBD/RADIO)</option>
+        <option value="air">air (USB + RADIO loopback + PPI)</option>
+        <option value="cirq">c-irq (C TIMER0 IRQ + UART)</option>
+        <option value="mpy">MicroPython v2.1.2 (built-in, auto-boots)</option>
+      </select>
+      <button id="reset" type="button">Reset</button>
+      <button id="mpyboot" type="button" title="Boot the app at 0x1C000 with MBR params (see docs)">Boot MicroPython app</button>
+    </div>
+    <p class="hint">Presets run the same boot path as a dropped file: MBR vectors at <code>0x0</code>, no UICR records. MicroPython continues straight into the direct-app boot at <code>0x1C000</code>.</p>
+  </section>
+  <div class="bench">
+    <section class="panel board" aria-labelledby="dut-h">
+      <h2 id="dut-h">Device under test</h2>
+      <p class="sub">The 5×5 matrix is the only glow on this page. It stays dark until the firmware drives a row low and a column high with direction set to output.</p>
+      <div class="board-tag" aria-hidden="true"><span>DUT NRF52833</span><span>64 MHz, 512K / 128K</span></div>
+      <div id="matrix" role="img" aria-label="5 by 5 LED matrix"></div>
+      <div class="btn-row">
+        <button id="btnA" type="button">A</button>
+        <button id="btnB" type="button">B</button>
+        <span class="pin-note">A P0.14, B P0.23, active-low</span>
+      </div>
+      <h3>Motion (LSM303)</h3>
+      <div class="tilt">
+        <label>Tilt X <input type="range" id="tiltX" min="-1000" max="1000" value="0"> <output id="tiltXv" for="tiltX">0</output></label>
+        <label>Tilt Y <input type="range" id="tiltY" min="-1000" max="1000" value="0"> <output id="tiltYv" for="tiltY">0</output></label>
+      </div>
+      <div class="btn-row" style="margin-top:.7rem">
+        <button id="shake" type="button">Shake</button>
+      </div>
+    </section>
+    <div class="side">
+      <section class="panel" aria-labelledby="uart-h">
+        <h2 id="uart-h">Serial console (UARTE0)</h2>
+        <p class="sub">Drains the firmware UART. Type below and press Enter; bytes drip one per consumed event, as on silicon.</p>
+        <div class="console-face">
+          <textarea id="uart" readonly aria-label="Firmware serial output"></textarea>
+        </div>
+        <div class="send-row">
+          <input type="text" id="uartIn" placeholder="type + Enter to send" aria-label="Send to firmware">
+          <button id="uartSend" type="button" class="primary">Send</button>
+        </div>
+      </section>
+      <section class="panel" aria-labelledby="oled-h">
+        <h2 id="oled-h">OLED scope (SSD1306, edge I2C)</h2>
+        <p class="sub">128×64 add-on on TWIM0, address <code>0x3C</code>.</p>
+        <canvas id="oled" width="128" height="64"></canvas>
+      </section>
+    </div>
+  </div>
+</main>
+<footer class="colophon">
+  <nav aria-label="Footer">
+    <a href="./index.html">Bench</a>
+    <a href="./doc.html">Docs and support matrix</a>
+    <a href="./about.html">About and scope</a>
+  </nav>
+  <p>nRF52833 only. Interface MCU (DAPLink) is not emulated: this page is the loader and the USB serial line.</p>
+</footer>
 <script type="module">
   import init, * as wasm from './pkg/nrf52833_periph_wasm.js';
   import { ROWS, COLS, INTERNAL } from './parts/pins.js';
@@ -82,9 +131,11 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
   });
   // Tilt sliders drive the virtual accelerometer (mg).
   const tilt = { x: 0, y: 0 };
-  for (const [id, k] of [['tiltX', 'x'], ['tiltY', 'y']]) {
+  const tiltXv = document.getElementById('tiltXv'), tiltYv = document.getElementById('tiltYv');
+  for (const [id, k, out] of [['tiltX', 'x', tiltXv], ['tiltY', 'y', tiltYv]]) {
     document.getElementById(id).addEventListener('input', (e) => {
       tilt[k] = parseInt(e.target.value, 10);
+      if (out) out.value = String(tilt[k]);
       parts[0].setAccel({ x: tilt.x, y: tilt.y, z: 1000 });
     });
   }
@@ -210,7 +261,7 @@ Interface MCU (DAPLink) is <em>not</em> emulated: this page is the loader + USB 
     mipsBootN = 0; mipsBootT = performance.now();
     status.textContent = `running (SP=${sp.toString(16)} PC=${pc.toString(16)})`;
   }
-  // MicroPython direct-app boot (plan.md P16 recipe): the stock hex's MBR
+  // MicroPython direct-app boot (docs recipe): the stock hex's MBR
   // + bootloader reset-loop in emulation, so boot the app at 0x1C000 with
   // the MBR parameter page hand-installed (a real MBR->SD boot installs
   // these; our direct boot must do it by hand).

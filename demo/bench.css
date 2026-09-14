@@ -1,0 +1,705 @@
+/* Bench theme for the micro:bit v2.2 emulator.
+   One shared sheet for bench (index), docs (doc), about.
+   Subject: a lab bench for a board under test. Paper is cool
+   graph sheet, the instrument band is deep pine, traces are copper,
+   and the only glow on the page is the LED matrix itself. */
+
+:root {
+  --sheet: #d7e2e9;          /* bench graph paper */
+  --sheet-line: rgba(30, 47, 58, 0.08);
+  --sheet-major: rgba(30, 47, 58, 0.14);
+  --panel: #f1f5f7;          /* washed instrument face */
+  --ink: #1e2f3a;            /* slate ink, not neutral black */
+  --ink-soft: #43565f;       /* secondary text */
+  --pine: #134a5a;           /* instrument band */
+  --pine-deep: #0f3a47;
+  --board: #182a33;          /* device-under-test face */
+  --board-ink: #e9f1f2;
+  --board-soft: #9db4bd;
+  --copper: #a66a1d;         /* traces, rules, active edges */
+  --copper-deep: #7e4f12;    /* small text accents (contrast-safe) */
+  --copper-lit: #f2c063;     /* signal on dark bands */
+  --led: #d92b21;            /* lit matrix red */
+  --well: #22333d;           /* unlit LED wells */
+  --console: #15262e;        /* serial console face */
+  --console-ink: #e9f1f2;
+  --rule: #1e2f3a;
+  --focus: #b97a1f;
+}
+
+html {
+  box-sizing: border-box;
+  -webkit-text-size-adjust: 100%;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: inherit;
+}
+
+body {
+  margin: 0;
+  font-family: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  font-size: 1rem;
+  line-height: 1.55;
+  color: var(--ink);
+  background-color: var(--sheet);
+  background-image:
+    linear-gradient(var(--sheet-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--sheet-line) 1px, transparent 1px),
+    linear-gradient(var(--sheet-major) 1px, transparent 1px),
+    linear-gradient(90deg, var(--sheet-major) 1px, transparent 1px);
+  background-size: 28px 28px, 28px 28px, 140px 140px, 140px 140px;
+}
+
+h1,
+h2,
+h3 {
+  line-height: 1.15;
+  letter-spacing: -0.015em;
+  margin: 0 0 0.5rem;
+}
+
+h1 {
+  font-size: clamp(1.9rem, 3.4vw, 2.6rem);
+  font-weight: 800;
+}
+
+h2 {
+  font-size: 1.25rem;
+  font-weight: 700;
+}
+
+h3 {
+  font-size: 1.02rem;
+  font-weight: 700;
+}
+
+p {
+  margin: 0 0 0.75rem;
+  max-width: 68ch;
+}
+
+code,
+.mono {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.9em;
+}
+
+a {
+  color: var(--pine);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  color: var(--copper-deep);
+}
+
+:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.topbar :focus-visible {
+  outline-color: var(--copper-lit);
+}
+
+.skip {
+  position: absolute;
+  left: 0.75rem;
+  top: -3rem;
+  z-index: 20;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0.5rem 0.9rem;
+  border: 2px solid var(--ink);
+  border-radius: 6px;
+  transition: top 0.15s ease-out;
+}
+
+.skip:focus {
+  top: 0.75rem;
+}
+
+/* Instrument band */
+
+.topbar {
+  background: var(--pine);
+  color: #fff;
+  border-bottom: 3px solid var(--copper);
+}
+
+.topbar-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0.9rem 1.25rem;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.9rem 1.5rem;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  margin-right: auto;
+}
+
+.mark {
+  display: grid;
+  grid-template-columns: repeat(5, 6px);
+  gap: 3px;
+  padding: 8px;
+  background: var(--pine-deep);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 8px;
+  line-height: 0;
+}
+
+.mark i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.28);
+}
+
+.mark i.lit {
+  background: var(--copper-lit);
+  box-shadow: 0 0 5px rgba(242, 192, 99, 0.9);
+}
+
+.brand-name {
+  margin: 0;
+  font-weight: 800;
+  font-size: 1.12rem;
+  letter-spacing: -0.01em;
+}
+
+.brand-sub {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #c6d8de;
+}
+
+.nav {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.nav a {
+  color: #fff;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.95rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: 7px;
+  border: 1.5px solid transparent;
+}
+
+.nav a:hover {
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+.nav a[aria-current="page"] {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: var(--copper-lit);
+}
+
+.meters {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-left: auto;
+}
+
+.pill {
+  font-size: 0.82rem;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.13);
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  border-radius: 999px;
+  padding: 0.28rem 0.8rem;
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.readout {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.82rem;
+  color: var(--copper-lit);
+  min-width: 14ch;
+}
+
+/* Page frame */
+
+.wrap {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem 3rem;
+}
+
+.panel {
+  background: var(--panel);
+  border: 2px solid var(--rule);
+  border-radius: 10px;
+  padding: 1.1rem 1.2rem 1.25rem;
+}
+
+.panel > h2:first-child {
+  padding-bottom: 0.45rem;
+  border-bottom: 2px solid var(--copper);
+  margin-bottom: 0.8rem;
+}
+
+.sub {
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  margin-top: -0.35rem;
+}
+
+/* Loader strip */
+
+.loader {
+  margin-bottom: 1.25rem;
+}
+
+.loader-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  margin-top: 0.8rem;
+}
+
+.hint {
+  font-size: 0.88rem;
+  color: var(--ink-soft);
+  margin: 0.7rem 0 0;
+  max-width: 76ch;
+}
+
+/* Bench grid */
+
+.bench {
+  display: grid;
+  grid-template-columns: minmax(300px, 400px) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+
+.side {
+  display: grid;
+  gap: 1.25rem;
+}
+
+/* Device under test: the one memorable thing on the page */
+
+.board {
+  background:
+    linear-gradient(rgba(166, 106, 29, 0.09) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(166, 106, 29, 0.09) 1px, transparent 1px),
+    var(--board);
+  background-size: 26px 26px, 26px 26px, auto;
+  border-color: var(--board);
+  border-radius: 14px;
+  color: var(--board-ink);
+  animation: settle 0.5s ease-out both;
+}
+
+.board > h2:first-child {
+  border-bottom-color: var(--copper-lit);
+}
+
+.board .sub {
+  color: var(--board-soft);
+}
+
+.board-tag {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: var(--board-soft);
+  margin-bottom: 0.9rem;
+}
+
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+#matrix {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 10px;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1.5px solid rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  margin: 0.4rem 0 1rem;
+}
+
+.led {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #3a4f5b, var(--well) 72%);
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.55),
+    inset 0 -1px 2px rgba(255, 255, 255, 0.08);
+}
+
+.led.on {
+  background: radial-gradient(circle at 40% 35%, #ff6b57, var(--led) 58%, #8e140d);
+  box-shadow:
+    0 0 14px rgba(217, 43, 33, 0.75),
+    0 0 3px rgba(217, 43, 33, 0.9),
+    inset 0 -2px 4px rgba(0, 0, 0, 0.35);
+}
+
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+}
+
+.pin-note {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.75rem;
+  color: var(--board-soft);
+}
+
+.board h3 {
+  margin-top: 1.2rem;
+  color: var(--board-ink);
+}
+
+.tilt {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.5rem;
+}
+
+.tilt label {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr 4rem;
+  align-items: center;
+  gap: 0.7rem;
+  font-size: 0.9rem;
+  color: var(--board-ink);
+}
+
+.tilt output {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.8rem;
+  color: var(--board-soft);
+  text-align: right;
+}
+
+/* Controls */
+
+button,
+select {
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+button {
+  cursor: pointer;
+  color: var(--ink);
+  background: var(--panel);
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  padding: 0.5rem 1rem;
+  box-shadow: 2px 2px 0 var(--ink);
+}
+
+button:hover {
+  background: #fff;
+}
+
+button:active {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
+.board button {
+  color: var(--board-ink);
+  background: transparent;
+  border-color: var(--board-ink);
+  box-shadow: 2px 2px 0 rgba(233, 241, 242, 0.55);
+}
+
+.board button:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.board button:active {
+  transform: translate(2px, 2px);
+  box-shadow: none;
+}
+
+button.primary {
+  background: var(--copper);
+  border-color: var(--ink);
+  color: #fff;
+}
+
+button.primary:hover {
+  background: var(--copper-deep);
+}
+
+select,
+input[type="text"] {
+  color: var(--ink);
+  background: #fff;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  max-width: 100%;
+}
+
+input[type="range"] {
+  accent-color: var(--copper);
+  width: 100%;
+}
+
+.board input[type="range"] {
+  accent-color: var(--copper-lit);
+}
+
+/* Serial console */
+
+.console-face {
+  background: var(--console);
+  border-radius: 8px;
+  padding: 0.8rem;
+  border: 1.5px solid var(--ink);
+}
+
+#uart {
+  width: 100%;
+  height: 190px;
+  resize: vertical;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--console-ink);
+  background: transparent;
+  border: 0;
+  padding: 0;
+}
+
+#uart:focus {
+  outline: none;
+}
+
+.console-face:focus-within {
+  outline: 3px solid var(--focus);
+  outline-offset: 2px;
+}
+
+.send-row {
+  display: flex;
+  gap: 0.6rem;
+  margin-top: 0.8rem;
+}
+
+.send-row input {
+  flex: 1;
+  min-width: 0;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+}
+
+/* OLED scope */
+
+#oled {
+  width: 100%;
+  max-width: 512px;
+  height: auto;
+  aspect-ratio: 2;
+  background: #000;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  image-rendering: pixelated;
+}
+
+/* Prose pages */
+
+.prose {
+  background: var(--panel);
+  border: 2px solid var(--rule);
+  border-radius: 10px;
+  padding: 1.6rem clamp(1.1rem, 3vw, 2.2rem) 2rem;
+  max-width: 880px;
+}
+
+.prose .lede {
+  font-size: 1.12rem;
+  color: var(--ink);
+  border-left: 4px solid var(--copper);
+  padding-left: 0.9rem;
+  margin: 1rem 0 1.5rem;
+  max-width: 62ch;
+}
+
+.prose h2 {
+  margin-top: 2rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 2px solid var(--copper);
+}
+
+.prose ul,
+.prose ol {
+  padding-left: 1.3rem;
+  max-width: 68ch;
+}
+
+.prose li {
+  margin-bottom: 0.4rem;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  margin: 1rem -0.2rem;
+  padding: 0 0.2rem 0.4rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 640px;
+  font-size: 0.9rem;
+  background: #fff;
+  border: 2px solid var(--ink);
+}
+
+caption {
+  text-align: left;
+  font-weight: 700;
+  padding: 0.5rem 0.2rem;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: 0.55rem 0.7rem;
+  border-bottom: 1px solid #c3cfd5;
+}
+
+thead th {
+  background: var(--pine-deep);
+  color: #fff;
+  border-bottom: 2px solid var(--ink);
+  font-weight: 700;
+}
+
+tbody tr:nth-child(even) {
+  background: #eef3f6;
+}
+
+td code {
+  white-space: nowrap;
+}
+
+.grade {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.steps {
+  counter-reset: run;
+  list-style: none;
+  padding-left: 0;
+}
+
+.steps li {
+  counter-increment: run;
+  position: relative;
+  padding-left: 3rem;
+  margin-bottom: 0.9rem;
+  max-width: 68ch;
+}
+
+.steps li::before {
+  content: counter(run, decimal-leading-zero);
+  position: absolute;
+  left: 0;
+  top: 0.1rem;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--copper-deep);
+  border: 1.5px solid var(--copper);
+  border-radius: 6px;
+  padding: 0.1rem 0.4rem;
+  background: #fff;
+}
+
+/* Footer */
+
+.colophon {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 0 1.25rem 2.5rem;
+  color: var(--ink-soft);
+  font-size: 0.86rem;
+}
+
+.colophon nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.2rem;
+  margin-bottom: 0.5rem;
+}
+
+.colophon p {
+  margin: 0.25rem 0;
+  max-width: 80ch;
+}
+
+@media (max-width: 900px) {
+  .bench {
+    grid-template-columns: 1fr;
+  }
+
+  .meters {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .pill {
+    max-width: 100%;
+  }
+
+  .tilt label {
+    grid-template-columns: 4rem 1fr 3.5rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+
+  .skip {
+    transition: none;
+  }
+}
