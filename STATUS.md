@@ -276,10 +276,14 @@ beyond proof-level driving remain future work.
    TCB LR `0x2e453`); sleep queue = 2 fibers; event-wait EMPTY — the
    scroll fiber is never CREATED. P93 (2026-09-14, native, reverted):
    main is inside `EventModel::send` listener-invoke (R0=own TCB, not
-   an event id — P92's "event-wait" label was wrong) and the later
-   `create_fiber` returns NULL: heap-guard word `0x20003b38=0x20`
-   (free list drained) at 20M. NEXT: heap walk — truly full (leak?)
-   or corrupt free list?
+   an event id — P92's "event-wait" label was wrong). P94–P96
+   (2026-09-14, native, reverted) CORRECT P93's heap framing: free
+   node @`0x20003b3c` present in every dump (heap NOT empty),
+   `0x2e99c` is not malloc (all 10 callers clobber r0; live args
+   `r0=4/10` are sleep/wait codes), `0x35664: r0=0x20002c10`
+   (TWIM1-base driver object, not uBit). NEXT: awake-gated trap on
+   raise path `0x2e084` + waiter entry `0x2e410`, or static decode of
+   `0x35664`'s caller chain.
     Strobe-OR proof (plan P52): 200-sample OR over +1M post-172M is
     all-zero — truly blank, not a multiplex alias. OUT never produces
     an on-phase; init stalls before display construction.

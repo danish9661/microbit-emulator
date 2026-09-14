@@ -2209,3 +2209,52 @@ NEXT: heap walk — dump the free-list head @`0x20003b3c` chain + block
 headers around `0x20002598`: is the heap truly full (leak?) or is the
 free list corrupt (bad free/unlink)?
 Probes reverted; 191 green hold.
+
+## 80. P94–P96 waiter-nature correction: heap NOT empty, 0x2e99c is not malloc (2026-09-14, uncommitted probes, reverted)
+
+Three native probes (P91 recipe + browser-parity pump, reverted —
+`tmp_mc94.rs` + `mod.rs` hook deleted, 191 green hold). Net effect is a
+CORRECTION of P93 §79, not a new gate:
+
+1. P94 heap walk (20M + 300M dumps): `b30=0x2001f800 b34=0x20002ba8
+   b38=0x20/0x00/0x21 (varies run to run) b3c=0x20002598` stable;
+   `size2078/79=0x3801/0xfd38` GC'd live heap. The free node @`b3c` is
+   PRESENT in every dump (full node: `00045194 002e03f2… 20002534
+   00000100…`), so the free list is NOT drained — P93's
+   "`b38=0x20` = heap EMPTY" reading is unsupported (`b38` fluctuates
+   across identical runs; the allocator's empty-exit is `cbz r6→0x307bc`
+   on `[b3c]`, which never fires). Chain-walk via node `+0` ends at
+   flash addr `0x00045194` (not a RAM link), so the node linkage offset
+   is still unknown — the walk did not decode the free list, it only
+   proved a free node exists. Fiber/TCB/stack block headers all live.
+2. 0x2e99c is NOT malloc (static, all 10 `bl 0x2e99c` sites): every
+   caller overwrites r0 on the very next insn (`0x2408c ldrb`,
+   `0x35506 movs r5,#0`, `0x35696 ldr r3,[r5,#20]`, …) — a malloc
+   retval would be consumed, never clobbered. Args seen live are
+   `r0=4/10` (P95/P96 entries, `lr=0x35507/0x35697` pump loop) = sleep
+   ticks / wait codes, not alloc sizes. P95's stage-2 also exposed a
+   methodology flaw: single-stepping while the CPU sleeps in WFE
+   executes nothing (`run()` returns 0 asleep), so the 5M-step window
+   burned with 0 hits — traps must be awake-gated.
+3. P96 two-level trap (1K-quanta level-1 + ≤3000-insn awake-only
+   level-2, 6 windows): `0x2e99c/0x30770` entries `r0=0x0a`,
+   `ret @0x3569a r0=0` (ignored, consistent with §2),
+   `0x35696: r0=0 r5=0x20002c10 [r5+20]=0x40004000` (TWIM1 base — r5 is
+   a driver/bus object, NOT the uBit base; P93's member framing was
+   wrong), `0x35664#1: r0(obj)=0x20002c10 r1(slot)=0x104
+   lr=0x2711f`, `0x2e410` entries ZERO (waiter inputs never trapped
+   while parked). Run LOUDHALTed at RAM `pc=0x200044b8` (len-4 fault)
+   at 2M UNDER single-step distortion only — undistorted runs are
+   `fault=None` to 300M, so the halt is probe artifact, do NOT cite
+   as a guest fault.
+4. Event path (static, for the record): raise helper `0x2e084`
+   (flag byte @`0x20004373` via literal `0x2e0a4`, wait queue
+   @`0x20003b18` via `0x2e0b4`/`0x2e080`); waiter `0x2e410` (flag via
+   `0x2e4ac`, run queue @`0x20003b08` via `0x2e4a0`).
+Verdict: P93's heap-starvation gate is REFUTED as framed (free node
+present, no malloc in path, no NULL-create observed). Waiter-nature of
+`0x2e410` still open. NEXT: awake-gated trap on the raise path
+`0x2e084` + waiter entry `0x2e410` with full pump parity, or static
+decode of `0x35664`'s caller chain (`bl 0x35664 @0x358c8`,
+`b.w` sites `0x357dc/0x35808/0x358b4/0x358e4`).
+Probes reverted; 191 green hold.
