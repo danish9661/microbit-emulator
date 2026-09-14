@@ -436,6 +436,9 @@
   // EASYDMA pump: move staged transfers between guest RAM and hosts.
   // Last looped-back air packet (radio RX delivery needs the bytes).
   let lastAir = [];
+  // Last BLE job sent to the bridge (for cancel fallback: a link
+  // failure on a staged read falls back to the local battery byte).
+  let job = null;
   function pumpDma() {
     if (!cpu) return;
     if (wasm.is_watchdog_reset_requested()) {
@@ -563,34 +566,87 @@
       wasm.radio_complete_rx();
     }
     // SoftDevice BLE face: firmware SVCs stage take/complete jobs (see
-    // src/sd_ble.rs). The driver resolves them here: GATTC reads and
-    // GAP connects go over the Bumble air when the bridge is up,
-    // else resolve locally (battery loopback, like the RADIO default).
+    // src/sd_ble.rs, tags documented on ble_take_job in lib.rs). The
+    // driver resolves them here: over the Bumble air when the bridge is
+    // up, else locally (loopback defaults, like the RADIO pump).
     const bj = wasm.ble_take_job();
     if (bj.length) {
-      if (bj[0] === 0) {
-        // GattcRead {conn, handle, offset}: bridge read or local battery.
-        const [, conn, handle, off] = bj;
-        if (!bleAir.sendBle('read')) {
-          wasm.ble_complete_gattc_read(handle, off, [wasm.ble_batt_level()]);
-        }
-      } else if (bj[0] === 1) {
-        // GapConnect {addr[6]}: bridge connect or instant local link.
-        const addr = [...bj.slice(1, 7)];
-        if (!bleAir.sendBle('connect', { addr })) {
-          wasm.ble_complete_gap_connect(addr);
-        }
-      }
+      const tag = bj[0];
+      job = { tag };
+      if (tag === 0) { job.conn = bj[1]; job.handle = bj[2]; job.offset = bj[3]; }
+      else if (tag === 1) { job.addr = [...bj.slice(1, 7)]; }
+      else if (tag === 2) { job.conn = bj[1]; job.reason = bj[2]; }
+      else if (tag === 3) { job.conn = bj[1]; }
+      else if (tag === 4) { /* scan: no args */ }
+      else if (tag === 5) { job.conn = bj[1]; job.start = bj[2]; job.uuid16 = bj[3]; }
+      else if (tag === 6 || tag === 7) { job.conn = bj[1]; job.start = bj[2]; job.end = bj[3]; }
+      else if (tag === 8) { job.conn = bj[1]; job.op = bj[2]; job.handle = bj[3]; job.data = [...wasm.ble_take_data()]; }
+      else if (tag === 9) { job.conn = bj[1]; job.handle = bj[2]; job.type = bj[3]; job.data = [...wasm.ble_take_data()]; }
+      if (!bleAir.sendBle(job)) pumpBleLoopback(tag, job);
     }
     // Drain bridge SoftDevice replies into completions (take->complete,
     // same discipline as every EASYDMA peripheral).
     let air;
     while ((air = bleAir.takeAir())) {
-      if (air.t === 'gatt' && typeof air.value === 'number') {
-        wasm.ble_complete_gattc_read(air.handle ?? 0x13, air.offset ?? 0, [air.value & 0xFF]);
+      if (air.t === 'gatt' && Array.isArray(air.value)) {
+        wasm.ble_complete_gattc_read(air.conn ?? 1, air.handle ?? 0x13, air.offset ?? 0, air.value);
+      } else if (air.t === 'write_rsp') {
+        wasm.ble_complete_gattc_write(air.conn ?? 1, air.handle ?? 0, air.op ?? 1, air.data ?? []);
+      } else if (air.t === 'prim_disc_rsp' && Array.isArray(air.services)) {
+        const u = air.services.map((s) => s.uuid16 ?? 0xFFFF);
+        wasm.ble_complete_prim_disc(air.conn ?? 1, u,
+          air.services.map((s) => s.start ?? 1), air.services.map((s) => s.end ?? 1));
+      } else if (air.t === 'char_disc_rsp' && Array.isArray(air.chars)) {
+        wasm.ble_complete_char_disc(air.conn ?? 1,
+          air.chars.map((c) => c.uuid16 ?? 0xFFFF), air.chars.map((c) => c.props ?? 0),
+          air.chars.map((c) => c.decl ?? 0), air.chars.map((c) => c.value ?? 0));
+      } else if (air.t === 'desc_disc_rsp' && Array.isArray(air.descs)) {
+        wasm.ble_complete_desc_disc(air.conn ?? 1,
+          air.descs.map((d) => d.handle ?? 0), air.descs.map((d) => d.uuid16 ?? 0xFFFF));
+      } else if (air.t === 'hvx' && Array.isArray(air.data)) {
+        wasm.ble_complete_gattc_hvx(air.conn ?? 1, air.handle ?? 0, air.type ?? 1, air.data);
       } else if (air.t === 'connected' && Array.isArray(air.peer)) {
         wasm.ble_complete_gap_connect(air.peer.slice(0, 6));
+      } else if (air.t === 'adv_report' && Array.isArray(air.peer)) {
+        wasm.ble_post_adv_report(air.peer.slice(0, 6), air.rssi ?? -50,
+          (air.scan_rsp ?? 0) === 1, air.data ?? []);
+      } else if (air.t === 'disconnected') {
+        wasm.ble_complete_gap_disconnect(air.conn ?? 1, air.reason ?? 19);
+      } else if (air.t === 'rssi' && typeof air.rssi === 'number') {
+        wasm.ble_complete_rssi(air.conn ?? 1, air.rssi);
+      } else if (air.t === 'cancel') {
+        // Link failure: never a ghost event. Reads fall back to the
+        // local battery byte (loopback legibility); writes/disc/hvx
+        // stay silent so firmware retries instead of caching air it
+        // never saw.
+        if (job && job.tag === 0) wasm.ble_complete_gattc_read(job.conn ?? 1, job.handle ?? 0x13, job.offset ?? 0, [wasm.ble_batt_level()]);
       }
+    }
+  }
+  // BLE loopback (bridge down): resolve the staged job locally so the
+  // SVC face works with zero infrastructure, like RADIO loopback.
+  // Battery byte 87 + fixed table mirrors tools/ble_air_bridge.py.
+  function pumpBleLoopback(tag, job) {
+    if (tag === 0) {
+      wasm.ble_complete_gattc_read(job.conn ?? 1, job.handle ?? 0x13, job.offset ?? 0, [wasm.ble_batt_level()]);
+    } else if (tag === 1) {
+      wasm.ble_complete_gap_connect(job.addr ?? [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    } else if (tag === 2) {
+      wasm.ble_complete_gap_disconnect(job.conn ?? 1, job.reason ?? 19);
+    } else if (tag === 3) {
+      wasm.ble_complete_rssi(job.conn ?? 1, -50);
+    } else if (tag === 4) {
+      wasm.ble_post_adv_report([0x11, 0x22, 0x33, 0x44, 0x55, 0x66], -50, false, [0x02, 0x01, 0x06, 0x03, 0x03, 0x0F, 0x18]);
+    } else if (tag === 5) {
+      wasm.ble_complete_prim_disc(job.conn ?? 1, [0x180F], [0x10], [0x16]);
+    } else if (tag === 6) {
+      wasm.ble_complete_char_disc(job.conn ?? 1, [0x2A19], [0x12], [0x12], [0x13]);
+    } else if (tag === 7) {
+      wasm.ble_complete_desc_disc(job.conn ?? 1, [0x14], [0x2902]);
+    } else if (tag === 8) {
+      wasm.ble_complete_gattc_write(job.conn ?? 1, job.handle ?? 0, job.op ?? 1, job.data ?? []);
+    } else if (tag === 9) {
+      wasm.ble_complete_hvx(job.conn ?? 1, job.handle ?? 0);
     }
   }
   function frame() {

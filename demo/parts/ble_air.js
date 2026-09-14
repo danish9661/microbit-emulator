@@ -126,21 +126,25 @@ export class BleAir {
       this.pendingRx.push(Uint8Array.from(atob(msg.b64), (c) => c.charCodeAt(0)));
       this.rxFrames++;
       this.say(`air: live (tx ${this.txFrames}, rx ${this.rxFrames})`);
-    } else if (msg.t === 'gatt') {
-      this.available = true;
-      // Battery level read over real ATT air (scan -> connect ->
-      // discover -> read on the bridge's emulator-side central).
-      // `overAir:false` = bridge fallback (peer unreachable); treat the
-      // value as advisory, keep the RX frame as the completion proof.
-      const via = msg.overAir === false ? 'fallback' : 'over air';
-      this.say(`air: battery ${msg.value} (${via}) (tx ${this.txFrames}, rx ${this.rxFrames})`);
-      if (typeof msg.value === 'number') this.lastBattery = msg.value;
-      if (msg.conn) this.lastConn = msg.conn;
-    } else if (msg.t === 'connected' || msg.t === 'adv_report' || msg.t === 'written') {
-      // SoftDevice-facing air events: queued for the BLE pump below.
+    } else if (msg.t === 'gatt' || msg.t === 'write_rsp' || msg.t === 'prim_disc_rsp'
+        || msg.t === 'char_disc_rsp' || msg.t === 'desc_disc_rsp' || msg.t === 'hvx'
+        || msg.t === 'connected' || msg.t === 'adv_report' || msg.t === 'disconnected'
+        || msg.t === 'rssi' || msg.t === 'cancel' || msg.t === 'written') {
+      // SoftDevice-facing air replies: queued for the BLE pump below,
+      // which completes the matching staged job (take/complete, no
+      // cross-talk: every reply echoes conn/handle back). 'gatt' also
+      // feeds the battery status line + lastBattery/lastConn mirrors.
       this.available = true;
       this.pendingAir.push(msg);
-      this.say(`air: ${msg.t} (tx ${this.txFrames}, rx ${this.rxFrames})`);
+      if (msg.t === 'gatt') {
+        const via = msg.overAir === false ? 'fallback' : 'over air';
+        const v = Array.isArray(msg.value) ? msg.value[0] : msg.value;
+        this.say(`air: battery ${v} (${via}) (tx ${this.txFrames}, rx ${this.rxFrames})`);
+        if (typeof v === 'number') this.lastBattery = v;
+        if (msg.conn) this.lastConn = msg.conn;
+      } else {
+        this.say(`air: ${msg.t} (tx ${this.txFrames}, rx ${this.rxFrames})`);
+      }
     }
   }
 
@@ -153,15 +157,34 @@ export class BleAir {
     return true;
   }
 
-  // SoftDevice face: ask the bridge to resolve a staged BLE job over
-  // air. kind 'read' (GATTC read of the peer battery) or 'connect'
-  // (GAP connect to a 6-byte LE address). Replies arrive as 'gatt' /
-  // 'connected' messages handled in onMessage above.
-  sendBle(kind, arg = {}) {
+  // SoftDevice face: ask the bridge to resolve one staged BLE job
+  // over air. The job object mirrors the ble_take_job() tags (see
+  // lib.rs): {tag, conn, handle, offset, op, data, kind, start, end,
+  // type, addr}. Replies arrive as queued air messages handled above.
+  sendBle(job) {
     if (!this.ws || this.ws.readyState !== 1) return false;
-    if (kind === 'read') this.ws.send(JSON.stringify({ t: 'ble_read' }));
-    else if (kind === 'connect') this.ws.send(JSON.stringify({ t: 'ble_connect', addr: arg.addr ?? [] }));
-    else return false;
+    const m = { t: 'ble_read', conn: job.conn ?? 1, handle: job.handle ?? 0x13, offset: job.offset ?? 0 };
+    switch (job.tag) {
+      case 0: m.t = 'ble_read'; break;
+      case 1: return this.sendBleConnect(job.addr ?? []);
+      case 2: m.t = 'ble_disconnect'; m.reason = job.reason ?? 19; break;
+      case 3: m.t = 'ble_rssi'; break;
+      case 4: m.t = 'ble_scan'; break;
+      case 5: m.t = 'ble_disc'; m.kind = 0; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
+      case 6: m.t = 'ble_disc'; m.kind = 2; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
+      case 7: m.t = 'ble_disc'; m.kind = 3; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
+      case 8: m.t = 'ble_write'; m.op = job.op ?? 1; m.handle = job.handle ?? 0; m.data = [...(job.data ?? [])]; break;
+      case 9: m.t = 'ble_hvx'; m.handle = job.handle ?? 0; m.type = job.type ?? 1; m.data = [...(job.data ?? [])]; break;
+      default: return false;
+    }
+    this.ws.send(JSON.stringify(m));
+    this.txFrames++;
+    return true;
+  }
+
+  sendBleConnect(addr) {
+    if (!this.ws || this.ws.readyState !== 1) return false;
+    this.ws.send(JSON.stringify({ t: 'ble_connect', addr: [...addr] }));
     this.txFrames++;
     return true;
   }

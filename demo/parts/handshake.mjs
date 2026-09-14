@@ -241,17 +241,23 @@ function cpuWithBridge() {
     `RADIO air peer TX->bridge->RX (tx=${air.seenTx} rx=${air.seenRx})`);
 }
 
-// --- SoftDevice BLE SVC face: GATTS battery + GAP connect + READ_RSP ---
-// Same pump contract as index.html (take/complete + evt queue), against
-// the local loopback (no bridge needed headless): completions carry the
-// battery value, events queue for sd_ble_evt_get.
+// --- SoftDevice BLE SVC face: full GATT flow through REAL SVC bytes ---
+// The mock executes actual `svc` instructions on its own WasmCpu
+// (enable, GATTS table build, connect, discovery, read, write, scan,
+// RSSI, disconnect) and drains every event via evt_get — the stub
+// bridge resolves staged jobs locally (battery 87 + fixed table,
+// mirroring pumpBleLoopback). Needs no live bridge headless.
 {
-  const parts = freshBoard();
-  const cpu = cpuWithBridge();
+  freshBoard();
+  const svcCpu = new wasm.WasmCpu(0x20020000, 0x20000001, 512 * 1024, 128 * 1024);
   const b = new MockBleSvc(wasm);
-  for (let i = 0; i < 4 && !b.done; i++) b.poll(cpu);
-  check(b.done === true && b.seen?.gatts && b.seen?.connected && b.seen?.readRsp,
-    `BLE SVC GATTS+connect+READ_RSP (seen=${JSON.stringify(b.seen)})`);
+  try {
+    for (let i = 0; i < 4 && !b.done; i++) b.poll(svcCpu);
+  } catch (e) {
+    console.error('FAIL: BLE SVC exception:', e.message);
+  }
+  check(b.done === true && b.seen?.gatts && b.seen?.connected && b.seen?.readRsp && b.seen?.writeRsp && b.seen?.full,
+    `BLE SVC full flow enable->disc->read->write->rssi->disc (seen=${JSON.stringify(b.seen)})`);
 }
 
 // --- QSPI: staged write/read/erase round trip ---

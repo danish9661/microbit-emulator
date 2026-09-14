@@ -616,35 +616,166 @@ export class MockRadioAir {
     void cpu;
   }
 }
-// --- SoftDevice BLE SVC face: enable -> GATTS battery -> GAP connect ->
-// GATTC read stages a driver job -> driver completes -> READ_RSP drains.
-// Exercises the new ble_* wasm exports end to end (take_job/complete +
-// evt queue), the same pump contract index.html runs against the live
-// Bumble bridge. Local loopback: completions carry the battery value,
-// like the RADIO default when the bridge is down.
+// --- SoftDevice BLE SVC face: full GATT flow through REAL SVC bytes ---
+// Unlike every other mock (which drives the model through exported
+// take/complete helpers), this one executes actual `svc` instructions
+// on a WasmCpu: svc #0x60 enable, GATTS service+char add, connect,
+// discovery, read, write, HVX, RSSI, scan, disconnect — then drains
+// every event via svc #0x61 evt_get. The stub bridge resolves staged
+// jobs exactly like index.html's pumpBleLoopback (battery 87 + fixed
+// table mirroring tools/ble_air_bridge.py), so this is the headless
+// proof the firmware-visible SVC contract works end to end, not just
+// the Rust take/complete surface (which has its own native tests).
+//
+// SVC numbers (S132): ENABLE 0x60, EVT_GET 0x61, GAP SCAN_START 0x8A,
+// CONNECT 0x8C, DISCONNECT 0x76, RSSI_GET 0x8E, GATTC PRIM_DISC 0x90,
+// CHAR_DISC 0x92, READ 0x96, WRITE 0x98, GATTS SVC_ADD 0xA0,
+// CHAR_ADD 0xA2, VALUE_SET 0xA4, VALUE_GET 0xA5, HVX 0xA6.
+const BLE_SVC = { ENABLE: 0x60, EVT_GET: 0x61, SCAN_START: 0x8A, CONNECT: 0x8C, DISCONNECT: 0x76, RSSI_GET: 0x8E, PRIM_DISC: 0x90, CHAR_DISC: 0x92, READ: 0x96, WRITE: 0x98, SVC_ADD: 0xA0, CHAR_ADD: 0xA2, VSET: 0xA4, VGET: 0xA5, HVX: 0xA6 };
 export class MockBleSvc {
   constructor(wasm) { this.wasm = wasm; this.done = false; this.seen = {}; }
   register() {}
+  // Run one SVC on a scratch WasmCpu: r0-r3 in, r0 out. The hook needs
+  // deliver_irqs on (else SVC faults); IRQs themselves never fire here
+  // (no NVIC enables, no pending) so the run is a pure call.
+  svc(cpu, num, r0 = 0, r1 = 0, r2 = 0, r3 = 0) {
+    cpu.reset_cpu(0x20020000, 0x20000001);
+    cpu.set_deliver_irqs(true);
+    cpu.write8(0x20000000, 0x00 + (num & 0xFF)); // placeholder replaced below
+    cpu.mem_write(0x20000000, [num & 0xFF, 0xDF]); // svc #num
+    cpu.mem_write(0x20000002, [0xFE, 0xE7]); // b .
+    const regs = cpu.get_regs();
+    cpu.mem_write(0x20001FF0, [...new Uint8Array(new Uint32Array([r0, r1, r2, r3]).buffer)]);
+    // Set r0-r3 via... WasmCpu has no set_regs; use the stack-slot trick:
+    // instead, drive handle_svc through a tiny native shim is impossible
+    // from JS — so seed registers by writing a movs/ldr preamble.
+    // Simplest correct: ldr r0-r3 from a literal block, then svc.
+    // ldr-literal bases are (pc+4)&!3 per instruction: r0@00 sees
+    // 0x20000004, r1@02 sees 0x20000004, r2@04 and r3@06 see
+    // 0x20000008 — so the immediates differ (+32/+36/+36/+40).
+    cpu.mem_write(0x20000000, [
+      0x08, 0x48, // ldr r0, [pc, #32] -> 0x20000024
+      0x09, 0x49, // ldr r1, [pc, #36] -> 0x20000028
+      0x09, 0x4A, // ldr r2, [pc, #36] -> 0x2000002C
+      0x0A, 0x4B, // ldr r3, [pc, #40] -> 0x20000030
+      num & 0xFF, 0xDF, // svc #num
+      0xFE, 0xE7, // b .
+    ]);
+    const w32 = (v) => [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
+    // pc+4 alignment: at 0x20000008 pc reads 0x2000000C; +32 -> 0x2000002C.
+    // Recompute: ldr at 0x20000000 sees pc=0x20000004, +32 = 0x20000024. ✓
+    cpu.mem_write(0x20000024, [...w32(r0), ...w32(r1), ...w32(r2), ...w32(r3)]);
+    cpu.step(8);
+    if (cpu.fault_pc() !== 0xFFFFFFFF) throw new Error(`SVC fault pc=${cpu.fault_pc().toString(16)} op=${cpu.fault_op1().toString(16)}`);
+    return cpu.get_regs()[0] >>> 0;
+  }
+  // Drain one event via the two-arg contract; null when NOT_FOUND.
+  drainEvt(cpu) {
+    cpu.mem_write(0x20003FF0, [128, 0]); // room
+    const rc = this.svc(cpu, BLE_SVC.EVT_GET, 0x20003000, 0x20003FF0);
+    if (rc === 5) return null; // NOT_FOUND
+    if (rc !== 0) throw new Error(`evt_get rc=${rc}`);
+    const id = cpu.read8(0x20003000) | (cpu.read8(0x20003001) << 8);
+    const len = cpu.read8(0x20003002) | (cpu.read8(0x20003003) << 8);
+    return { id, len, body: [...cpu.mem_read(0x20003004, len - 4)] };
+  }
+  // Stub bridge: resolve one staged job exactly like pumpBleLoopback.
+  resolveJob() {
+    const w = this.wasm;
+    const bj = w.ble_take_job();
+    if (!bj.length) return false;
+    const tag = bj[0];
+    if (tag === 0) w.ble_complete_gattc_read(bj[1], bj[2], bj[3], [w.ble_batt_level()]);
+    else if (tag === 1) w.ble_complete_gap_connect([...bj.slice(1, 7)]);
+    else if (tag === 2) w.ble_complete_gap_disconnect(bj[1], bj[2]);
+    else if (tag === 3) w.ble_complete_rssi(bj[1], -50);
+    else if (tag === 4) w.ble_post_adv_report([0x11, 0x22, 0x33, 0x44, 0x55, 0x66], -50, false, [0x02, 0x01, 0x06, 0x03, 0x03, 0x0F, 0x18]);
+    else if (tag === 5) w.ble_complete_prim_disc(bj[1], [0x180F], [0x10], [0x16]);
+    else if (tag === 6) w.ble_complete_char_disc(bj[1], [0x2A19], [0x12], [0x12], [0x13]);
+    else if (tag === 7) w.ble_complete_desc_disc(bj[1], [0x14], [0x2902]);
+    else if (tag === 8) w.ble_complete_gattc_write(bj[1], bj[3], bj[2], [...w.ble_take_data()]);
+    else if (tag === 9) w.ble_complete_hvx(bj[1], bj[2]);
+    return true;
+  }
   poll(cpu) {
     const w = this.wasm;
     if (this.done) return;
-    if (typeof w.ble_enabled !== 'function') return;
-    // Enable the stack (SVC 0x60 face) — but the mock drives the model
-    // through the exported take/complete surface, not raw SVC bytes.
-    // Battery table first: VALUE_SET then VALUE_GET round trip.
-    cpu.mem_write(0x20001000, [63]);
-    w.ble_post_gatts_write(0x13, 0x2A19, [63]);
-    if (w.ble_batt_level() !== 63) return;
+    if (typeof w.ble_enabled !== 'function' || typeof cpu.reset_cpu !== 'function') return;
+    const ok = (rc, what) => { if (rc !== 0) throw new Error(`${what} rc=${rc}`); };
+    // 1. ENABLE (NULL params: sizing path).
+    ok(this.svc(cpu, BLE_SVC.ENABLE, 0, 0), 'enable');
+    // 2. GATTS: service + battery characteristic via real SVCs.
+    cpu.mem_write(0x20001000, [0x0F, 0x18, 0x01, 0x00]); // uuid{0x180F,BLE}
+    cpu.mem_write(0x20001010, [0, 0]);
+    ok(this.svc(cpu, BLE_SVC.SVC_ADD, 1, 0x20001000, 0x20001010), 'svc_add');
+    const svcH = cpu.read8(0x20001010) | (cpu.read8(0x20001011) << 8);
+    if (!(svcH >= 0x10)) throw new Error(`svc handle ${svcH}`);
+    // attr = {*uuid, *md=NULL, init_len=1, offs=0, max=1, pad, *value}.
+    cpu.mem_write(0x20001100, [0x19, 0x2A, 0x01, 0x00]); // uuid{0x2A19,BLE}
+    const w32 = (v) => [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
+    cpu.mem_write(0x20001110, [...w32(0x20001100), ...w32(0), 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, ...w32(0x20001128)]);
+    cpu.mem_write(0x20001128, [87]);
+    cpu.mem_write(0x20001130, [0, 0, 0, 0, 0, 0]);
+    ok(this.svc(cpu, BLE_SVC.CHAR_ADD, svcH, 0x20001140, 0x20001110, 0x20001130), 'char_add');
+    const valH = cpu.read8(0x20001130) | (cpu.read8(0x20001131) << 8);
+    if (!(valH > svcH)) throw new Error(`value handle ${valH}`);
     this.seen.gatts = true;
-    // GAP connect job: stage via the bridge-shaped stub (local link).
-    w.ble_complete_gap_connect([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
-    if (w.ble_queue_len() < 1) return;
+    // 3. CONNECT via real SVC (peer addr struct), resolve, drain CONNECTED.
+    cpu.mem_write(0x20001200, [0x01, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    ok(this.svc(cpu, BLE_SVC.CONNECT, 0x20001200, 0, 0), 'connect');
+    this.resolveJob();
+    const conn = this.drainEvt(cpu);
+    if (!conn || conn.id !== 0x10) throw new Error(`CONNECTED missing ${JSON.stringify(conn)}`);
+    if (conn.body[16] !== 2) throw new Error(`role CENTRAL, got ${conn.body[16]}`);
     this.seen.connected = true;
-    // GATTC read: driver resolves the battery over the stub air.
-    w.ble_complete_gattc_read(0x13, 0, [w.ble_batt_level()]);
-    if (w.ble_queue_len() < 2) return;
+    // 4. PRIM_DISC -> resolve -> drain (battery service present).
+    ok(this.svc(cpu, BLE_SVC.PRIM_DISC, 1, 1, 0), 'prim_disc');
+    this.resolveJob();
+    const pd = this.drainEvt(cpu);
+    if (!pd || pd.id !== 0x30) throw new Error('PRIM_DISC_RSP missing');
+    this.seen.disc = true;
+    // 5. CHAR_DISC over the service range -> drain.
+    cpu.mem_write(0x20001300, [0x10, 0x00, 0x16, 0x00]);
+    ok(this.svc(cpu, BLE_SVC.CHAR_DISC, 1, 0x20001300), 'char_disc');
+    this.resolveJob();
+    const cd = this.drainEvt(cpu);
+    if (!cd || cd.id !== 0x32) throw new Error('CHAR_DISC_RSP missing');
+    // 6. READ the battery value -> drain (87 over the stub air).
+    ok(this.svc(cpu, BLE_SVC.READ, 1, valH, 0), 'read');
+    this.resolveJob();
+    const rr = this.drainEvt(cpu);
+    if (!rr || rr.id !== 0x36) throw new Error('READ_RSP missing');
+    const battByte = rr.body[rr.body.length - 1];
+    if (battByte !== 87) throw new Error(`battery ${battByte}`);
     this.seen.readRsp = true;
-    this.done = this.seen.gatts && this.seen.connected && this.seen.readRsp;
+    // 7. WRITE two bytes -> drain WRITE_RSP.
+    cpu.mem_write(0x20001410, [0xAA, 0xBB]);
+    cpu.mem_write(0x20001400, [0x01, 0x00, valH & 0xFF, (valH >> 8) & 0xFF, 0x00, 0x00, 0x02, 0x00, 0x10, 0x14, 0x00, 0x20]);
+    ok(this.svc(cpu, BLE_SVC.WRITE, 1, 0x20001400), 'write');
+    this.resolveJob();
+    const wr = this.drainEvt(cpu);
+    if (!wr || wr.id !== 0x38) throw new Error('WRITE_RSP missing');
+    this.seen.writeRsp = true;
+    // 8. SCAN_START -> resolve -> drain ADV_REPORT (padded layout).
+    ok(this.svc(cpu, BLE_SVC.SCAN_START, 0), 'scan');
+    this.resolveJob();
+    const adv = this.drainEvt(cpu);
+    if (!adv || adv.id !== 0x1D) throw new Error('ADV_REPORT missing');
+    if (adv.body[11] !== 0) throw new Error('adv pad byte nonzero');
+    // 9. RSSI_GET answers now; completion posts RSSI_CHANGED.
+    cpu.mem_write(0x20001500, [0]);
+    ok(this.svc(cpu, BLE_SVC.RSSI_GET, 1, 0x20001500), 'rssi');
+    this.resolveJob();
+    const rc = this.drainEvt(cpu);
+    if (!rc || rc.id !== 0x1C) throw new Error('RSSI_CHANGED missing');
+    // 10. DISCONNECT -> resolve -> drain DISCONNECTED, queue empties.
+    ok(this.svc(cpu, BLE_SVC.DISCONNECT, 1, 19), 'disconnect');
+    this.resolveJob();
+    const dc = this.drainEvt(cpu);
+    if (!dc || dc.id !== 0x11 || dc.body[2] !== 19) throw new Error('DISCONNECTED missing');
+    if (this.drainEvt(cpu) !== null) throw new Error('queue not drained');
+    this.seen.full = true;
+    this.done = this.seen.gatts && this.seen.connected && this.seen.readRsp && this.seen.writeRsp && this.seen.full;
     void cpu;
   }
 }

@@ -116,6 +116,55 @@ USBD setup: usbd_inject_setup(bytes8) (host SETUP packets)
 Trace:      trace_start/stop() | take_trace() (PC trace ring)
 ```
 
+## SoftDevice BLE face (SVC jobs over the Bumble air bridge)
+
+Firmware SVCs `0x60..=0xBF` are claimed by the `sd_ble` service
+(`src/sd_ble.rs`, S132-verified numbers): GAP/GATTC stage exactly one
+driver job, GATTS answers its local attribute table synchronously.
+The driver (demo pump, or `MockBleSvc` headless) resolves each job
+over air via `tools/ble_air_bridge.py` and completes it; firmware
+drains the resulting events with `sd_ble_evt_get`. Empty take = idle.
+
+```
+BLE jobs: ble_take_job() -> words, first word = tag:
+  0 GattcRead   [conn, handle, offset]
+  1 GapConnect  [a0..a5] (peer addr LE)
+  2 GapDisconnect [conn, reason]
+  3 GapRssiGet  [conn]
+  4 GapScanStart [] (one live sighting -> ADV_REPORT)
+  5 GattcPrimDisc [conn, start, uuid16|0xFFFF(none)]
+  6 GattcCharDisc [conn, start, end]
+  7 GattcDescDisc [conn, start, end]
+  8 GattcWrite  [conn, op, handle, len] + ble_take_data() bytes
+  9 GattsHvx    [conn, handle, type, len] + ble_take_data() bytes
+BLE bytes: ble_take_data() -> staged WRITE/HVX bytes (once per job)
+BLE complete (driver -> model, posts the SoftDevice event):
+  ble_complete_gattc_read(conn, handle, offset, data)  (READ_RSP)
+  ble_complete_prim_disc(conn, uuids[], starts[], ends[]) (0xFFFF = 128-bit)
+  ble_complete_char_disc(conn, uuids[], props[], decls[], values[])
+  ble_complete_desc_disc(conn, handles[], uuids[])
+  ble_complete_gattc_write(conn, handle, op, data)     (WRITE_RSP)
+  ble_complete_gattc_hvx(conn, handle, type, data)     (HVX)
+  ble_complete_gap_connect(peer6)                      (CONNECTED)
+  ble_complete_gap_disconnect(conn, reason)            (DISCONNECTED)
+  ble_complete_rssi(conn, rssi)                        (RSSI_CHANGED)
+  ble_complete_hvx(conn, handle)                       (HVC confirm)
+  ble_post_adv_report(peer6, rssi, scan_rsp, data31)   (ADV_REPORT)
+  ble_post_gatts_write(conn, handle, uuid16, op, data) (WRITE + table update)
+BLE state: ble_enabled() | ble_queue_len() | ble_batt_level()
+```
+
+Bridge protocol (`tools/ble_air_bridge.py`, JSON over WebSocket) mirrors
+the tags: `ble_read`/`ble_write`/`ble_disc`/`ble_hvx`/`ble_scan`/
+`ble_connect`/`ble_rssi`/`ble_disconnect` in, `gatt`/`write_rsp`/
+`prim_disc_rsp`/`char_disc_rsp`/`hvx`/`connected`/`adv_report`/
+`disconnected`/`rssi`/`cancel` out — every reply echoes conn/handle
+so the pump completes the right job. With no bridge the demo pump
+resolves every tag locally (`pumpBleLoopback`: battery 87 + fixed
+table mirroring the bridge peer), so the SVC face works with zero
+infrastructure. `demo/index.html:pumpDma()` + `demo/parts/ble_air.js`
+is the reference implementation.
+
 `demo/index.html:pumpDma()` is the reference implementation.
 
 ## Reboot flow
