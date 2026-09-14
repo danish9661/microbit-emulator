@@ -2319,3 +2319,35 @@ walk is the cheapest remaining evidence; if it names a sensor/display
 event id, trap THAT raise site, else park LEFT-4 and switch to LEFT-3
 bootloader chain.
 Probes reverted; 191 green hold.
+
+## 82. P98 BLE air + SoftDevice SVC face (2026-09-14, committed P98a–P98e)
+
+User asked to start BLE/BT (P58 scope sketched, no build). Built BOTH
+faces, committed in 5 small steps (each cargo-test green):
+
+- P98a `radio_inject_rx_to` export (DAB-addressed inject; DEVMATCH path).
+- P98b `tools/ble_air_bridge.py` (Bumble LocalLink: C_emu + C_peer/peer
+  battery GATT + C_central over-air reader; WS tx/rx/gatt/ble_read/
+  ble_connect/connected) + `demo/parts/ble_air.js` (BleAir WS part,
+  take_*/sendTx/sendBle/takeAir discipline).
+- P98c `src/sd_ble.rs`: SoftDevice SVC face — S132 enum numbers
+  (ENABLE 0x60, EVT_GET 0x61, GAP 0x70.., GATTC 0x90.., GATTS 0xA0..),
+  GAP local acks + CONNECT/GATTC-READ staging take_job(), GATTS
+  battery table, evt queue drained via sd_ble_evt_get (header+body,
+  evt_len includes 4B header), complete_*/post_* driver completions;
+  thumb.rs SVC hook claims 0x60..=0xBF first (r0 + skip, else fall
+  through to raise_sync — zero-cost when idle); reset_for_test wired
+  into reset_globals; 4 native tests + SVC-hook proof in cpu/tests.rs.
+  Suite 195 green (191 + 4). AGENTS.md note: the SVC hook touches
+  src/cpu/thumb.rs (decoder, not board logic) — minimal, range-gated,
+  behavior-preserving for all non-BLE SVCs; sd_ble itself is NOT a
+  Peripheral (no MMIO, SVC interface per docs/sd_evt_design.md §4).
+- P98d demo pump BLE jobs (bridge read/connect, local loopback
+  default) + MockBleSvc handshake proof (17 OK headless).
+- P98e rebuilt demo/pkg (ble_* exports live).
+
+NEXT: live bridge run (python3 tools/ble_air_bridge.py + Enable BLE
+air + TX/RX round trip + GATT battery over-air value on panel);
+firmware-level proof (bare-metal SVC caller → enable → evt_get, or a
+BLE-enabled image exercising GAP/GATTC SVCs — today's MPY/MC images
+never init the stack, P58).

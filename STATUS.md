@@ -2,9 +2,10 @@
 
 Audited 2026-09-12 by cross-checking all 39 `monox/nrf52833.svd`
 peripherals against `src/peripherals/`, running the suite
-(**191 passed, 0 failed** — +6 since audit: SPIM RXD MISO +
+(**195 passed, 0 failed** — +10 since audit: SPIM RXD MISO +
 GPIO CNF→DIR + UARTE TX snapshot + TWIM shifted-ADDR match +
-SCB AIRCR SYSRESETREQ + RADIO 802.15.4 helpers), reading every model, and replaying the
+SCB AIRCR SYSRESETREQ + RADIO 802.15.4 helpers + sd_ble SVC face ×4),
+reading every model, and replaying the
 live firmware runs. Grades: **F** = functional (timed, IRQs,
 driver take/complete, firmware proof), **H** = handshake
 (TASKS/EVENTS/INTEN minimum, no timed behavior or no consumer),
@@ -299,11 +300,23 @@ beyond proof-level driving remain future work.
    (`s2stop=1/s3stop=1`, no fault, no page errors). Demo pump covers
    SPIM2/3 DMA frames. No edge-SPI part wired (no consumer) — stays H
    by decision, not by gap.
-   RADIO 802.15.4 (P59, NEW): ED/CCA/DEVMATCH-MISS/MHRMATCH/
-   FRAMESTART + full SHORTS/INTEN maps (`ed_cca_mhr_devmatch_
-   framestart` green); demo air = two-instance bridge via
-   `window.__airPeer` (foreign bytes) with loopback default — BLE/BT
-   without WebBluetooth; new export `radio_set_ed_dbm`.
+    RADIO 802.15.4 (P59, NEW): ED/CCA/DEVMATCH-MISS/MHRMATCH/
+    FRAMESTART + full SHORTS/INTEN maps (`ed_cca_mhr_devmatch_
+    framestart` green); demo air = Bumble bridge
+    (`tools/ble_air_bridge.py` + `BleAir` part, `radio_inject_rx_to`
+    addressed echo) with loopback default — BLE/BT without
+    WebBluetooth; new export `radio_set_ed_dbm`.
+    BLE SVC face (P98, NEW): `src/sd_ble.rs` answers the SoftDevice
+    SVCs BLE firmware actually calls (ENABLE/EVT_GET, GAP ADDR/ADV/
+    SCAN/CONNECT, GATTC READ, GATTS battery table) with S132 enum
+    numbers; thumb.rs SVC hook claims 0x60..=0xBF first (r0 + skip,
+    else fall through to raise_sync — zero-cost when idle, one range
+    compare); air-backed ops stage take/complete jobs the demo pump
+    resolves via the Bumble bridge (local loopback default);
+    `ble_take_job/complete_gattc_read/complete_gap_connect/
+    post_adv_report/post_gatts_write/enabled/queue_len/batt_level`
+    exports; 4 native tests + SVC-hook proof in cpu/tests.rs
+    (195 green); headless `MockBleSvc` handshake proof (17 OK).
 6. **Demo wall-time**: meter now shows slice + sustained average
    (`6.02 MIPS (avg 6.00)` on both blinky AND mpy park — P71: the
    16-class bursts the user saw are peak slice rates; sustained == slice
@@ -323,8 +336,9 @@ protection, publish to npm.
 ## 8. Verify
 
 ```
-cargo test                       # 191 green (crate dir)
+cargo test                       # 195 green (crate dir)
 node demo/parts/smoke.mjs        # parts green
+node demo/parts/handshake.mjs    # 17 handshake mocks green (needs pkg-test-handshake build)
 wasm-pack build nrf52833-periph-wasm --target web --out-dir ../demo/pkg
 ```
 Firmware proofs rebuild with `docs/README.md` recipes (xpack GCC
