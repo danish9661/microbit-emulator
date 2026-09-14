@@ -71,6 +71,12 @@ export function ble_complete_desc_disc(conn: number, handles: Uint16Array, uuids
 export function ble_complete_gap_connect(peer: Uint8Array): void;
 
 /**
+ * Complete a GAP connect: driver connected over air; returns the
+ * assigned connection handle (INVALID when the table is full).
+ */
+export function ble_complete_gap_connect_ret(peer: Uint8Array): number;
+
+/**
  * Complete a GAP disconnect: posts DISCONNECTED with the HCI reason.
  */
 export function ble_complete_gap_disconnect(conn: number, reason: number): void;
@@ -93,6 +99,17 @@ export function ble_complete_gattc_write(conn: number, handle: number, op: numbe
 export function ble_complete_hvx(conn: number, handle: number): void;
 
 /**
+ * Complete an L2CAP TX: posts the RX echo on (conn, cid).
+ */
+export function ble_complete_l2cap_rx(conn: number, cid: number, data: Uint8Array): void;
+
+/**
+ * Complete a pairing handshake the driver ran over air: posts
+ * AUTH_STATUS (success) + CONN_SEC_UPDATE, marks link bonded.
+ */
+export function ble_complete_pairing(conn: number, bonded: boolean): void;
+
+/**
  * Complete a primary-service discovery with parallel arrays:
  * uuids[i] (0xFFFF = 128-bit, listed without number), starts[i],
  * ends[i]. Posts PRIM_DISC_RSP.
@@ -104,7 +121,24 @@ export function ble_complete_prim_disc(conn: number, uuids: Uint16Array, starts:
  */
 export function ble_complete_rssi(conn: number, rssi: number): void;
 
+/**
+ * Live connection handles (each u16 one link). Empty = no links.
+ */
+export function ble_conn_handles(): Uint16Array;
+
+/**
+ * Connection security: [sec_mode, key_size] for the link
+ * (mode 0x11 open, 0x21 encrypted-after-pairing).
+ */
+export function ble_conn_sec(conn: number): Uint8Array;
+
 export function ble_enabled(): boolean;
+
+/**
+ * Fail a pairing handshake: posts AUTH_STATUS with the S132 status
+ * (e.g. 0x29 PAIRING_NOT_SUPP); link stays up, unencrypted.
+ */
+export function ble_fail_pairing(conn: number, status: number): void;
 
 export function ble_post_adv_report(peer: Uint8Array, rssi: number, scan_rsp: boolean, data: Uint8Array): void;
 
@@ -328,14 +362,20 @@ export interface InitOutput {
     readonly ble_complete_char_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly ble_complete_desc_disc: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly ble_complete_gap_connect: (a: number, b: number) => void;
+    readonly ble_complete_gap_connect_ret: (a: number, b: number) => number;
     readonly ble_complete_gap_disconnect: (a: number, b: number) => void;
     readonly ble_complete_gattc_hvx: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly ble_complete_gattc_read: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly ble_complete_gattc_write: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly ble_complete_hvx: (a: number, b: number) => void;
+    readonly ble_complete_l2cap_rx: (a: number, b: number, c: number, d: number) => void;
+    readonly ble_complete_pairing: (a: number, b: number) => void;
     readonly ble_complete_prim_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly ble_complete_rssi: (a: number, b: number) => void;
+    readonly ble_conn_handles: (a: number) => void;
+    readonly ble_conn_sec: (a: number, b: number) => void;
     readonly ble_enabled: () => number;
+    readonly ble_fail_pairing: (a: number, b: number) => void;
     readonly ble_post_adv_report: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly ble_post_gatts_write: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly ble_queue_len: () => number;

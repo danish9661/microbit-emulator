@@ -400,6 +400,19 @@ export function ble_complete_gap_connect(peer) {
 }
 
 /**
+ * Complete a GAP connect: driver connected over air; returns the
+ * assigned connection handle (INVALID when the table is full).
+ * @param {Uint8Array} peer
+ * @returns {number}
+ */
+export function ble_complete_gap_connect_ret(peer) {
+    const ptr0 = passArray8ToWasm0(peer, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ble_complete_gap_connect_ret(ptr0, len0);
+    return ret;
+}
+
+/**
  * Complete a GAP disconnect: posts DISCONNECTED with the HCI reason.
  * @param {number} conn
  * @param {number} reason
@@ -456,6 +469,28 @@ export function ble_complete_hvx(conn, handle) {
 }
 
 /**
+ * Complete an L2CAP TX: posts the RX echo on (conn, cid).
+ * @param {number} conn
+ * @param {number} cid
+ * @param {Uint8Array} data
+ */
+export function ble_complete_l2cap_rx(conn, cid, data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.ble_complete_l2cap_rx(conn, cid, ptr0, len0);
+}
+
+/**
+ * Complete a pairing handshake the driver ran over air: posts
+ * AUTH_STATUS (success) + CONN_SEC_UPDATE, marks link bonded.
+ * @param {number} conn
+ * @param {boolean} bonded
+ */
+export function ble_complete_pairing(conn, bonded) {
+    wasm.ble_complete_pairing(conn, bonded);
+}
+
+/**
  * Complete a primary-service discovery with parallel arrays:
  * uuids[i] (0xFFFF = 128-bit, listed without number), starts[i],
  * ends[i]. Posts PRIM_DISC_RSP.
@@ -484,11 +519,59 @@ export function ble_complete_rssi(conn, rssi) {
 }
 
 /**
+ * Live connection handles (each u16 one link). Empty = no links.
+ * @returns {Uint16Array}
+ */
+export function ble_conn_handles() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.ble_conn_handles(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU16FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 2, 2);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * Connection security: [sec_mode, key_size] for the link
+ * (mode 0x11 open, 0x21 encrypted-after-pairing).
+ * @param {number} conn
+ * @returns {Uint8Array}
+ */
+export function ble_conn_sec(conn) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.ble_conn_sec(retptr, conn);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * @returns {boolean}
  */
 export function ble_enabled() {
     const ret = wasm.ble_enabled();
     return ret !== 0;
+}
+
+/**
+ * Fail a pairing handshake: posts AUTH_STATUS with the S132 status
+ * (e.g. 0x29 PAIRING_NOT_SUPP); link stays up, unencrypted.
+ * @param {number} conn
+ * @param {number} status
+ */
+export function ble_fail_pairing(conn, status) {
+    wasm.ble_fail_pairing(conn, status);
 }
 
 /**
@@ -1473,6 +1556,11 @@ function dropObject(idx) {
     if (idx < 1028) return;
     heap[idx] = heap_next;
     heap_next = idx;
+}
+
+function getArrayU16FromWasm0(ptr, len) {
+    ptr = ptr >>> 0;
+    return getUint16ArrayMemory0().subarray(ptr / 2, ptr / 2 + len);
 }
 
 function getArrayU32FromWasm0(ptr, len) {
