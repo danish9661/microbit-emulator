@@ -56,17 +56,72 @@ export function aar_take_job(): Uint32Array;
 
 export function ble_batt_level(): number;
 
+/**
+ * Complete a characteristic discovery: uuids[i] (0xFFFF = 128-bit),
+ * props[i] (S132 u8 bitfield), decls[i], values[i]. Posts CHAR_DISC_RSP.
+ */
+export function ble_complete_char_disc(conn: number, uuids: Uint16Array, props: Uint8Array, decls: Uint16Array, values: Uint16Array): void;
+
+/**
+ * Complete a descriptor discovery: handles[i], uuids[i].
+ * Posts DESC_DISC_RSP.
+ */
+export function ble_complete_desc_disc(conn: number, handles: Uint16Array, uuids: Uint16Array): void;
+
 export function ble_complete_gap_connect(peer: Uint8Array): void;
 
-export function ble_complete_gattc_read(handle: number, offset: number, data: Uint8Array): void;
+/**
+ * Complete a GAP disconnect: posts DISCONNECTED with the HCI reason.
+ */
+export function ble_complete_gap_disconnect(conn: number, reason: number): void;
+
+/**
+ * Complete a peer notification/indication: posts HVX.
+ */
+export function ble_complete_gattc_hvx(conn: number, handle: number, hvx_type: number, data: Uint8Array): void;
+
+export function ble_complete_gattc_read(conn: number, handle: number, offset: number, data: Uint8Array): void;
+
+/**
+ * Complete a GATTC write with the over-air WRITE_RSP proof.
+ */
+export function ble_complete_gattc_write(conn: number, handle: number, op: number, data: Uint8Array): void;
+
+/**
+ * Complete a GATTS HVX emission: posts HVC confirm.
+ */
+export function ble_complete_hvx(conn: number, handle: number): void;
+
+/**
+ * Complete a primary-service discovery with parallel arrays:
+ * uuids[i] (0xFFFF = 128-bit, listed without number), starts[i],
+ * ends[i]. Posts PRIM_DISC_RSP.
+ */
+export function ble_complete_prim_disc(conn: number, uuids: Uint16Array, starts: Uint16Array, ends: Uint16Array): void;
+
+/**
+ * Complete an RSSI sample: posts RSSI_CHANGED.
+ */
+export function ble_complete_rssi(conn: number, rssi: number): void;
 
 export function ble_enabled(): boolean;
 
-export function ble_post_adv_report(peer: Uint8Array, rssi: number, data: Uint8Array): void;
+export function ble_post_adv_report(peer: Uint8Array, rssi: number, scan_rsp: boolean, data: Uint8Array): void;
 
-export function ble_post_gatts_write(handle: number, uuid16: number, data: Uint8Array): void;
+/**
+ * Post a peer write to our table: conn handle, attr handle,
+ * uuid16 (0xFFFF = 128-bit/vendor), op (1 = write request), bytes.
+ */
+export function ble_post_gatts_write(conn: number, handle: number, uuid16: number, op: number, data: Uint8Array): void;
 
 export function ble_queue_len(): number;
+
+/**
+ * Bytes staged alongside the last take_job (WRITE/HVX payloads only;
+ * the SVC copies firmware bytes at call time so the driver read is
+ * stable). Drained once per job; empty when the job carries no bytes.
+ */
+export function ble_take_data(): Uint8Array;
 
 export function ble_take_job(): Uint32Array;
 
@@ -270,12 +325,21 @@ export interface InitOutput {
     readonly aar_complete: (a: number) => void;
     readonly aar_take_job: (a: number) => void;
     readonly ble_batt_level: () => number;
+    readonly ble_complete_char_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+    readonly ble_complete_desc_disc: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly ble_complete_gap_connect: (a: number, b: number) => void;
-    readonly ble_complete_gattc_read: (a: number, b: number, c: number, d: number) => void;
+    readonly ble_complete_gap_disconnect: (a: number, b: number) => void;
+    readonly ble_complete_gattc_hvx: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly ble_complete_gattc_read: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly ble_complete_gattc_write: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly ble_complete_hvx: (a: number, b: number) => void;
+    readonly ble_complete_prim_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly ble_complete_rssi: (a: number, b: number) => void;
     readonly ble_enabled: () => number;
-    readonly ble_post_adv_report: (a: number, b: number, c: number, d: number, e: number) => void;
-    readonly ble_post_gatts_write: (a: number, b: number, c: number, d: number) => void;
+    readonly ble_post_adv_report: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly ble_post_gatts_write: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly ble_queue_len: () => number;
+    readonly ble_take_data: (a: number) => void;
     readonly ble_take_job: (a: number) => void;
     readonly ccm_complete: (a: number) => void;
     readonly ccm_take_job: (a: number) => void;

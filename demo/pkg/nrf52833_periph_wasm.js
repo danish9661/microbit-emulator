@@ -355,6 +355,42 @@ export function ble_batt_level() {
 }
 
 /**
+ * Complete a characteristic discovery: uuids[i] (0xFFFF = 128-bit),
+ * props[i] (S132 u8 bitfield), decls[i], values[i]. Posts CHAR_DISC_RSP.
+ * @param {number} conn
+ * @param {Uint16Array} uuids
+ * @param {Uint8Array} props
+ * @param {Uint16Array} decls
+ * @param {Uint16Array} values
+ */
+export function ble_complete_char_disc(conn, uuids, props, decls, values) {
+    const ptr0 = passArray16ToWasm0(uuids, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(props, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray16ToWasm0(decls, wasm.__wbindgen_export2);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArray16ToWasm0(values, wasm.__wbindgen_export2);
+    const len3 = WASM_VECTOR_LEN;
+    wasm.ble_complete_char_disc(conn, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+}
+
+/**
+ * Complete a descriptor discovery: handles[i], uuids[i].
+ * Posts DESC_DISC_RSP.
+ * @param {number} conn
+ * @param {Uint16Array} handles
+ * @param {Uint16Array} uuids
+ */
+export function ble_complete_desc_disc(conn, handles, uuids) {
+    const ptr0 = passArray16ToWasm0(handles, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray16ToWasm0(uuids, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    wasm.ble_complete_desc_disc(conn, ptr0, len0, ptr1, len1);
+}
+
+/**
  * @param {Uint8Array} peer
  */
 export function ble_complete_gap_connect(peer) {
@@ -364,14 +400,87 @@ export function ble_complete_gap_connect(peer) {
 }
 
 /**
+ * Complete a GAP disconnect: posts DISCONNECTED with the HCI reason.
+ * @param {number} conn
+ * @param {number} reason
+ */
+export function ble_complete_gap_disconnect(conn, reason) {
+    wasm.ble_complete_gap_disconnect(conn, reason);
+}
+
+/**
+ * Complete a peer notification/indication: posts HVX.
+ * @param {number} conn
+ * @param {number} handle
+ * @param {number} hvx_type
+ * @param {Uint8Array} data
+ */
+export function ble_complete_gattc_hvx(conn, handle, hvx_type, data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.ble_complete_gattc_hvx(conn, handle, hvx_type, ptr0, len0);
+}
+
+/**
+ * @param {number} conn
  * @param {number} handle
  * @param {number} offset
  * @param {Uint8Array} data
  */
-export function ble_complete_gattc_read(handle, offset, data) {
+export function ble_complete_gattc_read(conn, handle, offset, data) {
     const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
-    wasm.ble_complete_gattc_read(handle, offset, ptr0, len0);
+    wasm.ble_complete_gattc_read(conn, handle, offset, ptr0, len0);
+}
+
+/**
+ * Complete a GATTC write with the over-air WRITE_RSP proof.
+ * @param {number} conn
+ * @param {number} handle
+ * @param {number} op
+ * @param {Uint8Array} data
+ */
+export function ble_complete_gattc_write(conn, handle, op, data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.ble_complete_gattc_write(conn, handle, op, ptr0, len0);
+}
+
+/**
+ * Complete a GATTS HVX emission: posts HVC confirm.
+ * @param {number} conn
+ * @param {number} handle
+ */
+export function ble_complete_hvx(conn, handle) {
+    wasm.ble_complete_hvx(conn, handle);
+}
+
+/**
+ * Complete a primary-service discovery with parallel arrays:
+ * uuids[i] (0xFFFF = 128-bit, listed without number), starts[i],
+ * ends[i]. Posts PRIM_DISC_RSP.
+ * @param {number} conn
+ * @param {Uint16Array} uuids
+ * @param {Uint16Array} starts
+ * @param {Uint16Array} ends
+ */
+export function ble_complete_prim_disc(conn, uuids, starts, ends) {
+    const ptr0 = passArray16ToWasm0(uuids, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray16ToWasm0(starts, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray16ToWasm0(ends, wasm.__wbindgen_export2);
+    const len2 = WASM_VECTOR_LEN;
+    wasm.ble_complete_prim_disc(conn, ptr0, len0, ptr1, len1, ptr2, len2);
+}
+
+/**
+ * Complete an RSSI sample: posts RSSI_CHANGED.
+ * @param {number} conn
+ * @param {number} rssi
+ */
+export function ble_complete_rssi(conn, rssi) {
+    wasm.ble_complete_rssi(conn, rssi);
 }
 
 /**
@@ -385,25 +494,30 @@ export function ble_enabled() {
 /**
  * @param {Uint8Array} peer
  * @param {number} rssi
+ * @param {boolean} scan_rsp
  * @param {Uint8Array} data
  */
-export function ble_post_adv_report(peer, rssi, data) {
+export function ble_post_adv_report(peer, rssi, scan_rsp, data) {
     const ptr0 = passArray8ToWasm0(peer, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
     const ptr1 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
     const len1 = WASM_VECTOR_LEN;
-    wasm.ble_post_adv_report(ptr0, len0, rssi, ptr1, len1);
+    wasm.ble_post_adv_report(ptr0, len0, rssi, scan_rsp, ptr1, len1);
 }
 
 /**
+ * Post a peer write to our table: conn handle, attr handle,
+ * uuid16 (0xFFFF = 128-bit/vendor), op (1 = write request), bytes.
+ * @param {number} conn
  * @param {number} handle
  * @param {number} uuid16
+ * @param {number} op
  * @param {Uint8Array} data
  */
-export function ble_post_gatts_write(handle, uuid16, data) {
+export function ble_post_gatts_write(conn, handle, uuid16, op, data) {
     const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
-    wasm.ble_post_gatts_write(handle, uuid16, ptr0, len0);
+    wasm.ble_post_gatts_write(conn, handle, uuid16, op, ptr0, len0);
 }
 
 /**
@@ -412,6 +526,26 @@ export function ble_post_gatts_write(handle, uuid16, data) {
 export function ble_queue_len() {
     const ret = wasm.ble_queue_len();
     return ret >>> 0;
+}
+
+/**
+ * Bytes staged alongside the last take_job (WRITE/HVX payloads only;
+ * the SVC copies firmware bytes at call time so the driver read is
+ * stable). Drained once per job; empty when the job carries no bytes.
+ * @returns {Uint8Array}
+ */
+export function ble_take_data() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.ble_take_data(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
 }
 
 /**
@@ -1363,6 +1497,14 @@ function getStringFromWasm0(ptr, len) {
     return decodeText(ptr >>> 0, len);
 }
 
+let cachedUint16ArrayMemory0 = null;
+function getUint16ArrayMemory0() {
+    if (cachedUint16ArrayMemory0 === null || cachedUint16ArrayMemory0.byteLength === 0) {
+        cachedUint16ArrayMemory0 = new Uint16Array(wasm.memory.buffer);
+    }
+    return cachedUint16ArrayMemory0;
+}
+
 let cachedUint32ArrayMemory0 = null;
 function getUint32ArrayMemory0() {
     if (cachedUint32ArrayMemory0 === null || cachedUint32ArrayMemory0.byteLength === 0) {
@@ -1388,6 +1530,13 @@ let heap_next = heap.length;
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArray16ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 2, 2) >>> 0;
+    getUint16ArrayMemory0().set(arg, ptr / 2);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passArray8ToWasm0(arg, malloc) {
@@ -1475,6 +1624,7 @@ function __wbg_finalize_init(instance, module) {
     wasm = instance.exports;
     wasmModule = module;
     cachedDataViewMemory0 = null;
+    cachedUint16ArrayMemory0 = null;
     cachedUint32ArrayMemory0 = null;
     cachedUint8ArrayMemory0 = null;
     return wasm;

@@ -2,9 +2,9 @@
 
 Audited 2026-09-12 by cross-checking all 39 `monox/nrf52833.svd`
 peripherals against `src/peripherals/`, running the suite
-(**195 passed, 0 failed** — +10 since audit: SPIM RXD MISO +
+(**196 passed, 0 failed** — +11 since audit: SPIM RXD MISO +
 GPIO CNF→DIR + UARTE TX snapshot + TWIM shifted-ADDR match +
-SCB AIRCR SYSRESETREQ + RADIO 802.15.4 helpers + sd_ble SVC face ×4),
+SCB AIRCR SYSRESETREQ + RADIO 802.15.4 helpers + sd_ble SVC face ×5),
 reading every model, and replaying the
 live firmware runs. Grades: **F** = functional (timed, IRQs,
 driver take/complete, firmware proof), **H** = handshake
@@ -306,17 +306,29 @@ beyond proof-level driving remain future work.
     (`tools/ble_air_bridge.py` + `BleAir` part, `radio_inject_rx_to`
     addressed echo) with loopback default — BLE/BT without
     WebBluetooth; new export `radio_set_ed_dbm`.
-    BLE SVC face (P98, NEW): `src/sd_ble.rs` answers the SoftDevice
-    SVCs BLE firmware actually calls (ENABLE/EVT_GET, GAP ADDR/ADV/
-    SCAN/CONNECT, GATTC READ, GATTS battery table) with S132 enum
-    numbers; thumb.rs SVC hook claims 0x60..=0xBF first (r0 + skip,
-    else fall through to raise_sync — zero-cost when idle, one range
-    compare); air-backed ops stage take/complete jobs the demo pump
-    resolves via the Bumble bridge (local loopback default);
-    `ble_take_job/complete_gattc_read/complete_gap_connect/
-    post_adv_report/post_gatts_write/enabled/queue_len/batt_level`
-    exports; 4 native tests + SVC-hook proof in cpu/tests.rs
-    (195 green); headless `MockBleSvc` handshake proof (17 OK).
+    BLE SVC face (P98–P99): `src/sd_ble.rs` answers the SoftDevice
+    SVCs BLE firmware actually calls — full S132-verified coverage:
+    common ENABLE (RAM-floor report) + two-arg EVT_GET (length query,
+    DATA_SIZE, legacy drain), GAP ADDR/ADV/SCAN/CONNECT/DISCONNECT/
+    RSSI (stage air jobs; pairing/crypto refuse INVALID_STATE),
+    GATTC PRIM/CHAR/DESC discovery + READ + WRITE (bytes copied at SVC
+    time) + HV_CONFIRM, GATTS service/char/descriptor table with real
+    handles + struct-form VALUE_SET/GET + HVX staging. Event envelopes
+    carry the gattc head / unpacked pads per the headers (tests assert
+    byte offsets). thumb.rs SVC hook claims 0x60..=0xBF first (r0 +
+    skip, else fall through to raise_sync — zero-cost when idle);
+    air-backed ops stage take/complete jobs (10 tags incl. take_data
+    for WRITE/HVX bytes) the demo pump resolves via the Bumble bridge
+    (local loopback default mirrors the bridge peer table: battery 87
+    + NUS). `ble_take_job/take_data/complete_*×8/post_adv_report/
+    post_gatts_write/enabled/queue_len/batt_level` exports; 5 native
+    tests + SVC-hook proof in cpu/tests.rs (196 green); headless
+    `MockBleSvc` executes REAL SVC bytes on a WasmCpu end to end
+    (enable→table→connect→disc→read→write→scan→rssi→disconnect,
+    18 mocks OK). Bridge peer: battery (READ+NOTIFY) + Nordic UART
+    (RX write, TX notify) + live handles + full job protocol incl.
+    desc_disc; LocalLink limits documented (no HCI RSSI → adv-derived,
+    links live in connect contexts).
 6. **Demo wall-time**: meter now shows slice + sustained average
    (`6.02 MIPS (avg 6.00)` on both blinky AND mpy park — P71: the
    16-class bursts the user saw are peak slice rates; sustained == slice
@@ -336,9 +348,9 @@ protection, publish to npm.
 ## 8. Verify
 
 ```
-cargo test                       # 195 green (crate dir)
+cargo test                       # 196 green (crate dir)
 node demo/parts/smoke.mjs        # parts green
-node demo/parts/handshake.mjs    # 17 handshake mocks green (needs pkg-test-handshake build)
+node demo/parts/handshake.mjs    # 18 handshake mocks green (needs pkg-test-handshake build)
 wasm-pack build nrf52833-periph-wasm --target web --out-dir ../demo/pkg
 ```
 Firmware proofs rebuild with `docs/README.md` recipes (xpack GCC

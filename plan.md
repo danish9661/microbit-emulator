@@ -2351,3 +2351,54 @@ air + TX/RX round trip + GATT battery over-air value on panel);
 firmware-level proof (bare-metal SVC caller → enable → evt_get, or a
 BLE-enabled image exercising GAP/GATTC SVCs — today's MPY/MC images
 never init the stack, P58).
+
+## 83. P99 BLE/GATT full fix: correct SVC face + live air proof (2026-09-15)
+
+P98 wired the shape but left real gaps (found by header audit against
+the S132 headers + live bridge runs): wrong GAP SVC numbers
+(SCAN_START 0x89 vs 0x8A, CONNECT 0x8B vs 0x8C), single-arg evt_get,
+missing conn_handle in GATTC envelopes, packed ADV_REPORT (missing
+u16 pad), CONNECTED role=PERIPH, pseudo-handles (0x10/0x13) instead of
+a table, VALUE_SET/GET register-form instead of struct-form, no
+WRITE/DISCONNECT/RSSI/DESC jobs, bridge resolving locally instead of
+over air, GATT reply without conn/handle echo.
+
+Fixes (all S132-verified, committed in steps below):
+- sd_ble.rs: full enum tables (common 0x60-0x69, GAP 0x70-0x8E,
+  GATTC 0x90-0x99, GATTS 0xA0-0xAC with names); two-arg evt_get
+  (length query, DATA_SIZE, legacy drain); gattc envelope head on
+  every GATTC RSP; unpacked pads (ADV_REPORT pad, WRITE_RSP/HVX
+  pads); CENTRAL role + real conn_params; attribute table with
+  struct-form VALUE_SET/GET (conn 0xFFFF ok, length query,
+  offset checks); 10 BleJobs (connect/disconnect/rssi/scan/
+  prim/char/desc/read/write/hvx) with bytes copied at SVC time +
+  take_data export; pairing/crypto refuse INVALID_STATE (no ghost
+  crypto); 5 native tests incl. byte-offset asserts (196 green).
+  Two real bugs caught by the new tests: check_conn `.err()?`
+  returning None on success (8 arms staged nothing), HVX p_len/p_data
+  at +6/+10 vs S132 +8/+12.
+- Bridge: peer now battery (READ+NOTIFY) + Nordic UART (RX write,
+  TX notify) with live handles logged; full job protocol
+  (ble_read/write/desc kind=3/hvx/scan/connect/rssi/disconnect) with
+  conn/handle echo + cancel (never ghost events); generic
+  read-handle-by-walk; CharacteristicProxy handle mapping
+  (value=decl+1, no value_handle attr — probed) + desc .type fix.
+  Live-verified: read [87] overAir, prim_disc (4 svcs incl. 0x180F),
+  char_disc incl. 0x2A19, write NUS RX, hvx notify [85,86], scan,
+  connect, RSSI(adv-derived — no HCI_READ_RSSI on LocalLink, probed),
+  disconnect. Serialized-link limit: one Bumble link op at a time;
+  back-to-back WS jobs queue behind the in-flight ATT burst.
+- Demo: pumpBleLoopback mirrors the bridge table for all 10 tags;
+  pump drains prim/char/desc_disc_rsp + write_rsp + hvx + rssi +
+  cancel(reads fall back to battery, writes stay silent for retry).
+- MockBleSvc v2 executes REAL SVC bytes (ldr preamble + svc + b .)
+  on a WasmCpu: enable→table→connect→disc→read→write→scan→rssi→
+  disconnect, every event drained and byte-checked (18 mocks OK).
+  Two mock bugs fixed along the way (ldr-literal bases, CONNECTED
+  role + ADV pad body offsets).
+- API.md gains the BLE section (tags, take_data, completes, bridge
+  protocol, loopback table).
+
+NEXT: firmware-level proof on a BLE-enabled image (today's MPY/MC
+never init the stack, P58); in-demo live-bridge run from the bench
+panel (Enable BLE air + TX/RX + battery over-air line).
