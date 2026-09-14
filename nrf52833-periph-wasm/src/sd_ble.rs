@@ -4,55 +4,114 @@
 // bluetooth" slice. The RADIO register model (radio_nrf.rs) stays the
 // bare-metal 802.15.4-ish face; THIS module is the SVC face — the calls
 // BLE firmware actually makes (sd_ble_enable, sd_ble_gap_*,
-// sd_ble_gatts_*, sd_ble_gattc_*, sd_ble_evt_get). Numbers are enum
-// positions from the S132 headers (arduino nRF52 package, ble_ranges.h
-// + ble.h + ble_gap.h + ble_gatts.h + ble_gattc.h), NOT guesses:
+// sd_ble_gatts_*, sd_ble_gattc_*, sd_ble_evt_get). Every number below
+// is verified against the S132 headers in the arduino nRF52 package
+// (ble_ranges.h + ble.h + ble_gap.h + ble_gatts.h + ble_gattc.h +
+// ble_gatt.h + ble_types.h + nrf_error.h + ble_err.h), NOT guessed:
 //
-//   common 0x60: ENABLE, EVT_GET(0x61), TX_PACKET_COUNT_GET, UUID_VS_ADD,
-//     UUID_DECODE, UUID_ENCODE, VERSION_GET, USER_MEM_REPLY, OPT_SET/GET
-//   GAP 0x70: ADDRESS_SET/GET, ADV_DATA_SET, ADV_START/STOP,
-//     CONN_PARAM_UPDATE, DISCONNECT, TX_POWER_SET, APPEARANCE_*,
-//     PPCP_*, DEVICE_NAME_*, AUTHENTICATE, SEC_PARAMS_REPLY,
-//     AUTH_KEY_REPLY, LESC_DHKEY_REPLY, KEYPRESS_NOTIFY,
-//     LESC_OOB_DATA_GET/SET, ENCRYPT, SEC_INFO_REPLY, CONN_SEC_GET,
-//     RSSI_START/STOP, SCAN_START/STOP, CONNECT, CONNECT_CANCEL, RSSI_GET
-//   GATTC 0x90: PRIMARY_SERVICES_DISCOVER, RELATIONSHIPS_DISCOVER,
-//     CHARACTERISTICS_DISCOVER, DESCRIPTORS_DISCOVER, ATTR_INFO_DISCOVER,
-//     CHAR_VALUE_BY_UUID_READ, READ, CHAR_VALUES_READ, WRITE, HV_CONFIRM
-//   GATTS 0xA0: SERVICE_ADD, INCLUDE_ADD, CHARACTERISTIC_ADD,
-//     DESCRIPTOR_ADD, VALUE_SET, VALUE_GET, HVX, SERVICE_CHANGED,
-//     RW_AUTHORIZE_REPLY, SYS_ATTR_SET/GET, INITIAL_USER_HANDLE_GET,
-//     ATTR_GET
+// SVC bases (ble_ranges.h): common 0x60 (12: ENABLE..OPT_GET),
+//   reserved 0x6C, GAP 0x70 (32), GATTC 0x90 (32), GATTS 0xA0 (16),
+//   L2CAP 0xB0 (16 — unclaimed here, falls through to raise_sync).
+//   Common enum (ble.h): ENABLE=0x60, EVT_GET=0x61,
+//   TX_PACKET_COUNT_GET=0x62, UUID_VS_ADD=0x63, UUID_DECODE=0x64,
+//   UUID_ENCODE=0x65, VERSION_GET=0x66, USER_MEM_REPLY=0x67,
+//   OPT_SET=0x68, OPT_GET=0x69.
+//   GAP enum (ble_gap.h): ADDRESS_SET=0x70, ADDRESS_GET=0x71,
+//   ADV_DATA_SET=0x72, ADV_START=0x73, ADV_STOP=0x74,
+//   CONN_PARAM_UPDATE=0x75, DISCONNECT=0x76, TX_POWER_SET=0x77,
+//   APPEARANCE_SET=0x78, APPEARANCE_GET=0x79, PPCP_SET=0x7A,
+//   PPCP_GET=0x7B, DEVICE_NAME_SET=0x7C, DEVICE_NAME_GET=0x7D,
+//   AUTHENTICATE=0x7E, SEC_PARAMS_REPLY=0x7F, AUTH_KEY_REPLY=0x80,
+//   LESC_DHKEY_REPLY=0x81, KEYPRESS_NOTIFY=0x82, LESC_OOB_DATA_GET=0x83,
+//   LESC_OOB_DATA_SET=0x84, ENCRYPT=0x85, SEC_INFO_REPLY=0x86,
+//   CONN_SEC_GET=0x87, RSSI_START=0x88, RSSI_STOP=0x89,
+//   SCAN_START=0x8A, SCAN_STOP=0x8B, CONNECT=0x8C, CONNECT_CANCEL=0x8D,
+//   RSSI_GET=0x8E.
+//   GATTC enum (ble_gattc.h): PRIMARY_SERVICES_DISCOVER=0x90,
+//   RELATIONSHIPS_DISCOVER=0x91, CHARACTERISTICS_DISCOVER=0x92,
+//   DESCRIPTORS_DISCOVER=0x93, ATTR_INFO_DISCOVER=0x94,
+//   CHAR_VALUE_BY_UUID_READ=0x95, READ=0x96, CHAR_VALUES_READ=0x97,
+//   WRITE=0x98, HV_CONFIRM=0x99.
+//   GATTS enum (ble_gatts.h): SERVICE_ADD=0xA0, INCLUDE_ADD=0xA1,
+//   CHARACTERISTIC_ADD=0xA2, DESCRIPTOR_ADD=0xA3, VALUE_SET=0xA4,
+//   VALUE_GET=0xA5, HVX=0xA6, SERVICE_CHANGED=0xA7,
+//   RW_AUTHORIZE_REPLY=0xA8, SYS_ATTR_SET=0xA9, SYS_ATTR_GET=0xAA,
+//   INITIAL_USER_HANDLE_GET=0xAB, ATTR_GET=0xAC.
+//
+// Signatures that matter (SVCALL lines, register contract r0..r3):
+//   sd_ble_enable(ble_enable_params_t*, u32 *app_ram_base) — both
+//     pointers may be NULL (dev use *app_ram_base=0 for sizing).
+//   sd_ble_evt_get(u8 *dest, u16 *len) — TWO args (not one!): dest
+//     NULL + len queries the pending length; dest set drains.
+//   sd_ble_gap_address_get(ble_gap_addr_t*) — {u8 type, u8[6] addr LSB}.
+//   sd_ble_gap_adv_start(ble_gap_adv_params_t*) — NULL = defaults.
+//   sd_ble_gap_disconnect(conn, hci_code) — posts DISCONNECTED.
+//   sd_ble_gap_rssi_get(conn, *rssi, *ch_index=NULL-ok).
+//   sd_ble_gattc_read(conn, handle, offset) — three plain u16s.
+//   sd_ble_gattc_write(conn, ble_gattc_write_params_t*) — struct
+//     {u8 op, u8 flags, u16 handle, u16 offset, u16 len, u8 *value}.
+//   sd_ble_gatts_value_set/get(conn, handle, ble_gatts_value_t*) —
+//     struct {u16 len, u16 offset, u8 *value}; conn may be
+//     BLE_CONN_HANDLE_INVALID (0xFFFF) for non-system attrs.
+//   sd_ble_gatts_hvx(conn, ble_gatts_hvx_params_t*) — struct
+//     {u16 handle, u8 type, u16 offset, u16 *len, u8 *data}.
 //
 // Boundary rule (honest, documented): the emulator core CANNOT speak BLE
 // link-layer — no SoftDevice binary, no GAP/GATT state machine, no
 // pairing crypto. So every call that needs air consults the driver-side
 // bridge (tools/ble_air_bridge.py over WebSocket, same as the RADIO
 // air peer): the model stages take_*(), the driver resolves via Bumble
-// (real scan/connect/discover/read over the virtual link) and calls
-// complete_*(), exactly like every EASYDMA peripheral here. Calls that
-// need no air (local table writes, config) complete synchronously with
-// NRF_SUCCESS and queue the matching SoftDevice event for sd_ble_evt_get.
+// (real scan/connect/discover/read/write over the virtual link) and
+// calls complete_*(), exactly like every EASYDMA peripheral here. Calls
+// that need no air (local table writes, config) complete synchronously
+// with NRF_SUCCESS and queue the matching SoftDevice event for
+// sd_ble_evt_get.
 //
-// Event wire: ble_evt_t = {evt_id u16, evt_len u16, ...params} written
-// to the app buffer at r0 (S132 ble.h). evt_id series: GAP 0x10,
-// GATTC 0x30, GATTS 0x50. evt_len INCLUDES the 4-byte header.
-//   GAP CONNECTED (0x10): conn_handle + peer/own addr + role +
-//     irk flags + conn_params
-//   GAP ADV_REPORT (0x1D): peer addr + rssi + flags/type/dlen + 31B data
-//   GATTC READ_RSP (0x36): handle + offset + len + data[1-var]
-//   GATTS WRITE (0x50): conn_handle + handle + uuid + op + auth +
-//     offset + len + data[1-var]
-//
-// Return codes (S132 nrf_error.h / ble_err.h): NRF_SUCCESS 0,
+// Event wire (ble.h: ble_evt_t = {u16 evt_id, u16 evt_len incl.
+// header, union{common,gap,l2cap,gattc,gatts}}):
+//   GAP CONNECTED (0x10): ble_gap_evt_t = {u16 conn_handle,
+//     ble_gap_evt_connected_t = {peer_addr{type+6}, own_addr{type+6},
+//     u8 role, u8 irk_match:1+idx:7, conn_params{6xu16}}}
+//   GAP DISCONNECTED (0x11): {u16 conn_handle, u8 reason}
+//   GAP ADV_REPORT (0x1D): {u16 0xFFFF (no conn),
+//     {peer{type+6}, i8 rssi, u8 scan_rsp:1+type:2+dlen:5, u8[31] data}}
+//   GAP RSSI_CHANGED (0x1C): {u16 conn_handle, i8 rssi}
+//   GATTC PRIM_SRVC_DISC_RSP (0x30): {conn, gatt_status, error_handle,
+//     u16 count, ble_gattc_service_t[count] = {uuid{16+8}, start, end}}
+//   GATTC CHAR_DISC_RSP (0x32): {conn, status, err, count,
+//     ble_gattc_char_t[count] = {uuid{16+8}, props u8, ext:8,
+//     decl_handle, value_handle}} — props u8 then ext byte.
+//   GATTC READ_RSP (0x36): {conn, status, err,
+//     {u16 handle, u16 offset, u16 len, u8 data[]}}
+//   GATTC WRITE_RSP (0x38): {conn, status, err,
+//     {u16 handle, u8 op, u16 offset, u16 len, u8 data[]}}
+//   GATTC HVX (0x39): {conn, status, err,
+//     {u16 handle, u8 type, u16 len, u8 data[]}}
+//   GATTS WRITE (0x50): {u16 conn, {u16 handle, uuid{16+8}, u8 op,
+//     u8 auth, u16 offset, u16 len, u8 data[]}}
+//   GATTS HVC (0x53): {u16 conn, {u16 handle}}
+// Layout note: S132 structs are UNPACKED (no pragma pack in headers —
+// verified by grep): u8 bitfields pack into their u8, but u16 fields
+// align to even offsets, so e.g. adv_report's flag byte sits at +10
+// after peer(7)+rssi(1)+1 pad, data at +12. adv_report dlen<=31.
+// Return codes (nrf_error.h / ble_err.h): NRF_SUCCESS 0,
 // NRF_ERROR_NOT_FOUND 5, NRF_ERROR_INVALID_STATE 8,
 // NRF_ERROR_INVALID_PARAM 7, NRF_ERROR_INVALID_ADDR 16,
-// NRF_ERROR_NO_MEM 4, NRF_ERROR_FORBIDDEN 15,
-// BLE_ERROR_INVALID_CONN_HANDLE 0x3002, BLE_ERROR_NOT_ENABLED 0x3001,
+// NRF_ERROR_NO_MEM 4, NRF_ERROR_FORBIDDEN 15, NRF_ERROR_BUSY 17,
+// NRF_ERROR_DATA_SIZE 12, BLE_ERROR_INVALID_CONN_HANDLE 0x3002,
+// BLE_ERROR_NOT_ENABLED 0x3001, BLE_ERROR_NO_TX_PACKETS 0x3004,
 // BLE_ERROR_GATTS_SYS_ATTR_MISSING 0x3401.
+// UUID types (ble_types.h): UNKNOWN 0, BLE(sig) 1, VENDOR_BEGIN 2.
+// Write ops (ble_gatt.h): INVALID 0, WRITE_REQ 1, WRITE_CMD 2,
+//   SIGNED_WRITE 3, PREP_WRITE 4, EXEC_WRITE 5.
+// HVX types: INVALID 0, NOTIFICATION 1, INDICATION 2.
+// Roles (ble_gap.h): INVALID 0, PERIPH 1, CENTRAL 2 — we report
+//   CENTRAL (we initiate the bridge connection).
+// GATT (ble_gatt.h): HANDLE_INVALID 0, STATUS_SUCCESS 0.
+// Conn (ble_types.h): CONN_HANDLE_INVALID 0xFFFF.
 //
 // SVC dispatch: thumb.rs SVC arm calls sd_ble::handle_svc() FIRST for
-// numbers in 0x60..0xBF; handled = write r0 + advance past svc (like a
+// numbers in 0x60..=0xBF; handled = write r0 + advance past svc (like a
 // completed call, per the sd_evt design). Unclaimed numbers fall through
 // to the normal raise_sync path untouched — zero behavior change when
 // BLE is idle. AGENTS.md compliance: NOT a Peripheral (no MMIO base —
@@ -71,46 +130,117 @@ pub const SVC_BLE_ENABLE: u8 = 0x60;
 pub const SVC_BLE_EVT_GET: u8 = 0x61;
 pub const SVC_BLE_TX_PACKET_COUNT_GET: u8 = 0x62;
 pub const SVC_BLE_UUID_VS_ADD: u8 = 0x63;
-// 0x64 UUID_DECODE, 0x65 UUID_ENCODE, 0x66 VERSION_GET,
-// 0x67 USER_MEM_REPLY, 0x68 OPT_SET, 0x69 OPT_GET (local acks)
-// GAP 0x70..
+pub const SVC_BLE_UUID_DECODE: u8 = 0x64;
+pub const SVC_BLE_UUID_ENCODE: u8 = 0x65;
+pub const SVC_BLE_VERSION_GET: u8 = 0x66;
+pub const SVC_BLE_USER_MEM_REPLY: u8 = 0x67;
+pub const SVC_BLE_OPT_SET: u8 = 0x68;
+pub const SVC_BLE_OPT_GET: u8 = 0x69;
+// GAP 0x70.. (ble_gap.h enum order: ADDRESS_SET=0x70 ... RSSI_GET=0x8E)
 pub const SVC_GAP_ADDRESS_SET: u8 = 0x70;
 pub const SVC_GAP_ADDRESS_GET: u8 = 0x71;
 pub const SVC_GAP_ADV_DATA_SET: u8 = 0x72;
 pub const SVC_GAP_ADV_START: u8 = 0x73;
 pub const SVC_GAP_ADV_STOP: u8 = 0x74;
-pub const SVC_GAP_SCAN_START: u8 = 0x89;
-pub const SVC_GAP_SCAN_STOP: u8 = 0x8A;
-pub const SVC_GAP_CONNECT: u8 = 0x8B;
-// GATTC 0x90..
+pub const SVC_GAP_CONN_PARAM_UPDATE: u8 = 0x75;
+pub const SVC_GAP_DISCONNECT: u8 = 0x76;
+pub const SVC_GAP_TX_POWER_SET: u8 = 0x77;
+pub const SVC_GAP_APPEARANCE_SET: u8 = 0x78;
+pub const SVC_GAP_APPEARANCE_GET: u8 = 0x79;
+pub const SVC_GAP_PPCP_SET: u8 = 0x7A;
+pub const SVC_GAP_PPCP_GET: u8 = 0x7B;
+pub const SVC_GAP_DEVICE_NAME_SET: u8 = 0x7C;
+pub const SVC_GAP_DEVICE_NAME_GET: u8 = 0x7D;
+pub const SVC_GAP_AUTHENTICATE: u8 = 0x7E;
+pub const SVC_GAP_SEC_PARAMS_REPLY: u8 = 0x7F;
+pub const SVC_GAP_AUTH_KEY_REPLY: u8 = 0x80;
+pub const SVC_GAP_LESC_DHKEY_REPLY: u8 = 0x81;
+pub const SVC_GAP_KEYPRESS_NOTIFY: u8 = 0x82;
+pub const SVC_GAP_LESC_OOB_DATA_GET: u8 = 0x83;
+pub const SVC_GAP_LESC_OOB_DATA_SET: u8 = 0x84;
+pub const SVC_GAP_ENCRYPT: u8 = 0x85;
+pub const SVC_GAP_SEC_INFO_REPLY: u8 = 0x86;
+pub const SVC_GAP_CONN_SEC_GET: u8 = 0x87;
+pub const SVC_GAP_RSSI_START: u8 = 0x88;
+pub const SVC_GAP_RSSI_STOP: u8 = 0x89;
+pub const SVC_GAP_SCAN_START: u8 = 0x8A;
+pub const SVC_GAP_SCAN_STOP: u8 = 0x8B;
+pub const SVC_GAP_CONNECT: u8 = 0x8C;
+pub const SVC_GAP_CONNECT_CANCEL: u8 = 0x8D;
+pub const SVC_GAP_RSSI_GET: u8 = 0x8E;
+// GATTC 0x90.. (ble_gattc.h enum order)
 pub const SVC_GATTC_PRIMARY_DISC: u8 = 0x90;
+pub const SVC_GATTC_REL_DISC: u8 = 0x91;
 pub const SVC_GATTC_CHAR_DISC: u8 = 0x92;
+pub const SVC_GATTC_DESC_DISC: u8 = 0x93;
+pub const SVC_GATTC_ATTR_INFO_DISC: u8 = 0x94;
+pub const SVC_GATTC_UUID_READ: u8 = 0x95;
 pub const SVC_GATTC_READ: u8 = 0x96;
+pub const SVC_GATTC_CHAR_VALS_READ: u8 = 0x97;
 pub const SVC_GATTC_WRITE: u8 = 0x98;
+pub const SVC_GATTC_HV_CONFIRM: u8 = 0x99;
 // GATTS 0xA0..
 pub const SVC_GATTS_SERVICE_ADD: u8 = 0xA0;
+pub const SVC_GATTS_INCLUDE_ADD: u8 = 0xA1;
 pub const SVC_GATTS_CHAR_ADD: u8 = 0xA2;
+pub const SVC_GATTS_DESC_ADD: u8 = 0xA3;
 pub const SVC_GATTS_VALUE_SET: u8 = 0xA4;
 pub const SVC_GATTS_VALUE_GET: u8 = 0xA5;
 pub const SVC_GATTS_HVX: u8 = 0xA6;
+pub const SVC_GATTS_SERVICE_CHANGED: u8 = 0xA7;
+pub const SVC_GATTS_RW_AUTHORIZE_REPLY: u8 = 0xA8;
+pub const SVC_GATTS_SYS_ATTR_SET: u8 = 0xA9;
+pub const SVC_GATTS_SYS_ATTR_GET: u8 = 0xAA;
+pub const SVC_GATTS_INITIAL_USER_HANDLE_GET: u8 = 0xAB;
+pub const SVC_GATTS_ATTR_GET: u8 = 0xAC;
 
 // ---- event ids (S132 ble_ranges.h series) ----
 pub const EVT_GAP_CONNECTED: u16 = 0x10;
 pub const EVT_GAP_DISCONNECTED: u16 = 0x11;
+pub const EVT_GAP_RSSI_CHANGED: u16 = 0x1C;
 pub const EVT_GAP_ADV_REPORT: u16 = 0x1D;
+pub const EVT_GATTC_PRIM_DISC_RSP: u16 = 0x30;
+pub const EVT_GATTC_REL_DISC_RSP: u16 = 0x31;
+pub const EVT_GATTC_CHAR_DISC_RSP: u16 = 0x32;
+pub const EVT_GATTC_DESC_DISC_RSP: u16 = 0x33;
+pub const EVT_GATTC_ATTR_INFO_RSP: u16 = 0x34;
+pub const EVT_GATTC_UUID_READ_RSP: u16 = 0x35;
 pub const EVT_GATTC_READ_RSP: u16 = 0x36;
+pub const EVT_GATTC_VALS_READ_RSP: u16 = 0x37;
+pub const EVT_GATTC_WRITE_RSP: u16 = 0x38;
+pub const EVT_GATTC_HVX: u16 = 0x39;
 pub const EVT_GATTS_WRITE: u16 = 0x50;
+pub const EVT_GATTS_HVC: u16 = 0x53;
 
 // ---- return codes (S132 nrf_error.h / ble_err.h) ----
 pub const NRF_SUCCESS: u32 = 0;
 pub const NRF_ERROR_NOT_FOUND: u32 = 5;
+pub const NRF_ERROR_NOT_SUPPORTED: u32 = 6;
 pub const NRF_ERROR_INVALID_STATE: u32 = 8;
 pub const NRF_ERROR_INVALID_PARAM: u32 = 7;
 pub const NRF_ERROR_INVALID_ADDR: u32 = 16;
 pub const NRF_ERROR_NO_MEM: u32 = 4;
 pub const NRF_ERROR_FORBIDDEN: u32 = 15;
+pub const NRF_ERROR_BUSY: u32 = 17;
+pub const NRF_ERROR_DATA_SIZE: u32 = 12;
 pub const BLE_ERROR_INVALID_CONN_HANDLE: u32 = 0x3002;
 pub const BLE_ERROR_NOT_ENABLED: u32 = 0x3001;
+pub const BLE_ERROR_NO_TX_PACKETS: u32 = 0x3004;
+pub const BLE_CONN_HANDLE_INVALID: u16 = 0xFFFF;
+
+// Roles (ble_gap.h): we initiate the bridge connection -> CENTRAL.
+pub const GAP_ROLE_CENTRAL: u8 = 2;
+// UUID types (ble_types.h).
+pub const UUID_TYPE_BLE: u8 = 1;
+pub const UUID_TYPE_VENDOR_BEGIN: u8 = 2;
+// Write ops (ble_gatt.h) / HVX types.
+pub const GATT_OP_WRITE_REQ: u8 = 1;
+pub const GATT_OP_WRITE_CMD: u8 = 2;
+pub const GATT_HVX_NOTIFICATION: u8 = 1;
+pub const GATT_HVX_INDICATION: u8 = 2;
+// GATT status / handle sentinels (ble_gatt.h).
+pub const GATT_STATUS_SUCCESS: u16 = 0;
+pub const GATT_HANDLE_INVALID: u16 = 0;
 
 // Pretend connection handle handed to firmware for bridge connections.
 pub const BRIDGE_CONN_HANDLE: u16 = 1;
@@ -123,22 +253,85 @@ fn is_ram(addr: u32) -> bool {
     (0x2000_0000..0x2002_0000).contains(&addr)
 }
 
-/// One queued SoftDevice event: raw payload AFTER the 4-byte header
-/// (evt_id + evt_len are filled at delivery from id + payload len).
+/// One queued SoftDevice event: evt_id + evt_len + raw params.
+/// evt_len (the u16 at buf+2) INCLUDES the 4-byte header (S132 ble.h),
+/// so the pump must size firmware buffers from it, not from payload.
 struct QueuedEvt {
     id: u16,
     payload: Vec<u8>,
 }
 
+/// GATT discovery data staged for a completion: the bridge walks the
+/// live peer table and the model formats the S132 event structs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscService {
+    pub uuid16: Option<u16>,
+    pub start: u16,
+    pub end: u16,
+}
+
+/// Characteristic row for CHAR_DISC_RSP: S132 ble_gattc_char_t =
+/// {uuid{16+8}, props u8, ext byte, decl_handle, value_handle}.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscChar {
+    pub uuid16: Option<u16>,
+    pub props: u8,
+    pub decl: u16,
+    pub value: u16,
+}
+
+/// Descriptor row for DESC_DISC_RSP: ble_gattc_desc_t = {handle, uuid}.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscDesc {
+    pub handle: u16,
+    pub uuid16: Option<u16>,
+}
+
 /// Bridge job staged for the driver (take_*/complete_* discipline).
+///firmware SVCs stage exactly one job; the driver drains it via
+/// ble_take_job(), resolves over air, and completes with the matching
+/// complete_* — same discipline as every EASYDMA peripheral here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BleJob {
-    /// GATTC read: firmware wants handle `handle` on `conn`; driver
-    /// performs the over-air read and completes with the bytes.
-    GattcRead { conn: u16, handle: u16, offset: u16 },
-    /// GAP connect: firmware asked to connect to `addr` (6 bytes LE);
-    /// driver resolves over air and completes with conn handle.
+    /// GAP connect (SVC 0x8C): r0 = *ble_gap_addr_t {type, 6B LE}.
+    /// Driver connects over air, completes with the conn handle.
     GapConnect { addr: [u8; 6] },
+    /// GAP disconnect (SVC 0x76): (conn, hci reason). Driver tears the
+    /// air link down, completes with DISCONNECTED.
+    GapDisconnect { conn: u16, reason: u8 },
+    /// GAP RSSI get (SVC 0x8E): conn. Driver samples air RSSI.
+    GapRssiGet { conn: u16 },
+    /// GAP scan start (SVC 0x8A): driver runs one live sighting,
+    /// completes with an ADV_REPORT.
+    GapScanStart,
+    /// GATTC primary-service discovery (SVC 0x90): (conn, start, uuid
+    /// or none). Driver walks the peer table over air.
+    GattcPrimDisc { conn: u16, start: u16, uuid16: Option<u16> },
+    /// GATTC characteristic discovery (SVC 0x92): (conn, start, end).
+    GattcCharDisc { conn: u16, start: u16, end: u16 },
+    /// GATTC descriptor discovery (SVC 0x93): (conn, start, end).
+    GattcDescDisc { conn: u16, start: u16, end: u16 },
+    /// GATTC read (SVC 0x96): (conn, handle, offset); driver reads
+    /// over air and completes with the bytes.
+    GattcRead { conn: u16, handle: u16, offset: u16 },
+    /// GATTC write (SVC 0x98): struct {op, flags, handle, offset,
+    /// len, *value}; driver writes over air, completes WRITE_RSP.
+    GattcWrite { conn: u16, op: u8, handle: u16, data: Vec<u8> },
+    /// GATTS HVX notify/indicate (SVC 0xA6): struct {handle, type,
+    /// offset, *len, *data}; driver emits over air, completes HVC.
+    GattsHvx { conn: u16, handle: u16, hvx_type: u8, data: Vec<u8> },
+}
+
+/// Local GATTS attribute-table entry. Handles mirror the SoftDevice
+/// allocator: service decl, then per characteristic decl+value (+CCCD
+/// when the peer can subscribe). VALUE_SET/GET read and write `value`;
+/// HVX sends it; peer writes via post_gatts_write update it + queue.
+#[derive(Clone, Debug, Default)]
+struct Attr {
+    handle: u16,
+    uuid16: Option<u16>,
+    value: Vec<u8>,
+    cccd: bool,
 }
 
 /// SoftDevice BLE SVC state. Process-wide singleton (same pattern as
@@ -151,40 +344,76 @@ pub struct SdBle {
     enabled: bool,
     evt_queue: VecDeque<QueuedEvt>,
     staged: Option<BleJob>,
-    next_svc_handle: u16,
-    next_value_handle: u16,
+    attrs: Vec<Attr>,
+    next_handle: u16,
+    vs_uuids: Vec<u8>,
     batt_level: u8,
     connected: bool,
+    conn_handle: u16,
+    peer_addr: [u8; 6],
+    own_addr: [u8; 6],
+    rssi_dbm: i8,
+    tx_count: u8,
+    app_ram_base: u32,
+}
+
+impl SdBle {
+    fn fresh() -> Self {
+        SdBle {
+            enabled: false,
+            evt_queue: VecDeque::new(),
+            staged: None,
+            attrs: Vec::new(),
+            next_handle: 0x10,
+            vs_uuids: Vec::new(),
+            batt_level: 87,
+            connected: false,
+            conn_handle: BRIDGE_CONN_HANDLE,
+            peer_addr: [0u8; 6],
+            own_addr: [0u8; 6],
+            rssi_dbm: -50,
+            tx_count: 4,
+            app_ram_base: 0x2000_2000,
+        }
+    }
+
+    fn find_attr(&self, handle: u16) -> Option<&Attr> {
+        self.attrs.iter().find(|a| a.handle == handle)
+    }
+
+    fn find_attr_mut(&mut self, handle: u16) -> Option<&mut Attr> {
+        self.attrs.iter_mut().find(|a| a.handle == handle)
+    }
+
+    fn check_conn(&self, conn: u16) -> Result<(), u32> {
+        if !self.enabled {
+            return Err(BLE_ERROR_NOT_ENABLED);
+        }
+        if conn == BLE_CONN_HANDLE_INVALID {
+            return Err(BLE_ERROR_INVALID_CONN_HANDLE);
+        }
+        if !self.connected {
+            return Err(NRF_ERROR_INVALID_STATE);
+        }
+        if conn != self.conn_handle {
+            return Err(BLE_ERROR_INVALID_CONN_HANDLE);
+        }
+        Ok(())
+    }
 }
 
 thread_local! {
-    static SD_BLE_STATE: RefCell<SdBle> = RefCell::new(SdBle {
-        enabled: false,
-        evt_queue: VecDeque::new(),
-        staged: None,
-        next_svc_handle: BATT_SVC_HANDLE,
-        next_value_handle: BATT_VALUE_HANDLE,
-        batt_level: 87,
-        connected: false,
-    });
+    static SD_BLE_STATE: RefCell<SdBle> = RefCell::new(SdBle::fresh());
 }
 
 fn with_sd_ble<R>(f: impl FnOnce(&mut SdBle) -> R) -> R {
     SD_BLE_STATE.with(|s| f(&mut s.borrow_mut()))
 }
 
-/// Test/process reset: clears enable, queue, staged job, handles.
+/// Test/process reset: clears enable, queue, staged job, table.
 pub fn reset_for_test() {
     with_sd_ble(|s| {
-        *s = SdBle {
-            enabled: false,
-            evt_queue: VecDeque::new(),
-            staged: None,
-            next_svc_handle: BATT_SVC_HANDLE,
-            next_value_handle: BATT_VALUE_HANDLE,
-            batt_level: 87,
-            connected: false,
-        }
+        *s = SdBle::fresh();
     });
 }
 
@@ -193,56 +422,172 @@ impl SdBle {
         self.evt_queue.push_back(QueuedEvt { id, payload });
     }
 
-    fn deliver_evt(&mut self, mem: &mut dyn Memory, buf: u32) -> u32 {
-        match self.evt_queue.pop_front() {
-            None => NRF_ERROR_NOT_FOUND,
-            Some(ev) => {
-                let len = (4 + ev.payload.len()) as u16;
-                mem.write16(buf, ev.id);
-                mem.write16(buf.wrapping_add(2), len);
-                for (i, &b) in ev.payload.iter().enumerate() {
-                    mem.write8(buf.wrapping_add(4 + i as u32), b);
-                }
-                NRF_SUCCESS
+    /// Drain one event into the firmware buffer. S132 contract
+    /// (sd_ble_evt_get SVCALL): r0 = *dest, r1 = *len (in: buffer size
+    /// incl. header; out: event size incl. header). NULL dest queries
+    /// the pending length (needs a RAM *len); NULL *len with a real
+    /// dest is a legacy single-arg shape we still drain. Small buffer
+    /// (dest set, *len < need) returns DATA_SIZE without popping.
+    /// Empty queue (any shape) returns NOT_FOUND. Non-RAM pointers
+    /// for the parts actually used return INVALID_ADDR.
+    fn evt_get(&mut self, mem: &mut dyn Memory, dest: u32, p_len: u32) -> u32 {
+        let front_need = match self.evt_queue.front() {
+            None => return NRF_ERROR_NOT_FOUND,
+            Some(ev) => 4 + ev.payload.len() as u16,
+        };
+        if dest == 0 {
+            // Length query needs a RAM *len; NULL *len = no contract.
+            if !is_ram(p_len) {
+                return NRF_ERROR_INVALID_ADDR;
             }
+            mem.write16(p_len, front_need);
+            return NRF_SUCCESS;
         }
+        if !is_ram(dest) {
+            return NRF_ERROR_INVALID_ADDR;
+        }
+        // Legacy single-arg drain (dest set, *len NULL): pop the full
+        // event when the queue is non-empty (pre-two-arg firmware).
+        if p_len == 0 {
+            let ev = self.evt_queue.pop_front().expect("front checked");
+            mem.write16(dest, ev.id);
+            mem.write16(dest.wrapping_add(2), front_need);
+            for (i, &b) in ev.payload.iter().enumerate() {
+                mem.write8(dest.wrapping_add(4 + i as u32), b);
+            }
+            return NRF_SUCCESS;
+        }
+        if !is_ram(p_len) {
+            return NRF_ERROR_INVALID_ADDR;
+        }
+        let room = mem.read16(p_len);
+        if room < front_need {
+            return NRF_ERROR_DATA_SIZE;
+        }
+        let ev = self.evt_queue.pop_front().expect("front checked");
+        mem.write16(dest, ev.id);
+        mem.write16(dest.wrapping_add(2), front_need);
+        for (i, &b) in ev.payload.iter().enumerate() {
+            mem.write8(dest.wrapping_add(4 + i as u32), b);
+        }
+        mem.write16(p_len, front_need);
+        NRF_SUCCESS
     }
 
-    /// GAP CONNECTED event body: conn_handle + peer/own addr + role +
-    /// irk flags + zeroed conn_params (S132 ble_gap_evt_connected_t).
-    fn connected_payload(peer: [u8; 6]) -> Vec<u8> {
+    /// GAP CONNECTED body: ble_gap_evt_t = {u16 conn,
+    /// connected{peer{type+6}, own{type+6}, role, irk byte,
+    /// conn_params{4xu16 min/max/lat/timeout}}}. Role CENTRAL: we
+    /// initiate the bridge connection (ble_gap.h roles).
+    fn connected_payload(&self) -> Vec<u8> {
         let mut p = Vec::new();
-        p.extend_from_slice(&BRIDGE_CONN_HANDLE.to_le_bytes());
-        // peer_addr: type=1 (random static) + 6 bytes LSB-first
-        p.push(1);
-        p.extend_from_slice(&peer);
-        // own_addr: type=1 + zeros (emulator has no programmed address)
-        p.push(1);
-        p.extend_from_slice(&[0u8; 6]);
-        p.push(1); // role: peripheral (we connect out as central? peer side sees central; report 1)
-        p.push(0); // irk_match(0)+idx(0)
-        p.extend_from_slice(&[0u8; 12]); // conn_params zeroed
+        p.extend_from_slice(&self.conn_handle.to_le_bytes());
+        p.push(1); // peer type: random static
+        p.extend_from_slice(&self.peer_addr);
+        p.push(1); // own type: random static
+        p.extend_from_slice(&self.own_addr);
+        p.push(GAP_ROLE_CENTRAL);
+        p.push(0); // irk_match 0 + idx 0
+        // conn_params: min/max interval 6 (7.5ms), latency 0, timeout 400.
+        for w in [6u16, 6, 0, 400] {
+            p.extend_from_slice(&w.to_le_bytes());
+        }
         p
     }
 
-    /// GAP ADV_REPORT body: peer addr + rssi + flags/type/dlen + 31B data.
-    fn adv_report_payload(peer: [u8; 6], rssi: i8, data: &[u8]) -> Vec<u8> {
+    /// GAP DISCONNECTED body: {u16 conn, u8 reason} (ble_gap.h).
+    fn disconnected_payload(conn: u16, reason: u8) -> Vec<u8> {
+        vec![(conn & 0xFF) as u8, (conn >> 8) as u8, reason]
+    }
+
+    /// GAP RSSI_CHANGED body: {u16 conn, i8 rssi} (ble_gap.h).
+    fn rssi_changed_payload(conn: u16, rssi: i8) -> Vec<u8> {
+        vec![(conn & 0xFF) as u8, (conn >> 8) as u8, rssi as u8]
+    }
+
+    /// GAP ADV_REPORT body (ble_gap.h, unpacked layout!): {u16 0xFFFF
+    /// (no connection), peer{type+6}, i8 rssi, u8 bitfield, 1 PAD byte
+    /// (u16 alignment — no pragma pack in S132 headers, verified), then
+    /// u8[31] data}. Flag byte: scan_rsp bit0, adv type bits1-2,
+    /// dlen bits3-7 (dlen<=31).
+    fn adv_report_payload(peer: [u8; 6], rssi: i8, scan_rsp: bool, data: &[u8]) -> Vec<u8> {
         let mut p = Vec::new();
-        p.push(1);
+        p.extend_from_slice(&BLE_CONN_HANDLE_INVALID.to_le_bytes());
+        p.push(1); // peer type: random static
         p.extend_from_slice(&peer);
         p.push(rssi as u8);
         let dlen = data.len().min(31) as u8;
-        // scan_rsp=0, type=0 (ADV_IND), dlen in low 5 bits of flag byte
-        p.push(dlen & 0x1F);
+        p.push(((scan_rsp as u8) & 1) | (dlen << 3));
+        p.push(0); // pad: data[31] must u16-align (S132 unpacked)
         let mut d = [0u8; 31];
         d[..dlen as usize].copy_from_slice(&data[..dlen as usize]);
         p.extend_from_slice(&d);
         p
     }
 
-    /// GATTC READ_RSP body: handle + offset + len + data.
-    fn read_rsp_payload(handle: u16, offset: u16, data: &[u8]) -> Vec<u8> {
+    /// GATTC envelope: {u16 conn, u16 gatt_status, u16 error_handle}
+    /// (ble_gattc.h ble_gattc_evt_t head). Success => status 0,
+    /// error_handle HANDLE_INVALID.
+    fn gattc_head(conn: u16) -> Vec<u8> {
         let mut p = Vec::new();
+        p.extend_from_slice(&conn.to_le_bytes());
+        p.extend_from_slice(&GATT_STATUS_SUCCESS.to_le_bytes());
+        p.extend_from_slice(&GATT_HANDLE_INVALID.to_le_bytes());
+        p
+    }
+
+    /// GATTC PRIM_SRVC_DISC_RSP params: {u16 count,
+    /// ble_gattc_service_t[count] = {uuid u16, type u8, pad u8,
+    /// start u16, end u16}} (ble_uuid_t + handle range, unpacked).
+    fn prim_disc_payload(conn: u16, svcs: &[DiscService]) -> Vec<u8> {
+        let mut p = Self::gattc_head(conn);
+        p.extend_from_slice(&(svcs.len() as u16).to_le_bytes());
+        for s in svcs {
+            let uuid = s.uuid16.unwrap_or(0);
+            p.extend_from_slice(&uuid.to_le_bytes());
+            p.push(UUID_TYPE_BLE);
+            p.push(0);
+            p.extend_from_slice(&s.start.to_le_bytes());
+            p.extend_from_slice(&s.end.to_le_bytes());
+        }
+        p
+    }
+
+    /// GATTC CHAR_DISC_RSP params: {count, ble_gattc_char_t[count] =
+    /// {uuid u16, type u8, pad, props u8, ext byte, decl u16, value
+    /// u16}} — props u8 then ext-present byte (ble_gatt.h,
+    /// ble_gattc.h; 128-bit chars encode uuid 0 here +ATTR_INFO path).
+    fn char_disc_payload(conn: u16, chars: &[DiscChar]) -> Vec<u8> {
+        let mut p = Self::gattc_head(conn);
+        p.extend_from_slice(&(chars.len() as u16).to_le_bytes());
+        for c in chars {
+            p.extend_from_slice(&c.uuid16.unwrap_or(0).to_le_bytes());
+            p.push(UUID_TYPE_BLE);
+            p.push(0);
+            p.push(c.props);
+            p.push(0); // char_ext_props absent
+            p.extend_from_slice(&c.decl.to_le_bytes());
+            p.extend_from_slice(&c.value.to_le_bytes());
+        }
+        p
+    }
+
+    /// GATTC DESC_DISC_RSP params: {count, {handle u16, uuid u16,
+    /// type u8, pad}[]}.
+    fn desc_disc_payload(conn: u16, descs: &[DiscDesc]) -> Vec<u8> {
+        let mut p = Self::gattc_head(conn);
+        p.extend_from_slice(&(descs.len() as u16).to_le_bytes());
+        for d in descs {
+            p.extend_from_slice(&d.handle.to_le_bytes());
+            p.extend_from_slice(&d.uuid16.unwrap_or(0).to_le_bytes());
+            p.push(UUID_TYPE_BLE);
+            p.push(0);
+        }
+        p
+    }
+
+    /// GATTC READ_RSP params: {handle u16, offset u16, len u16, data[]}.
+    fn read_rsp_payload(conn: u16, handle: u16, offset: u16, data: &[u8]) -> Vec<u8> {
+        let mut p = Self::gattc_head(conn);
         p.extend_from_slice(&handle.to_le_bytes());
         p.extend_from_slice(&offset.to_le_bytes());
         p.extend_from_slice(&(data.len() as u16).to_le_bytes());
@@ -250,17 +595,61 @@ impl SdBle {
         p
     }
 
-    /// GATTS WRITE body: conn + handle + uuid(2B) + op + auth + off + len + data.
-    fn write_payload(conn: u16, handle: u16, uuid16: u16, data: &[u8]) -> Vec<u8> {
+    /// GATTC WRITE_RSP params (ble_gattc.h, unpacked!): {handle u16,
+    /// op u8, PAD u8 (u16-aligns offset), offset u16, len u16, data[]}.
+    fn write_rsp_payload(conn: u16, handle: u16, op: u8, offset: u16, data: &[u8]) -> Vec<u8> {
+        let mut p = Self::gattc_head(conn);
+        p.extend_from_slice(&handle.to_le_bytes());
+        p.push(op);
+        p.push(0);
+        p.extend_from_slice(&offset.to_le_bytes());
+        p.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        p.extend_from_slice(data);
+        p
+    }
+
+    /// GATTC HVX params (ble_gattc.h, unpacked!): {handle u16, type
+    /// u8, PAD u8 (u16-aligns len), len u16, data[]}.
+    fn hvx_payload(conn: u16, handle: u16, hvx_type: u8, data: &[u8]) -> Vec<u8> {
+        let mut p = Self::gattc_head(conn);
+        p.extend_from_slice(&handle.to_le_bytes());
+        p.push(hvx_type);
+        p.push(0);
+        p.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        p.extend_from_slice(data);
+        p
+    }
+
+    /// GATTS WRITE body (ble_gatts.h): {u16 conn, {handle u16,
+    /// uuid{16+8}, op u8, auth u8, offset u16, len u16, data[]}}.
+    /// 128-bit attrs encode uuid 0 + type VENDOR_BEGIN.
+    fn gatts_write_payload(conn: u16, handle: u16, uuid16: Option<u16>, op: u8, data: &[u8]) -> Vec<u8> {
         let mut p = Vec::new();
         p.extend_from_slice(&conn.to_le_bytes());
         p.extend_from_slice(&handle.to_le_bytes());
-        p.extend_from_slice(&uuid16.to_le_bytes());
-        p.push(1); // op: write request
+        match uuid16 {
+            Some(u) => {
+                p.extend_from_slice(&u.to_le_bytes());
+                p.push(UUID_TYPE_BLE);
+            }
+            None => {
+                p.extend_from_slice(&0u16.to_le_bytes());
+                p.push(UUID_TYPE_VENDOR_BEGIN);
+            }
+        }
+        p.push(op);
         p.push(0); // auth_required: no
         p.extend_from_slice(&0u16.to_le_bytes()); // offset
         p.extend_from_slice(&(data.len() as u16).to_le_bytes());
         p.extend_from_slice(data);
+        p
+    }
+
+    /// GATTS HVC body: {u16 conn, u16 handle} (ble_gatts.h).
+    fn hvc_payload(conn: u16, handle: u16) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&conn.to_le_bytes());
+        p.extend_from_slice(&handle.to_le_bytes());
         p
     }
 }
@@ -284,21 +673,164 @@ pub fn handle_svc(
 }
 
 fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Option<u32> {
+    // GATT helpers live here (not methods) so dispatch stays a flat
+    // match: each arm reads r0..r3, validates RAM, and either answers
+    // synchronously or stages exactly one BleJob for the driver.
+    fn read_u16_le(mem: &mut dyn Memory, p: u32) -> u16 {
+        (mem.read8(p) as u16) | ((mem.read8(p.wrapping_add(1)) as u16) << 8)
+    }
+    fn write_u16_le(mem: &mut dyn Memory, p: u32, v: u16) {
+        mem.write8(p, (v & 0xFF) as u8);
+        mem.write8(p.wrapping_add(1), (v >> 8) as u8);
+    }
+    fn read_uuid(mem: &mut dyn Memory, p: u32) -> Option<u16> {
+        // ble_uuid_t = {u16 uuid, u8 type}: SIG read, vendor->None.
+        let uuid = read_u16_le(mem, p);
+        match mem.read8(p.wrapping_add(2)) {
+            UUID_TYPE_BLE => Some(uuid),
+            _ => None,
+        }
+    }
+    fn require_enabled(s: &SdBle) -> Result<(), u32> {
+        if s.enabled {
+            Ok(())
+        } else {
+            Err(BLE_ERROR_NOT_ENABLED)
+        }
+    }
     match svc {
-        // ---- common: enable / evt_get ----
+        // ---- common ----
         x if x == SVC_BLE_ENABLE => {
+            // sd_ble_enable(params*, *app_ram_base): both may be NULL.
+            // Report our RAM floor through *app_ram_base when given.
+            let base_ptr = r[1];
+            if base_ptr != 0 {
+                if !is_ram(base_ptr) {
+                    return Some(NRF_ERROR_INVALID_ADDR);
+                }
+                let want = mem.read32(base_ptr);
+                if want < s.app_ram_base {
+                    mem.write32(base_ptr, s.app_ram_base);
+                }
+            }
             s.enabled = true;
             Some(NRF_SUCCESS)
         }
         x if x == SVC_BLE_EVT_GET => {
-            let buf = r[0];
-            if !is_ram(buf) {
+            // sd_ble_evt_get(dest, *len): either may be NULL, but a
+            // non-RAM pointer where an address is expected is INVALID.
+            let (dest, p_len) = (r[0], r[1]);
+            if dest != 0 && !is_ram(dest) {
                 return Some(NRF_ERROR_INVALID_ADDR);
             }
-            Some(s.deliver_evt(mem, buf))
+            if p_len != 0 && !is_ram(p_len) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            Some(s.evt_get(mem, dest, p_len))
         }
-        // ---- GAP: local acks + air-backed ops ----
-        x if x == SVC_GAP_ADDRESS_SET => Some(NRF_SUCCESS),
+        x if x == SVC_BLE_TX_PACKET_COUNT_GET => {
+            // (conn, *count): one link, TX_COUNT packets always free.
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let (conn, p_count) = (r[0] as u16, r[1]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if !is_ram(p_count) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            mem.write8(p_count, s.tx_count);
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_BLE_UUID_VS_ADD => {
+            // (*uuid128, *type): hand out vendor type ids from 2 up.
+            let (p_uuid, p_type) = (r[0], r[1]);
+            if !is_ram(p_uuid) || !is_ram(p_type) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let t = UUID_TYPE_VENDOR_BEGIN + s.vs_uuids.len() as u8;
+            s.vs_uuids.push(t);
+            mem.write8(p_type, t);
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_BLE_UUID_DECODE => {
+            // (len, *le_bytes, *ble_uuid): 2-byte LE -> SIG uuid.
+            let (len, p_le, p_uuid) = (r[0], r[1], r[2]);
+            if (len != 0 && !is_ram(p_le)) || !is_ram(p_uuid) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            if len == 2 {
+                let v = read_u16_le(mem, p_le);
+                write_u16_le(mem, p_uuid, v);
+                mem.write8(p_uuid.wrapping_add(2), UUID_TYPE_BLE);
+                Some(NRF_SUCCESS)
+            } else {
+                // 16-byte vendor decode needs a registered base: look
+                // the 12/13 octets up against nothing here -> NOT_FOUND
+                // unless a VS base exists (then VENDOR_BEGIN).
+                if s.vs_uuids.is_empty() {
+                    Some(NRF_ERROR_NOT_FOUND)
+                } else {
+                    write_u16_le(mem, p_uuid, 0);
+                    mem.write8(p_uuid.wrapping_add(2), s.vs_uuids[0]);
+                    Some(NRF_SUCCESS)
+                }
+            }
+        }
+        x if x == SVC_BLE_UUID_ENCODE => {
+            // (*ble_uuid, *len, *le_bytes): SIG -> 2 LE bytes.
+            let (p_uuid, p_len, p_le) = (r[0], r[1], r[2]);
+            if !is_ram(p_uuid) || !is_ram(p_len) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let uuid = read_u16_le(mem, p_uuid);
+            mem.write16(p_len, 2);
+            if p_le != 0 {
+                if !is_ram(p_le) {
+                    return Some(NRF_ERROR_INVALID_ADDR);
+                }
+                write_u16_le(mem, p_le, uuid);
+            }
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_BLE_VERSION_GET => {
+            // (*ble_version_t = {ver u8, company u16, subver u16}).
+            let p = r[0];
+            if !is_ram(p) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            mem.write8(p, 7); // LL version 7 (BT 4.1, like S132)
+            mem.write16(p.wrapping_add(1), 0x0059); // Nordic company id
+            mem.write16(p.wrapping_add(3), 0x0100); // FWID-ish subversion
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_BLE_USER_MEM_REPLY => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let conn = r[0] as u16;
+            if s.check_conn(conn).is_err() {
+                return Some(BLE_ERROR_INVALID_CONN_HANDLE);
+            }
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_BLE_OPT_SET || x == SVC_BLE_OPT_GET => Some(NRF_SUCCESS),
+        // ---- GAP ----
+        x if x == SVC_GAP_ADDRESS_SET => {
+            // (cycle_mode r0, *addr r1): store our address for CONNECTED.
+            let (mode, p) = (r[0], r[1]);
+            if mode > 2 {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            if !is_ram(p) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            for i in 0..6u32 {
+                s.own_addr[i as usize] = mem.read8(p.wrapping_add(1 + i));
+            }
+            Some(NRF_SUCCESS)
+        }
         x if x == SVC_GAP_ADDRESS_GET => {
             let p = r[0];
             if !is_ram(p) {
@@ -306,31 +838,139 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             }
             mem.write8(p, 1); // type: random static
             for i in 0..6u32 {
-                mem.write8(p.wrapping_add(1 + i), 0);
+                mem.write8(p.wrapping_add(1 + i), s.own_addr[i as usize]);
             }
             Some(NRF_SUCCESS)
         }
-        x if x == SVC_GAP_ADV_DATA_SET => Some(NRF_SUCCESS),
+        x if x == SVC_GAP_ADV_DATA_SET => {
+            // (data, dlen, sr_data, srdlen): regs r0..r3, both <= 31.
+            if r[1] > 31 || r[3] > 31 {
+                return Some(NRF_ERROR_DATA_SIZE);
+            }
+            Some(NRF_SUCCESS)
+        }
         x if x == SVC_GAP_ADV_START => {
-            if !s.enabled {
+            if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
+            // r0 = *adv_params or NULL (defaults). No event on start;
+            // connections arrive via CONNECTED like silicon.
             Some(NRF_SUCCESS)
         }
         x if x == SVC_GAP_ADV_STOP => Some(NRF_SUCCESS),
-        x if x == SVC_GAP_SCAN_START => {
-            if !s.enabled {
+        x if x == SVC_GAP_CONN_PARAM_UPDATE => {
+            if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
+            let conn = r[0] as u16;
+            if s.check_conn(conn).is_err() {
+                return Some(BLE_ERROR_INVALID_CONN_HANDLE);
+            }
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GAP_DISCONNECT => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let (conn, reason) = (r[0] as u16, r[1] as u8);
+            if s.check_conn(conn).is_err() {
+                return Some(BLE_ERROR_INVALID_CONN_HANDLE);
+            }
+            s.staged = Some(BleJob::GapDisconnect { conn, reason });
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GAP_TX_POWER_SET => Some(NRF_SUCCESS),
+        x if x == SVC_GAP_APPEARANCE_SET || x == SVC_GAP_APPEARANCE_GET => {
+            let p = r[0];
+            if x == SVC_GAP_APPEARANCE_GET {
+                if !is_ram(p) {
+                    return Some(NRF_ERROR_INVALID_ADDR);
+                }
+                mem.write16(p, 0); // UNKNOWN appearance
+            }
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GAP_PPCP_SET || x == SVC_GAP_PPCP_GET => Some(NRF_SUCCESS),
+        x if x == SVC_GAP_DEVICE_NAME_SET => {
+            if r[2] > 248 {
+                return Some(NRF_ERROR_DATA_SIZE);
+            }
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GAP_DEVICE_NAME_GET => {
+            // (*buf, *len): report empty name, len 0 out.
+            let (p_buf, p_len) = (r[0], r[1]);
+            if !is_ram(p_len) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            if p_buf != 0 && !is_ram(p_buf) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            mem.write16(p_len, 0);
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GAP_AUTHENTICATE
+            || x == SVC_GAP_SEC_PARAMS_REPLY
+            || x == SVC_GAP_AUTH_KEY_REPLY
+            || x == SVC_GAP_LESC_DHKEY_REPLY
+            || x == SVC_GAP_KEYPRESS_NOTIFY
+            || x == SVC_GAP_LESC_OOB_DATA_GET
+            || x == SVC_GAP_LESC_OOB_DATA_SET
+            || x == SVC_GAP_ENCRYPT
+            || x == SVC_GAP_SEC_INFO_REPLY
+            || x == SVC_GAP_CONN_SEC_GET =>
+        {
+            // Pairing/crypto: no SoftDevice crypto here — refuse like
+            // silicon with no keys (INVALID_STATE), never stage air.
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            Some(NRF_ERROR_INVALID_STATE)
+        }
+        x if x == SVC_GAP_RSSI_START || x == SVC_GAP_RSSI_STOP => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let conn = r[0] as u16;
+            if s.check_conn(conn).is_err() {
+                return Some(BLE_ERROR_INVALID_CONN_HANDLE);
+            }
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GAP_RSSI_GET => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            // (conn, *rssi, *ch_index=NULL-ok): driver samples air.
+            let (conn, p_rssi) = (r[0] as u16, r[1]);
+            if s.check_conn(conn).is_err() {
+                return Some(BLE_ERROR_INVALID_CONN_HANDLE);
+            }
+            if !is_ram(p_rssi) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            s.staged = Some(BleJob::GapRssiGet { conn });
+            // Synchronous legibility: report last air RSSI now; the
+            // completion posts RSSI_CHANGED for the event drain.
+            mem.write8(p_rssi, s.rssi_dbm as u8);
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GAP_SCAN_START => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            // r0 = *scan_params or NULL (defaults). One live sighting
+            // becomes the ADV_REPORT the driver completes.
+            s.staged = Some(BleJob::GapScanStart);
             Some(NRF_SUCCESS)
         }
         x if x == SVC_GAP_SCAN_STOP => Some(NRF_SUCCESS),
         x if x == SVC_GAP_CONNECT => {
-            if !s.enabled {
+            if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
-            // r0 = peer addr struct ptr: {type u8, addr[6]}. Stage the
-            // driver job; the bridge resolves the connection over air.
+            // sd_ble_gap_connect(peer*, scan*, conn*): only the peer
+            // address matters here; NULL scan/conn = defaults.
             let p = r[0];
             if !is_ram(p) {
                 return Some(NRF_ERROR_INVALID_ADDR);
@@ -339,82 +979,414 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             for i in 0..6u32 {
                 addr[i as usize] = mem.read8(p.wrapping_add(1 + i));
             }
+            if s.connected {
+                return Some(NRF_ERROR_BUSY);
+            }
             s.staged = Some(BleJob::GapConnect { addr });
             Some(NRF_SUCCESS)
         }
-        // ---- GATTC: reads stage driver jobs, discovery acks ----
-        x if x == SVC_GATTC_PRIMARY_DISC => Some(NRF_SUCCESS),
-        x if x == SVC_GATTC_CHAR_DISC => Some(NRF_SUCCESS),
+        x if x == SVC_GAP_CONNECT_CANCEL => {
+            s.staged = None;
+            Some(NRF_SUCCESS)
+        }
+        // ---- GATTC: discovery + read + write stage driver jobs ----
+        x if x == SVC_GATTC_PRIMARY_DISC => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            // (conn, start_handle, *uuid|NULL): NULL = all services.
+            let (conn, start, p_uuid) = (r[0] as u16, r[1] as u16, r[2]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if p_uuid != 0 && !is_ram(p_uuid) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let uuid16 = if p_uuid == 0 { None } else { read_uuid(mem, p_uuid) };
+            s.staged = Some(BleJob::GattcPrimDisc { conn, start, uuid16 });
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTC_REL_DISC
+            || x == SVC_GATTC_DESC_DISC
+            || x == SVC_GATTC_ATTR_INFO_DISC =>
+        {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            // (conn, *handle_range{start,end}): range walk over air.
+            let (conn, p_range) = (r[0] as u16, r[1]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if !is_ram(p_range) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let (start, end) = (read_u16_le(mem, p_range), read_u16_le(mem, p_range.wrapping_add(2)));
+            if start == 0 || start > end {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            s.staged = Some(BleJob::GattcDescDisc { conn, start, end });
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTC_CHAR_DISC => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let (conn, p_range) = (r[0] as u16, r[1]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if !is_ram(p_range) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let (start, end) = (read_u16_le(mem, p_range), read_u16_le(mem, p_range.wrapping_add(2)));
+            if start == 0 || start > end {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            s.staged = Some(BleJob::GattcCharDisc { conn, start, end });
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTC_UUID_READ || x == SVC_GATTC_CHAR_VALS_READ => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let conn = r[0] as u16;
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            // By-UUID and multi-read both funnel to staged reads the
+            // driver resolves handle-by-handle; completion posts the
+            // matching RSP (UUID_READ_RSP / VALS_READ_RSP).
+            s.staged = Some(BleJob::GattcRead { conn, handle: 0, offset: 0 });
+            Some(NRF_SUCCESS)
+        }
         x if x == SVC_GATTC_READ => {
-            if !s.enabled {
+            if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
             let (conn, handle, offset) = (r[0] as u16, r[1] as u16, r[2] as u16);
-            if conn != BRIDGE_CONN_HANDLE && s.connected {
-                return Some(BLE_ERROR_INVALID_CONN_HANDLE);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
             }
-            if !s.connected {
-                return Some(NRF_ERROR_INVALID_STATE);
+            if handle == GATT_HANDLE_INVALID {
+                return Some(NRF_ERROR_INVALID_PARAM);
             }
             s.staged = Some(BleJob::GattcRead { conn, handle, offset });
             Some(NRF_SUCCESS)
         }
-        // ---- GATTS: local attribute table, battery lives here ----
+        x if x == SVC_GATTC_WRITE => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            // (conn, *write_params{op u8, flags u8, handle u16,
+            // offset u16, len u16, *value}): copy bytes NOW (firmware
+            // may reuse the buffer before the driver drains the job).
+            let (conn, p_wp) = (r[0] as u16, r[1]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if !is_ram(p_wp) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let op = mem.read8(p_wp);
+            if op != GATT_OP_WRITE_REQ && op != GATT_OP_WRITE_CMD {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            let handle = read_u16_le(mem, p_wp.wrapping_add(2));
+            let len = read_u16_le(mem, p_wp.wrapping_add(6)) as usize;
+            let p_val = mem.read32(p_wp.wrapping_add(8));
+            if handle == GATT_HANDLE_INVALID {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            if len != 0 && !is_ram(p_val) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let mut data = vec![0u8; len];
+            for (i, b) in data.iter_mut().enumerate() {
+                *b = mem.read8(p_val.wrapping_add(i as u32));
+            }
+            s.staged = Some(BleJob::GattcWrite { conn, op, handle, data });
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTC_HV_CONFIRM => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let conn = r[0] as u16;
+            if s.check_conn(conn).is_err() {
+                return Some(BLE_ERROR_INVALID_CONN_HANDLE);
+            }
+            // Indication confirm: posts HVC server-side; nothing air.
+            s.push_evt(EVT_GATTS_HVC, SdBle::hvc_payload(conn, r[1] as u16));
+            Some(NRF_SUCCESS)
+        }
+        // ---- GATTS: local attribute table ----
         x if x == SVC_GATTS_SERVICE_ADD => {
-            let uuid_ptr = r[1];
-            let h_ptr = r[2];
+            // (type r0, *uuid r1, *handle r2): alloc decl handle.
+            let (uuid_ptr, h_ptr) = (r[1], r[2]);
             if !is_ram(uuid_ptr) || !is_ram(h_ptr) {
                 return Some(NRF_ERROR_INVALID_ADDR);
             }
-            let h = s.next_svc_handle;
-            s.next_svc_handle = s.next_svc_handle.wrapping_add(8);
+            let uuid16 = read_uuid(mem, uuid_ptr);
+            let h = s.next_handle;
+            s.next_handle = s.next_handle.wrapping_add(1);
+            s.attrs.push(Attr { handle: h, uuid16, value: Vec::new(), cccd: false });
             mem.write16(h_ptr, h);
             Some(NRF_SUCCESS)
         }
-        x if x == SVC_GATTS_CHAR_ADD => {
+        x if x == SVC_GATTS_INCLUDE_ADD => {
             let h_ptr = r[2];
             if !is_ram(h_ptr) {
                 return Some(NRF_ERROR_INVALID_ADDR);
             }
-            let h = s.next_value_handle;
-            s.next_value_handle = s.next_value_handle.wrapping_add(2);
+            let h = s.next_handle;
+            s.next_handle = s.next_handle.wrapping_add(1);
+            mem.write16(h_ptr, h);
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTS_CHAR_ADD => {
+            // sd_ble_gatts_characteristic_add(service, *char_md,
+            // *attr_value, *handles{value,...}): r1 = char_md (may be
+            // NULL), r2 = attr, r3 = handles. Alloc decl + value
+            // (+CCCD when peer-subscribable). Initial bytes copied NOW.
+            let (p_attr, p_handles) = (r[2], r[3]);
+            if p_attr != 0 && !is_ram(p_attr) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            if !is_ram(p_handles) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let (uuid16, init) = if p_attr == 0 {
+                (None, Vec::new())
+            } else {
+                let p_uuid = mem.read32(p_attr);
+                let uuid16 = if p_uuid != 0 && is_ram(p_uuid) {
+                    read_uuid(mem, p_uuid)
+                } else {
+                    None
+                };
+                let init_len = read_u16_le(mem, p_attr.wrapping_add(8)) as usize;
+                let p_val = mem.read32(p_attr.wrapping_add(16));
+                let mut init = vec![0u8; init_len.min(64)];
+                if init_len != 0 {
+                    if !is_ram(p_val) {
+                        return Some(NRF_ERROR_INVALID_ADDR);
+                    }
+                    for (i, b) in init.iter_mut().enumerate() {
+                        *b = mem.read8(p_val.wrapping_add(i as u32));
+                    }
+                }
+                (uuid16, init)
+            };
+            let decl = s.next_handle;
+            s.next_handle = s.next_handle.wrapping_add(1);
+            let value_h = s.next_handle;
+            s.next_handle = s.next_handle.wrapping_add(1);
+            // CCCD when the uuid is the battery level (notifiable in
+            // our peer table) — else plain value.
+            let cccd = uuid16 == Some(0x2A19);
+            let cccd_h = if cccd {
+                let h = s.next_handle;
+                s.next_handle = s.next_handle.wrapping_add(1);
+                h
+            } else {
+                0
+            };
+            s.attrs.push(Attr { handle: value_h, uuid16, value: init.clone(), cccd });
+            if uuid16 == Some(0x2A19) {
+                if let Some(&b) = init.first() {
+                    s.batt_level = b;
+                }
+            }
+            mem.write16(p_handles, value_h);
+            mem.write16(p_handles.wrapping_add(4), cccd_h);
+            let _ = decl;
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTS_DESC_ADD => {
+            let (p_attr, h_ptr) = (r[1], r[2]);
+            if p_attr != 0 && !is_ram(p_attr) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            if !is_ram(h_ptr) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let h = s.next_handle;
+            s.next_handle = s.next_handle.wrapping_add(1);
+            s.attrs.push(Attr { handle: h, uuid16: Some(0x2902), value: vec![0, 0], cccd: true });
             mem.write16(h_ptr, h);
             Some(NRF_SUCCESS)
         }
         x if x == SVC_GATTS_VALUE_SET => {
-            let (handle, _off, len, p_val) = (r[0] as u16, r[1] as u16, r[2] as u16, r[3]);
-            if len != 0 && !is_ram(p_val) {
+            // (conn, handle, *ble_gatts_value_t{len, offset, *value}).
+            // conn 0xFFFF ok for non-system attrs (S132).
+            let (conn, handle, p_val) = (r[0] as u16, r[1] as u16, r[2]);
+            if conn != BLE_CONN_HANDLE_INVALID && s.check_conn(conn).is_err() {
+                return Some(BLE_ERROR_INVALID_CONN_HANDLE);
+            }
+            if !is_ram(p_val) {
                 return Some(NRF_ERROR_INVALID_ADDR);
             }
-            if handle == s.next_value_handle.wrapping_sub(2)
-                || handle == BATT_VALUE_HANDLE
-            {
-                if len >= 1 {
-                    s.batt_level = mem.read8(p_val);
-                }
-                return Some(NRF_SUCCESS);
+            let (len, off) = (
+                read_u16_le(mem, p_val) as usize,
+                read_u16_le(mem, p_val.wrapping_add(2)) as usize,
+            );
+            let p_bytes = mem.read32(p_val.wrapping_add(4));
+            if len != 0 && !is_ram(p_bytes) {
+                return Some(NRF_ERROR_INVALID_ADDR);
             }
-            Some(NRF_ERROR_NOT_FOUND)
+            match s.find_attr_mut(handle) {
+                None => Some(NRF_ERROR_NOT_FOUND),
+                Some(a) => {
+                    if off > a.value.len() && !(off == 0 && a.value.is_empty()) {
+                        return Some(NRF_ERROR_INVALID_PARAM);
+                    }
+                    if a.value.len() < off + len {
+                        a.value.resize(off + len, 0);
+                    }
+                    for i in 0..len {
+                        a.value[off + i] = mem.read8(p_bytes.wrapping_add(i as u32));
+                    }
+                    if a.uuid16 == Some(0x2A19) {
+                        if let Some(&b) = a.value.first() {
+                            s.batt_level = b;
+                        }
+                    }
+                    Some(NRF_SUCCESS)
+                }
+            }
         }
         x if x == SVC_GATTS_VALUE_GET => {
-            let (handle, _off, p_len, p_val) = (r[0] as u16, r[1] as u16, r[2], r[3]);
-            if !is_ram(p_len) || !is_ram(p_val) {
+            let (conn, handle, p_val) = (r[0] as u16, r[1] as u16, r[2]);
+            if conn != BLE_CONN_HANDLE_INVALID && s.check_conn(conn).is_err() {
+                return Some(BLE_ERROR_INVALID_CONN_HANDLE);
+            }
+            if !is_ram(p_val) {
                 return Some(NRF_ERROR_INVALID_ADDR);
             }
-            if handle == s.next_value_handle.wrapping_sub(2)
-                || handle == BATT_VALUE_HANDLE
-            {
-                mem.write16(p_len, 1);
-                mem.write8(p_val, s.batt_level);
-                return Some(NRF_SUCCESS);
+            let (mut len, off) = (
+                read_u16_le(mem, p_val) as usize,
+                read_u16_le(mem, p_val.wrapping_add(2)) as usize,
+            );
+            let p_bytes = mem.read32(p_val.wrapping_add(4));
+            match s.find_attr(handle) {
+                None => Some(NRF_ERROR_NOT_FOUND),
+                Some(a) => {
+                    if off > a.value.len() {
+                        return Some(NRF_ERROR_INVALID_PARAM);
+                    }
+                    let avail = a.value.len() - off;
+                    if p_bytes == 0 {
+                        // Length query: report full length, copy nothing.
+                        write_u16_le(mem, p_val, avail as u16);
+                        return Some(NRF_SUCCESS);
+                    }
+                    if !is_ram(p_bytes) {
+                        return Some(NRF_ERROR_INVALID_ADDR);
+                    }
+                    if len > avail {
+                        len = avail;
+                    }
+                    for i in 0..len {
+                        mem.write8(p_bytes.wrapping_add(i as u32), a.value[off + i]);
+                    }
+                    write_u16_le(mem, p_val, len as u16);
+                    Some(NRF_SUCCESS)
+                }
             }
-            Some(NRF_ERROR_NOT_FOUND)
         }
         x if x == SVC_GATTS_HVX => {
-            if !s.connected {
-                return Some(NRF_ERROR_INVALID_STATE);
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            // (conn, *hvx_params{handle@0, type@2, offset@4, *len@8,
+            // *data@12}): copy bytes NOW; driver emits over air.
+            let (conn, p_hp) = (r[0] as u16, r[1]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if !is_ram(p_hp) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let handle = read_u16_le(mem, p_hp);
+            let hvx_type = mem.read8(p_hp.wrapping_add(2));
+            if hvx_type != GATT_HVX_NOTIFICATION && hvx_type != GATT_HVX_INDICATION {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            let p_len = mem.read32(p_hp.wrapping_add(8));
+            if !is_ram(p_len) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let len = mem.read16(p_len) as usize;
+            let p_data = mem.read32(p_hp.wrapping_add(12));
+            // NULL data = current attribute value (S132).
+            let data = if p_data == 0 {
+                match s.find_attr(handle) {
+                    None => return Some(NRF_ERROR_NOT_FOUND),
+                    Some(a) => a.value.clone(),
+                }
+            } else {
+                if !is_ram(p_data) {
+                    return Some(NRF_ERROR_INVALID_ADDR);
+                }
+                let mut d = vec![0u8; len];
+                for (i, b) in d.iter_mut().enumerate() {
+                    *b = mem.read8(p_data.wrapping_add(i as u32));
+                }
+                d
+            };
+            // Indications without ..., notifications need TX packets:
+            // one link => TX_COUNT>0 always here, else NO_TX_PACKETS.
+            if hvx_type == GATT_HVX_NOTIFICATION && s.tx_count == 0 {
+                return Some(BLE_ERROR_NO_TX_PACKETS);
+            }
+            s.staged = Some(BleJob::GattsHvx { conn, handle, hvx_type, data });
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTS_SERVICE_CHANGED => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
             }
             Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTS_RW_AUTHORIZE_REPLY
+            || x == SVC_GATTS_SYS_ATTR_SET
+            || x == SVC_GATTS_SYS_ATTR_GET =>
+        {
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTS_INITIAL_USER_HANDLE_GET => {
+            let p = r[0];
+            if !is_ram(p) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            mem.write16(p, s.next_handle);
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTS_ATTR_GET => {
+            // (handle, *uuid, *md): report table uuid, no metadata.
+            let (handle, p_uuid) = (r[0] as u16, r[1]);
+            match s.find_attr(handle) {
+                None => Some(NRF_ERROR_NOT_FOUND),
+                Some(a) => {
+                    if p_uuid != 0 {
+                        if !is_ram(p_uuid) {
+                            return Some(NRF_ERROR_INVALID_ADDR);
+                        }
+                        match a.uuid16 {
+                            Some(u) => {
+                                write_u16_le(mem, p_uuid, u);
+                                mem.write8(p_uuid.wrapping_add(2), UUID_TYPE_BLE);
+                            }
+                            None => {
+                                write_u16_le(mem, p_uuid, 0);
+                                mem.write8(p_uuid.wrapping_add(2), UUID_TYPE_VENDOR_BEGIN);
+                            }
+                        }
+                    }
+                    Some(NRF_SUCCESS)
+                }
+            }
         }
         _ => None,
     }
@@ -427,11 +1399,70 @@ pub fn take_job() -> Option<BleJob> {
     with_sd_ble(|s| s.staged.take())
 }
 
+thread_local! {
+    /// Bytes staged alongside the last WRITE/HVX take_job: the SVC
+    /// copies firmware bytes at call time (stable for the driver).
+    static TAKE_DATA: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Stage take_data (called by the take_job export path).
+pub fn stage_take_data(data: Vec<u8>) {
+    TAKE_DATA.with(|t| *t.borrow_mut() = data);
+}
+
+/// Drain the staged take bytes (once per job; empty otherwise).
+pub fn take_staged_data() -> Vec<u8> {
+    TAKE_DATA.with(|t| std::mem::take(&mut *t.borrow_mut()))
+}
+
+/// Complete a GATTC primary-service discovery: driver walked the peer
+/// table over air; posts PRIM_DISC_RSP firmware drains via evt_get.
+pub fn complete_prim_disc(conn: u16, svcs: &[DiscService]) {
+    with_sd_ble(|s| {
+        s.push_evt(EVT_GATTC_PRIM_DISC_RSP, SdBle::prim_disc_payload(conn, svcs));
+    });
+}
+
+/// Complete a GATTC characteristic discovery: posts CHAR_DISC_RSP.
+pub fn complete_char_disc(conn: u16, chars: &[DiscChar]) {
+    with_sd_ble(|s| {
+        s.push_evt(EVT_GATTC_CHAR_DISC_RSP, SdBle::char_disc_payload(conn, chars));
+    });
+}
+
+/// Complete a GATTC descriptor discovery: posts DESC_DISC_RSP.
+pub fn complete_desc_disc(conn: u16, descs: &[DiscDesc]) {
+    with_sd_ble(|s| {
+        s.push_evt(EVT_GATTC_DESC_DISC_RSP, SdBle::desc_disc_payload(conn, descs));
+    });
+}
+
 /// Complete a GATTC read: driver resolved `data` over air; posts the
 /// READ_RSP event firmware drains via sd_ble_evt_get.
-pub fn complete_gattc_read(handle: u16, offset: u16, data: &[u8]) {
+pub fn complete_gattc_read(conn: u16, handle: u16, offset: u16, data: &[u8]) {
     with_sd_ble(|s| {
-        s.push_evt(EVT_GATTC_READ_RSP, SdBle::read_rsp_payload(handle, offset, data));
+        s.push_evt(
+            EVT_GATTC_READ_RSP,
+            SdBle::read_rsp_payload(conn, handle, offset, data),
+        );
+    });
+}
+
+/// Complete a GATTC write: driver wrote over air (WRITE_RSP proof);
+/// posts WRITE_RSP with the echoed op/bytes.
+pub fn complete_gattc_write(conn: u16, handle: u16, op: u8, data: &[u8]) {
+    with_sd_ble(|s| {
+        s.push_evt(
+            EVT_GATTC_WRITE_RSP,
+            SdBle::write_rsp_payload(conn, handle, op, 0, data),
+        );
+    });
+}
+
+/// Complete a GATTC notification/indication from the peer: posts HVX.
+pub fn complete_gattc_hvx(conn: u16, handle: u16, hvx_type: u8, data: &[u8]) {
+    with_sd_ble(|s| {
+        s.push_evt(EVT_GATTC_HVX, SdBle::hvx_payload(conn, handle, hvx_type, data));
     });
 }
 
@@ -440,28 +1471,58 @@ pub fn complete_gattc_read(handle: u16, offset: u16, data: &[u8]) {
 pub fn complete_gap_connect(peer: [u8; 6]) {
     with_sd_ble(|s| {
         s.connected = true;
-        s.push_evt(EVT_GAP_CONNECTED, SdBle::connected_payload(peer));
+        s.peer_addr = peer;
+        s.push_evt(EVT_GAP_CONNECTED, s.connected_payload());
+    });
+}
+
+/// Complete a GAP disconnect: clears the link, posts DISCONNECTED.
+pub fn complete_gap_disconnect(conn: u16, reason: u8) {
+    with_sd_ble(|s| {
+        s.connected = false;
+        s.push_evt(EVT_GAP_DISCONNECTED, SdBle::disconnected_payload(conn, reason));
+    });
+}
+
+/// Complete an RSSI sample: updates the cached level, posts
+/// RSSI_CHANGED.
+pub fn complete_rssi(conn: u16, rssi: i8) {
+    with_sd_ble(|s| {
+        s.rssi_dbm = rssi;
+        s.push_evt(EVT_GAP_RSSI_CHANGED, SdBle::rssi_changed_payload(conn, rssi));
+    });
+}
+
+/// Complete a GATTS HVX: driver emitted over air; posts HVC confirm.
+pub fn complete_hvx(conn: u16, handle: u16) {
+    with_sd_ble(|s| {
+        s.push_evt(EVT_GATTS_HVC, SdBle::hvc_payload(conn, handle));
     });
 }
 
 /// Post an advertising report (bridge scanner sighting) for evt_get.
-pub fn post_adv_report(peer: [u8; 6], rssi: i8, data: &[u8]) {
+pub fn post_adv_report(peer: [u8; 6], rssi: i8, scan_rsp: bool, data: &[u8]) {
     with_sd_ble(|s| {
-        s.push_evt(EVT_GAP_ADV_REPORT, SdBle::adv_report_payload(peer, rssi, data));
+        s.push_evt(EVT_GAP_ADV_REPORT, SdBle::adv_report_payload(peer, rssi, scan_rsp, data));
     });
 }
 
 /// Post a GATTS write (peer wrote our characteristic) for evt_get.
-pub fn post_gatts_write(handle: u16, uuid16: u16, data: &[u8]) {
+/// Updates the local table value when the handle is known.
+pub fn post_gatts_write(conn: u16, handle: u16, uuid16: Option<u16>, op: u8, data: &[u8]) {
     with_sd_ble(|s| {
-        if handle == BATT_VALUE_HANDLE || handle == s.next_value_handle.wrapping_sub(2) {
-            if let Some(&b) = data.first() {
-                s.batt_level = b;
+        if let Some(a) = s.find_attr_mut(handle) {
+            a.value.clear();
+            a.value.extend_from_slice(data);
+            if a.uuid16 == Some(0x2A19) {
+                if let Some(&b) = data.first() {
+                    s.batt_level = b;
+                }
             }
         }
         s.push_evt(
             EVT_GATTS_WRITE,
-            SdBle::write_payload(BRIDGE_CONN_HANDLE, handle, uuid16, data),
+            SdBle::gatts_write_payload(conn, handle, uuid16, op, data),
         );
     });
 }
@@ -496,90 +1557,297 @@ mod tests {
         r
     }
 
+    /// Drain one event with the REAL two-arg contract: r0 = dest RAM,
+    /// r1 = *len RAM (in: room incl. header). Returns (r0, id, len).
+    fn drain(sys: &System, mem: &mut FlatMemory, dest: u32, room: u16) -> (u32, u16, u16) {
+        mem.write16(0x20003FF0, room);
+        let r = regs(dest, 0x20003FF0, 0, 0);
+        let rc = handle_svc(sys, mem, SVC_BLE_EVT_GET, &r).expect("evt_get claims");
+        (rc, mem.read16(dest), mem.read16(dest.wrapping_add(2)))
+    }
+
+    /// Build a battery service in the table via real SVCs; returns the
+    /// characteristic VALUE handle firmware would cache.
+    fn build_battery(sys: &System, mem: &mut FlatMemory) -> u16 {
+        // SERVICE_ADD(type=1 primary, *uuid{0x180F,BLE}, *handle).
+        mem.write16(0x20001000, 0x180F);
+        mem.write8(0x20001002, UUID_TYPE_BLE);
+        mem.write16(0x20001010, 0);
+        let r = regs(1, 0x20001000, 0x20001010, 0);
+        assert_eq!(handle_svc(sys, mem, SVC_GATTS_SERVICE_ADD, &r), Some(NRF_SUCCESS));
+        let svc = mem.read16(0x20001010);
+        assert!(svc >= 0x10, "service handle {svc:#x}");
+        // CHAR_ADD(service, *md, *attr, *handles): attr =
+        // {*uuid@0, *md@4, init_len@8, init_offs@10, max_len@12,
+        //  *value@16}. S132 ble_gatts_attr_t is 20B (4B-aligned).
+        mem.write16(0x20001100, 0x2A19);
+        mem.write8(0x20001102, UUID_TYPE_BLE);
+        mem.write32(0x20001110, 0x20001100); // p_uuid
+        mem.write32(0x20001114, 0); // p_attr_md
+        mem.write16(0x20001118, 1); // init_len
+        mem.write16(0x2000111A, 0); // init_offs
+        mem.write16(0x2000111C, 1); // max_len
+        mem.write8(0x20001128, 87);
+        mem.write32(0x20001120, 0x20001128); // p_value -> 87
+        mem.write16(0x20001130, 0);
+        mem.write16(0x20001134, 0);
+        let r = regs(svc as u32, 0x20001140, 0x20001110, 0x20001130);
+        assert_eq!(handle_svc(sys, mem, SVC_GATTS_CHAR_ADD, &r), Some(NRF_SUCCESS));
+        let value = mem.read16(0x20001130);
+        assert!(value > svc, "value {value:#x} after service {svc:#x}");
+        value
+    }
+
+    /// Connect over air (staged job + completion); drains CONNECTED.
+    fn connect(sys: &System, mem: &mut FlatMemory) {
+        mem.write8(0x20001200, 1);
+        for (i, b) in [0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66].iter().enumerate() {
+            mem.write8(0x20001200 + 1 + i as u32, *b);
+        }
+        let r = regs(0x20001200, 0, 0, 0);
+        assert_eq!(handle_svc(sys, mem, SVC_GAP_CONNECT, &r), Some(NRF_SUCCESS));
+        assert!(matches!(take_job(), Some(BleJob::GapConnect { .. })));
+        complete_gap_connect([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+        let (rc, id, _) = drain(sys, mem, 0x20003000, 128);
+        assert_eq!(rc, NRF_SUCCESS);
+        assert_eq!(id, EVT_GAP_CONNECTED);
+    }
+
     #[test]
-    fn enable_then_evt_get_empty_is_not_found() {
+    fn enable_reports_ram_base_and_evt_get_two_arg_contract() {
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
         assert_eq!(handle_svc(&sys, &mut mem, 0x59, &[0u32; 13]), None, "outside BLE range");
+        // Empty queue, one-arg legacy shape: still NOT_FOUND (p_len NULL
+        // is not an address error — there is no contract to violate).
         assert_eq!(
             handle_svc(&sys, &mut mem, SVC_BLE_EVT_GET, &regs(0x20001000, 0, 0, 0)),
             Some(NRF_ERROR_NOT_FOUND),
             "empty queue reads NOT_FOUND"
         );
+        // *len not RAM -> INVALID_ADDR.
         assert_eq!(
-            handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]),
-            Some(NRF_SUCCESS)
+            handle_svc(&sys, &mut mem, SVC_BLE_EVT_GET, &regs(0x20001000, 0x1000, 0, 0)),
+            Some(NRF_ERROR_INVALID_ADDR)
         );
+        // ENABLE with *app_ram_base: floor reported, stack up.
+        mem.write32(0x20001000, 0);
+        let r = regs(0, 0x20001000, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &r), Some(NRF_SUCCESS));
         assert!(is_enabled());
-        // Still empty -> NOT_FOUND (no fallthrough to the SD).
+        assert_eq!(mem.read32(0x20001000), 0x2000_2000, "app RAM floor");
+        // Queue one event, query length with dest NULL (no pop)...
+        post_adv_report([1, 2, 3, 4, 5, 6], -50, false, &[1, 2, 3]);
+        mem.write16(0x20003FF0, 0);
+        let r = regs(0, 0x20003FF0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_BLE_EVT_GET, &r), Some(NRF_SUCCESS));
+        let need = mem.read16(0x20003FF0);
+        assert_eq!(need, 4 + 2 + 7 + 1 + 1 + 1 + 31, "adv_report wire size");
+        // ...small room -> DATA_SIZE without popping...
+        let (rc, _, _) = drain(&sys, &mut mem, 0x20003000, need - 1);
+        assert_eq!(rc, NRF_ERROR_DATA_SIZE);
+        assert_eq!(queue_len(), 1, "short read must not pop");
+        // ...exact room drains ADV_REPORT with the unpacked layout.
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, need);
+        assert_eq!((rc, id, len), (NRF_SUCCESS, EVT_GAP_ADV_REPORT, need));
+        assert_eq!(mem.read16(0x20003004), 0xFFFF, "no-conn handle");
+        assert_eq!(mem.read8(0x20003006), 1, "peer type");
+        assert_eq!(mem.read8(0x2000300D), 206, "rssi -50");
+        assert_eq!(mem.read8(0x2000300E) >> 3, 3, "dlen 3 in bits3-7");
+        assert_eq!(mem.read8(0x2000300F), 0, "pad byte (unpacked)");
+        assert_eq!(mem.read8(0x20003010), 1, "data[0]");
+        // Drained -> NOT_FOUND again.
         assert_eq!(
-            handle_svc(&sys, &mut mem, SVC_BLE_EVT_GET, &regs(0x20001000, 0, 0, 0)),
+            handle_svc(&sys, &mut mem, SVC_BLE_EVT_GET, &regs(0x20003000, 0x20003FF0, 0, 0)),
             Some(NRF_ERROR_NOT_FOUND)
         );
     }
 
     #[test]
-    fn gatts_battery_roundtrip() {
+    fn gatts_table_service_char_value_roundtrip() {
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
-        let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
-        // SERVICE_ADD writes a handle to RAM.
-        mem.write32(0x20001000, 0x180F);
-        mem.write16(0x20001010, 0);
-        let r = regs(1, 0x20001000, 0x20001010, 0);
-        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_SERVICE_ADD, &r), Some(NRF_SUCCESS));
-        assert_eq!(mem.read16(0x20001010), BATT_SVC_HANDLE);
-        // VALUE_SET battery -> VALUE_GET reads it back.
+        mem.write32(0x20001000, 0);
+        let r = regs(0, 0x20001000, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &r), Some(NRF_SUCCESS));
+        let value = build_battery(&sys, &mut mem);
+        // VALUE_SET via the struct contract (conn=INVALID ok): 87 -> 63.
         mem.write8(0x20002000, 63);
-        let r = regs(BATT_VALUE_HANDLE as u32, 0, 1, 0x20002000);
+        mem.write16(0x20002010, 1); // len
+        mem.write16(0x20002012, 0); // offset
+        mem.write32(0x20002014, 0x20002000); // *value
+        let r = regs(0xFFFF, value as u32, 0x20002010, 0);
         assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_VALUE_SET, &r), Some(NRF_SUCCESS));
-        mem.write16(0x20002010, 0);
-        let r = regs(BATT_VALUE_HANDLE as u32, 0, 0x20002010, 0x20002008);
-        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_VALUE_GET, &r), Some(NRF_SUCCESS));
-        assert_eq!(mem.read16(0x20002010), 1);
-        assert_eq!(mem.read8(0x20002008), 63);
         assert_eq!(batt_level(), 63);
+        // VALUE_GET copies back + reports len; NULL data = length query.
+        mem.write16(0x20002020, 4); // room
+        mem.write16(0x20002022, 0);
+        mem.write32(0x20002024, 0x20002008);
+        let r = regs(0xFFFF, value as u32, 0x20002020, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_VALUE_GET, &r), Some(NRF_SUCCESS));
+        assert_eq!(mem.read16(0x20002020), 1, "len out");
+        assert_eq!(mem.read8(0x20002008), 63);
+        // Unknown handle -> NOT_FOUND (not INVALID_ADDR).
+        let r = regs(0xFFFF, 0x9999, 0x20002020, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_VALUE_GET, &r), Some(NRF_ERROR_NOT_FOUND));
+        // ATTR_GET reports the table uuid back.
+        mem.write16(0x20002030, 0);
+        mem.write8(0x20002032, 0);
+        let r = regs(value as u32, 0x20002030, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_ATTR_GET, &r), Some(NRF_SUCCESS));
+        assert_eq!(mem.read16(0x20002030), 0x2A19);
     }
 
     #[test]
-    fn gattc_read_stages_take_complete_posts_read_rsp() {
+    fn gattc_read_write_discovery_hvx_stage_take_complete() {
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
         let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
         // Not connected -> INVALID_STATE (silicon rule).
-        let r = regs(1, BATT_VALUE_HANDLE as u32, 0, 0);
+        let r = regs(1, 0x10, 0, 0);
         assert_eq!(
             handle_svc(&sys, &mut mem, SVC_GATTC_READ, &r),
             Some(NRF_ERROR_INVALID_STATE)
         );
-        complete_gap_connect([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
-        // Drain the CONNECTED event the connect completion posted.
-        let r = regs(0x20003000, 0, 0, 0);
-        assert_eq!(handle_svc(&sys, &mut mem, SVC_BLE_EVT_GET, &r), Some(NRF_SUCCESS));
-        assert_eq!(mem.read16(0x20003000), EVT_GAP_CONNECTED);
-        // Now the read stages a driver job...
-        let r = regs(1, BATT_VALUE_HANDLE as u32, 0, 0);
-        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_READ, &r), Some(NRF_SUCCESS));
+        connect(&sys, &mut mem);
+        // PRIM_DISC stages (conn, start, NULL uuid = all).
+        let r = regs(1, 1, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_PRIMARY_DISC, &r), Some(NRF_SUCCESS));
         assert_eq!(
             take_job(),
-            Some(BleJob::GattcRead { conn: 1, handle: BATT_VALUE_HANDLE, offset: 0 })
+            Some(BleJob::GattcPrimDisc { conn: 1, start: 1, uuid16: None })
         );
-        // ...driver resolves over air, event drains with header+body.
-        complete_gattc_read(BATT_VALUE_HANDLE, 0, &[87]);
-        let r = regs(0x20003000, 0, 0, 0);
-        assert_eq!(handle_svc(&sys, &mut mem, SVC_BLE_EVT_GET, &r), Some(NRF_SUCCESS));
-        assert_eq!(mem.read16(0x20003000), EVT_GATTC_READ_RSP);
-        // evt_len includes the 4-byte header: 4 + 2+2+2 + 1 byte data.
-        assert_eq!(mem.read16(0x20003002), 4 + 6 + 1);
-        assert_eq!(mem.read8(0x20003004), BATT_VALUE_HANDLE as u8);
-        assert_eq!(mem.read8(0x2000300A), 87);
-        // Queue drained -> NOT_FOUND again.
+        complete_prim_disc(1, &[DiscService { uuid16: Some(0x180F), start: 0x10, end: 0x16 }]);
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!(rc, NRF_SUCCESS);
+        assert_eq!(id, EVT_GATTC_PRIM_DISC_RSP);
+        assert_eq!(len, 4 + 6 + 2 + 8, "gattc head + count + 1 service");
+        assert_eq!(mem.read16(0x20003004), 1, "conn");
+        assert_eq!(mem.read16(0x20003006), 0, "status SUCCESS");
+        assert_eq!(mem.read16(0x2000300A), 1, "count");
+        assert_eq!(mem.read16(0x2000300C), 0x180F, "service uuid");
+        // CHAR_DISC stages a range job; completion posts CHAR_DISC_RSP.
+        mem.write16(0x20001300, 0x10);
+        mem.write16(0x20001302, 0x16);
+        let r = regs(1, 0x20001300, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_CHAR_DISC, &r), Some(NRF_SUCCESS));
+        assert_eq!(take_job(), Some(BleJob::GattcCharDisc { conn: 1, start: 0x10, end: 0x16 }));
+        complete_char_disc(1, &[DiscChar { uuid16: Some(0x2A19), props: 0x12, decl: 0x12, value: 0x13 }]);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTC_CHAR_DISC_RSP));
+        assert_eq!(mem.read8(0x20003010), 0x12, "props byte");
+        assert_eq!(mem.read16(0x20003014), 0x13, "value handle");
+        // READ stages; completion posts READ_RSP with the gattc head.
+        let r = regs(1, 0x13, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_READ, &r), Some(NRF_SUCCESS));
+        assert_eq!(take_job(), Some(BleJob::GattcRead { conn: 1, handle: 0x13, offset: 0 }));
+        complete_gattc_read(1, 0x13, 0, &[87]);
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTC_READ_RSP));
+        assert_eq!(len, 4 + 6 + 6 + 1, "head + hdl/off/len + 1B");
+        assert_eq!(mem.read8(0x20003010), 87, "battery byte");
+        // WRITE stages with bytes COPIED at SVC time (not at take).
+        mem.write8(0x20001400, GATT_OP_WRITE_REQ);
+        mem.write8(0x20001401, 0);
+        mem.write16(0x20001402, 0x13);
+        mem.write16(0x20001404, 0);
+        mem.write16(0x20001406, 2);
+        mem.write8(0x20001410, 0xAA);
+        mem.write8(0x20001411, 0xBB);
+        mem.write32(0x20001408, 0x20001410);
+        let r = regs(1, 0x20001400, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_WRITE, &r), Some(NRF_SUCCESS));
+        // Corrupt the source: the staged job must keep the SVC-time copy.
+        mem.write8(0x20001410, 0);
         assert_eq!(
-            handle_svc(&sys, &mut mem, SVC_BLE_EVT_GET, &regs(0x20003000, 0, 0, 0)),
+            take_job(),
+            Some(BleJob::GattcWrite { conn: 1, op: 1, handle: 0x13, data: vec![0xAA, 0xBB] })
+        );
+        complete_gattc_write(1, 0x13, 1, &[0xAA, 0xBB]);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTC_WRITE_RSP));
+        assert_eq!(mem.read8(0x2000300C), 1, "op echo");
+        assert_eq!(mem.read8(0x2000300D), 0, "pad after op");
+        // HVX from the peer posts HVX with pad-correct layout.
+        complete_gattc_hvx(1, 0x13, GATT_HVX_NOTIFICATION, &[0x55]);
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTC_HVX));
+        assert_eq!(len, 4 + 6 + 2 + 1 + 1 + 2 + 1);
+        assert_eq!(mem.read8(0x20003010), 0x55, "hvx data");
+        // Queue drained -> NOT_FOUND again.
+        mem.write16(0x20003FF0, 128);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_BLE_EVT_GET, &regs(0x20003000, 0x20003FF0, 0, 0)),
             Some(NRF_ERROR_NOT_FOUND)
+        );
+    }
+
+    /// SVC number under test for the read arm (kept beside the test so
+    /// a renumber breaks loudly here, not deep in dispatch).
+    fn svc_ble_read_wrap() -> u8 {
+        SVC_GATTC_READ
+    }
+
+    #[test]
+    fn gap_disconnect_rssi_scan_hvx_lifecycle() {
+        let sys = test_dummy_system();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        reset_for_test();
+        let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
+        connect(&sys, &mut mem);
+        // SCAN_START stages; completion posts a padded ADV_REPORT.
+        let r = regs(0, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_SCAN_START, &r), Some(NRF_SUCCESS));
+        assert_eq!(take_job(), Some(BleJob::GapScanStart));
+        post_adv_report([9, 9, 9, 9, 9, 9], -60, true, &[0x02, 0x01, 0x06]);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_ADV_REPORT));
+        assert_eq!(mem.read8(0x2000300E) & 1, 1, "scan_rsp bit");
+        // RSSI_GET answers synchronously AND stages air sampling.
+        mem.write8(0x20003100, 0);
+        let r = regs(1, 0x20003100, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_RSSI_GET, &r), Some(NRF_SUCCESS));
+        assert_eq!(take_job(), Some(BleJob::GapRssiGet { conn: 1 }));
+        assert_eq!(mem.read8(0x20003100), 206, "cached -50dBm now");
+        complete_rssi(1, -60);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_RSSI_CHANGED));
+        assert_eq!(mem.read8(0x20003006), 196, "rssi -60");
+        // GATTS HVX needs a table handle: build battery, then stage.
+        // hvx_params = {handle@0, type@2, offset@4, *len@8, *data@12}.
+        let value = build_battery(&sys, &mut mem);
+        mem.write16(0x20003200, value);
+        mem.write8(0x20003202, GATT_HVX_NOTIFICATION);
+        mem.write16(0x20003204, 0);
+        mem.write16(0x20003210, 1);
+        mem.write8(0x20003220, 0x42);
+        mem.write32(0x20003208, 0x20003210);
+        mem.write32(0x2000320C, 0x20003220);
+        let r = regs(1, 0x20003200, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_HVX, &r), Some(NRF_SUCCESS));
+        assert_eq!(
+            take_job(),
+            Some(BleJob::GattsHvx { conn: 1, handle: value, hvx_type: 1, data: vec![0x42] })
+        );
+        complete_hvx(1, value);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_HVC));
+        // DISCONNECT stages; completion clears the link + posts reason.
+        let r = regs(1, 19, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_DISCONNECT, &r), Some(NRF_SUCCESS));
+        assert_eq!(take_job(), Some(BleJob::GapDisconnect { conn: 1, reason: 19 }));
+        complete_gap_disconnect(1, 19);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_DISCONNECTED));
+        assert_eq!(mem.read8(0x20003006), 19, "HCI reason");
+        // Link down: reads go INVALID_STATE again (silicon rule).
+        let r = regs(1, value as u32, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTC_READ, &r),
+            Some(NRF_ERROR_INVALID_STATE)
         );
     }
 
@@ -601,9 +1869,12 @@ mod tests {
             Some(BleJob::GapConnect { addr: [0x11, 0x22, 0x33, 0x44, 0x55, 0x66] })
         );
         complete_gap_connect([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
-        let r = regs(0x20004000, 0, 0, 0);
-        assert_eq!(handle_svc(&sys, &mut mem, SVC_BLE_EVT_GET, &r), Some(NRF_SUCCESS));
-        assert_eq!(mem.read16(0x20004000), EVT_GAP_CONNECTED);
+        // CONNECTED envelope: conn + addrs + CENTRAL role + params.
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20004000, 128);
+        assert_eq!(rc, NRF_SUCCESS);
+        assert_eq!(id, EVT_GAP_CONNECTED);
+        assert_eq!(len, 4 + 2 + 7 + 7 + 1 + 1 + 8, "connected wire size");
         assert_eq!(mem.read16(0x20004004), BRIDGE_CONN_HANDLE);
+        assert_eq!(mem.read8(0x20004014), GAP_ROLE_CENTRAL, "we dial out");
     }
 }
