@@ -493,6 +493,19 @@ pub fn nvmc_complete_erase() {
 }
 
 // ── SoftDevice BLE SVC face (GAP/GATTS/GATTC over the Bumble air bridge) ──
+// ble_take_job() returns one staged driver job as u32 words; the first
+// word is the tag. The driver resolves it over air and calls the
+// matching complete_*. Empty vec = idle. Tags:
+//   0 GattcRead  [conn, handle, offset]
+//   1 GapConnect [a0..a5] (peer addr LE)
+//   2 GapDisconnect [conn, reason]
+//   3 GapRssiGet [conn]
+//   4 GapScanStart [] (one live sighting -> ADV_REPORT)
+//   5 GattcPrimDisc [conn, start, uuid16|0xFFFF(none)]
+//   6 GattcCharDisc [conn, start, end]
+//   7 GattcDescDisc [conn, start, end]
+//   8 GattcWrite [conn, op, handle, len] + ble_take_data() bytes
+//   9 GattsHvx [conn, handle, type, len] + ble_take_data() bytes
 #[wasm_bindgen]
 pub fn ble_take_job() -> Vec<u32> {
     match crate::sd_ble::take_job() {
@@ -504,13 +517,101 @@ pub fn ble_take_job() -> Vec<u32> {
             v.extend(addr.iter().map(|&b| b as u32));
             v
         }
+        Some(crate::sd_ble::BleJob::GapDisconnect { conn, reason }) => {
+            vec![2, conn as u32, reason as u32]
+        }
+        Some(crate::sd_ble::BleJob::GapRssiGet { conn }) => vec![3, conn as u32],
+        Some(crate::sd_ble::BleJob::GapScanStart) => vec![4],
+        Some(crate::sd_ble::BleJob::GattcPrimDisc { conn, start, uuid16 }) => {
+            vec![5, conn as u32, start as u32, uuid16.map(|u| u as u32).unwrap_or(0xFFFF)]
+        }
+        Some(crate::sd_ble::BleJob::GattcCharDisc { conn, start, end }) => {
+            vec![6, conn as u32, start as u32, end as u32]
+        }
+        Some(crate::sd_ble::BleJob::GattcDescDisc { conn, start, end }) => {
+            vec![7, conn as u32, start as u32, end as u32]
+        }
+        Some(crate::sd_ble::BleJob::GattcWrite { conn, op, handle, ref data }) => {
+            crate::sd_ble::stage_take_data(data.clone());
+            vec![8, conn as u32, op as u32, handle as u32, data.len() as u32]
+        }
+        Some(crate::sd_ble::BleJob::GattsHvx { conn, handle, hvx_type, ref data }) => {
+            crate::sd_ble::stage_take_data(data.clone());
+            vec![9, conn as u32, handle as u32, hvx_type as u32, data.len() as u32]
+        }
         None => Vec::new(),
     }
 }
 
+/// Bytes staged alongside the last take_job (WRITE/HVX payloads only;
+/// the SVC copies firmware bytes at call time so the driver read is
+/// stable). Drained once per job; empty when the job carries no bytes.
 #[wasm_bindgen]
-pub fn ble_complete_gattc_read(handle: u16, offset: u16, data: &[u8]) {
-    crate::sd_ble::complete_gattc_read(handle, offset, data);
+pub fn ble_take_data() -> Vec<u8> {
+    crate::sd_ble::take_staged_data()
+}
+
+#[wasm_bindgen]
+pub fn ble_complete_gattc_read(conn: u16, handle: u16, offset: u16, data: &[u8]) {
+    crate::sd_ble::complete_gattc_read(conn, handle, offset, data);
+}
+
+/// Complete a primary-service discovery with parallel arrays:
+/// uuids[i] (0xFFFF = 128-bit, listed without number), starts[i],
+/// ends[i]. Posts PRIM_DISC_RSP.
+#[wasm_bindgen]
+pub fn ble_complete_prim_disc(conn: u16, uuids: &[u16], starts: &[u16], ends: &[u16]) {
+    let n = uuids.len().min(starts.len()).min(ends.len());
+    let svcs: Vec<crate::sd_ble::DiscService> = (0..n)
+        .map(|i| crate::sd_ble::DiscService {
+            uuid16: if uuids[i] == 0xFFFF { None } else { Some(uuids[i]) },
+            start: starts[i],
+            end: ends[i],
+        })
+        .collect();
+    crate::sd_ble::complete_prim_disc(conn, &svcs);
+}
+
+/// Complete a characteristic discovery: uuids[i] (0xFFFF = 128-bit),
+/// props[i] (S132 u8 bitfield), decls[i], values[i]. Posts CHAR_DISC_RSP.
+#[wasm_bindgen]
+pub fn ble_complete_char_disc(conn: u16, uuids: &[u16], props: &[u8], decls: &[u16], values: &[u16]) {
+    let n = uuids.len().min(props.len()).min(decls.len()).min(values.len());
+    let chars: Vec<crate::sd_ble::DiscChar> = (0..n)
+        .map(|i| crate::sd_ble::DiscChar {
+            uuid16: if uuids[i] == 0xFFFF { None } else { Some(uuids[i]) },
+            props: props[i],
+            decl: decls[i],
+            value: values[i],
+        })
+        .collect();
+    crate::sd_ble::complete_char_disc(conn, &chars);
+}
+
+/// Complete a descriptor discovery: handles[i], uuids[i].
+/// Posts DESC_DISC_RSP.
+#[wasm_bindgen]
+pub fn ble_complete_desc_disc(conn: u16, handles: &[u16], uuids: &[u16]) {
+    let n = handles.len().min(uuids.len());
+    let descs: Vec<crate::sd_ble::DiscDesc> = (0..n)
+        .map(|i| crate::sd_ble::DiscDesc {
+            handle: handles[i],
+            uuid16: if uuids[i] == 0xFFFF { None } else { Some(uuids[i]) },
+        })
+        .collect();
+    crate::sd_ble::complete_desc_disc(conn, &descs);
+}
+
+/// Complete a GATTC write with the over-air WRITE_RSP proof.
+#[wasm_bindgen]
+pub fn ble_complete_gattc_write(conn: u16, handle: u16, op: u8, data: &[u8]) {
+    crate::sd_ble::complete_gattc_write(conn, handle, op, data);
+}
+
+/// Complete a peer notification/indication: posts HVX.
+#[wasm_bindgen]
+pub fn ble_complete_gattc_hvx(conn: u16, handle: u16, hvx_type: u8, data: &[u8]) {
+    crate::sd_ble::complete_gattc_hvx(conn, handle, hvx_type, data);
 }
 
 #[wasm_bindgen]
@@ -522,18 +623,44 @@ pub fn ble_complete_gap_connect(peer: &[u8]) {
     crate::sd_ble::complete_gap_connect(addr);
 }
 
+/// Complete a GAP disconnect: posts DISCONNECTED with the HCI reason.
 #[wasm_bindgen]
-pub fn ble_post_adv_report(peer: &[u8], rssi: i8, data: &[u8]) {
+pub fn ble_complete_gap_disconnect(conn: u16, reason: u8) {
+    crate::sd_ble::complete_gap_disconnect(conn, reason);
+}
+
+/// Complete an RSSI sample: posts RSSI_CHANGED.
+#[wasm_bindgen]
+pub fn ble_complete_rssi(conn: u16, rssi: i8) {
+    crate::sd_ble::complete_rssi(conn, rssi);
+}
+
+/// Complete a GATTS HVX emission: posts HVC confirm.
+#[wasm_bindgen]
+pub fn ble_complete_hvx(conn: u16, handle: u16) {
+    crate::sd_ble::complete_hvx(conn, handle);
+}
+
+#[wasm_bindgen]
+pub fn ble_post_adv_report(peer: &[u8], rssi: i8, scan_rsp: bool, data: &[u8]) {
     let mut addr = [0u8; 6];
     for (i, &b) in peer.iter().take(6).enumerate() {
         addr[i] = b;
     }
-    crate::sd_ble::post_adv_report(addr, rssi, data);
+    crate::sd_ble::post_adv_report(addr, rssi, scan_rsp, data);
 }
 
+/// Post a peer write to our table: conn handle, attr handle,
+/// uuid16 (0xFFFF = 128-bit/vendor), op (1 = write request), bytes.
 #[wasm_bindgen]
-pub fn ble_post_gatts_write(handle: u16, uuid16: u16, data: &[u8]) {
-    crate::sd_ble::post_gatts_write(handle, uuid16, data);
+pub fn ble_post_gatts_write(conn: u16, handle: u16, uuid16: u16, op: u8, data: &[u8]) {
+    crate::sd_ble::post_gatts_write(
+        conn,
+        handle,
+        if uuid16 == 0xFFFF { None } else { Some(uuid16) },
+        op,
+        data,
+    );
 }
 
 #[wasm_bindgen]
