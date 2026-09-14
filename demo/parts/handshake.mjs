@@ -30,7 +30,7 @@ import path from 'node:path';
 import {
   MockTemp, MockComp, MockQdec, MockEcb, MockAar, MockCcm, MockI2s,
   MockNfct, MockTwis, MockSpis, MockSpiDisplay, MockSaadcLim,
-  MockUsbdSetup, MockRadio154, MockQspi,
+  MockUsbdSetup, MockRadio154, MockRadioAir, MockBleSvc, MockQspi,
 } from './mocks.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -206,13 +206,52 @@ function cpuWithBridge() {
   check(u.done === true, 'USBD SETUP regs + EP0SETUP');
 }
 
-// --- RADIO 15.4: corrupt packet -> CRCERROR + END ---
+// --- RADIO 15.4: ED/CCA + DEVMATCH/MISS + MHR/FRAMESTART + CRCERROR ---
 {
   const parts = freshBoard();
   const cpu = cpuWithBridge();
   const r = parts[11];
-  for (let i = 0; i < 4 && !r.done; i++) r.poll(cpu);
-  check(r.done === true, 'RADIO corrupt CRCERROR + END');
+  for (let i = 0; i < 10 && !r.done; i++) r.poll(cpu);
+  check(r.done === true && r.seen?.edCca && r.seen?.match && r.seen?.miss && r.seen?.corrupt,
+    `RADIO ED/CCA+match/miss+MHR/FRAMESTART+CRCERROR (seen=${JSON.stringify(r.seen)})`);
+}
+
+// --- RADIO air peer (stub bridge): TX posts, addressed echo returns ---
+// The live bridge is tools/ble_air_bridge.py over WebSocket (BleAir in
+// ble_air.js, wired on the bench). Headless, a 20-line in-memory stub
+// proves the same pump contract: TX bytes leave via sendTx, an
+// addressed frame comes back via takeRx, DEVMATCH fires on completion.
+{
+  const parts = freshBoard();
+  const cpu = cpuWithBridge();
+  const { MockRadioAir } = await import('./mocks.js');
+  const inbox = [];
+  const stub = {
+    available: true,
+    sendTx(bytes) { inbox.push(bytes); return true; },
+    takeRx() {
+      const b = inbox.shift();
+      // Bridge echo shape: [0xEF, 0xBE, ...payload]. DAB[0]=0xEF matches.
+      return b ? Uint8Array.from([0xEF, 0xBE, ...b.slice(0, 8)]) : null;
+    },
+  };
+  const air = new MockRadioAir(wasm, stub);
+  for (let i = 0; i < 6 && !air.done; i++) air.poll(cpu);
+  check(air.done === true && air.seenTx >= 1 && air.seenRx >= 1,
+    `RADIO air peer TX->bridge->RX (tx=${air.seenTx} rx=${air.seenRx})`);
+}
+
+// --- SoftDevice BLE SVC face: GATTS battery + GAP connect + READ_RSP ---
+// Same pump contract as index.html (take/complete + evt queue), against
+// the local loopback (no bridge needed headless): completions carry the
+// battery value, events queue for sd_ble_evt_get.
+{
+  const parts = freshBoard();
+  const cpu = cpuWithBridge();
+  const b = new MockBleSvc(wasm);
+  for (let i = 0; i < 4 && !b.done; i++) b.poll(cpu);
+  check(b.done === true && b.seen?.gatts && b.seen?.connected && b.seen?.readRsp,
+    `BLE SVC GATTS+connect+READ_RSP (seen=${JSON.stringify(b.seen)})`);
 }
 
 // --- QSPI: staged write/read/erase round trip ---

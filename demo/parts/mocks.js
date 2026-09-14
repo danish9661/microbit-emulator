@@ -475,40 +475,179 @@ export class MockUsbdSetup {
   }
 }
 
-// --- RADIO 802.15.4 helpers: ED level, CCA verdict, corrupt CRC path ---
+// --- RADIO 802.15.4 helpers: ED sample, DEVMATCH/MISS, MHR, FRAMESTART,
+// corrupt CRC path. Each stage programs the real registers, injects one
+// addressed packet, completes RX, and checks the event batch — the same
+// surface the Rust ed_cca_mhr_devmatch_framestart test proves natively.
 export class MockRadio154 {
-  constructor(wasm) { this.wasm = wasm; this.done = false; this.stage = 0; }
+  constructor(wasm) { this.wasm = wasm; this.done = false; this.stage = 0; this.seen = {}; }
   register() {}
+  oneRx(packet, corrupt) {
+    const w = this.wasm;
+    // Inject-then-ramp: the queue must be non-empty when START runs,
+    // because do_start only stages take_rx from a non-empty queue
+    // (silicon ramps first, air arrives later — same net effect here).
+    if (corrupt) w.radio_inject_corrupt(packet); else w.radio_inject_rx(packet);
+    w32(w, RADIO_BASE, 0x504, 0x20001000); // PACKETPTR
+    w32(w, RADIO_BASE, 0x004, 1); // RXEN
+    w32(w, RADIO_BASE, 0x008, 1); // START (Rx stages take_rx)
+    const rxp = w.radio_take_rx();
+    if (!rxp || rxp.length === 0) return null;
+    return rxp[0] >>> 0;
+  }
   poll(cpu) {
     const w = this.wasm;
     if (this.done) return;
+    // Stage 0: ED sample level + DEVMATCH/MHR/FRAMESTART on a good packet.
     if (this.stage === 0) {
-      w.radio_set_ed_dbm(-60);
-      w.radio_set_rssi_dbm(-60);
-      // PACKETPTR must be programmed before START (take_rx returns it).
-      w32(w, RADIO_BASE, 0x504, 0x20001000);
-      w.radio_inject_corrupt([0xDE, 0xAD]);
-      w32(w, RADIO_BASE, 0x004, 1); // RXEN
-      w32(w, RADIO_BASE, 0x008, 1); // START (Rx stages take_rx)
+      w.radio_set_ed_dbm(-50);
+      w.radio_set_rssi_dbm(-50);
+      w32(w, RADIO_BASE, 0x024, 0); // noop guard (ED needs Rx below)
+      w32(w, RADIO_BASE, 0x004, 1); // RXEN (ED/CCA need Rx)
+      w32(w, RADIO_BASE, 0x008, 1); // START
+      w32(w, RADIO_BASE, 0x024, 1); // EDSTART -> EDEND + EDSAMPLE/EDCNT
+      if (r32(w, RADIO_BASE, 0x13C) !== 1) return; // EDEND
+      if (r32(w, RADIO_BASE, 0x668) !== 50) return; // EDSAMPLE = -dBm
+      w32(w, RADIO_BASE, 0x028, 1); // EDSTOP -> EDSTOPPED
+      if (r32(w, RADIO_BASE, 0x140) !== 1) return;
+      // CCA: threshold 0 (reset) vs level 50 -> busy.
+      w32(w, RADIO_BASE, 0x02C, 1); // CCASTART
+      if (r32(w, RADIO_BASE, 0x148) !== 1) return; // CCABUSY
+      w32(w, RADIO_BASE, 0x030, 1); // CCASTOP
+      if (r32(w, RADIO_BASE, 0x14C) !== 1) return;
+      // Quiet air (level 0): idle.
+      w.radio_set_ed_dbm(0);
+      w32(w, RADIO_BASE, 0x148, 0); w32(w, RADIO_BASE, 0x144, 0);
+      w32(w, RADIO_BASE, 0x02C, 1);
+      if (r32(w, RADIO_BASE, 0x144) !== 1) return; // CCAIDLE
+      this.seen.edCca = true;
+      // Address match + MHR + FRAMESTART on RX completion.
+      w32(w, RADIO_BASE, 0x600, 0xEF); // DAB[0]
+      w32(w, RADIO_BASE, 0x530, 1); // RXADDRESSES: listen addr 0
+      w32(w, RADIO_BASE, 0x644, 0xBEEF); // MHRMATCHCONF
+      w32(w, RADIO_BASE, 0x648, 0xFFFF); // MHRMATCHMAS
+      const ptr = this.oneRx([0xEF, 0xBE, 0x01], false);
+      if (ptr == null) return;
+      cpu.mem_write(ptr, [0xEF, 0xBE, 0x01]);
+      w.radio_complete_rx();
+      if (r32(w, RADIO_BASE, 0x114) !== 1) return; // DEVMATCH
+      if (r32(w, RADIO_BASE, 0x138) !== 1) return; // FRAMESTART
+      if (r32(w, RADIO_BASE, 0x15C) !== 1) return; // MHRMATCH
+      if (r32(w, RADIO_BASE, 0x408) !== 0) return; // RXMATCH idx 0
+      this.seen.match = true;
       this.stage = 1;
     }
+    // Stage 1: miss path — different first byte, DAB programmed.
     if (this.stage === 1) {
-      const rxp = w.radio_take_rx();
-      // wasm-bindgen: empty vec (length 0) = idle, [ptr] = staged.
-      if (!rxp || rxp.length === 0) return;
-      const ptr = rxp[0] >>> 0;
+      const ptr = this.oneRx([0x55, 0x00], false);
+      if (ptr == null) return;
+      cpu.mem_write(ptr, [0x55, 0x00]);
+      w.radio_complete_rx();
+      if (r32(w, RADIO_BASE, 0x118) !== 1) return; // DEVMISS
+      this.seen.miss = true;
+      this.stage = 2;
+    }
+    // Stage 2: corrupt packet -> CRCERROR (not CRCOK), END still fires.
+    if (this.stage === 2) {
+      const ptr = this.oneRx([0xDE, 0xAD], true);
+      if (ptr == null) return;
       cpu.mem_write(ptr, [0xDE, 0xAD]);
       w.radio_complete_rx();
       const crcerr = r32(w, RADIO_BASE, 0x134) === 1;
       const end = r32(w, RADIO_BASE, 0x10C) === 1;
-      this.done = crcerr && end;
-      w32(w, RADIO_BASE, 0x134, 0); w32(w, RADIO_BASE, 0x10C, 0);
+      const crcst = r32(w, RADIO_BASE, 0x400) === 0;
+      if (!crcerr || !end || !crcst) return;
+      this.seen.corrupt = true;
+      this.done = this.seen.edCca && this.seen.match && this.seen.miss && this.seen.corrupt;
     }
     void cpu;
   }
 }
 
-// --- QSPI backend: program AND-semantics + erase-to-0xFF ---
+// --- RADIO air peer (Bumble BLE bridge): TX -> bridge, RX <- bridge ---
+// The bare-metal RADIO model moves bytes; the Bumble bridge process
+// (tools/ble_air_bridge.py) is the air. In the demo pump the BleAir
+// part (ble_air.js) owns the WebSocket; this mock is the headless
+// twin used by handshake.mjs with a stub bridge object exposing
+// {available, sendTx(bytes)->bool, takeRx()->Uint8Array|null}.
+// TX payloads POST to the bridge and come back addressed (DEVMATCH
+// path); the bridge also pushes advertising/GATT frames the mock
+// delivers to staged RX + complete.
+export class MockRadioAir {
+  constructor(wasm, bridge = null) {
+    this.wasm = wasm; this.bridge = bridge; this.done = false;
+    this.seenTx = 0; this.seenRx = 0;
+  }
+  register() {}
+  poll(cpu) {
+    const w = this.wasm;
+    if (this.done) return;
+    if (!this.bridge || !this.bridge.available) return;
+    // TX leg: stage a TX like firmware, hand bytes to the bridge.
+    w32(w, RADIO_BASE, 0x504, 0x20001000); // PACKETPTR
+    w32(w, RADIO_BASE, 0x518, 8); // PCNF1.MAXLEN=8
+    cpu.mem_write(0x20001000, [0xEF, 0xBE, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]);
+    w32(w, RADIO_BASE, 0x000, 1); // TXEN
+    w32(w, RADIO_BASE, 0x008, 1); // START (Tx stages take_tx)
+    const t = w.radio_take_tx();
+    if (!t.length) return;
+    const bytes = [...cpu.mem_read(t[0], t[1])];
+    const sent = this.bridge.sendTx(bytes);
+    w.radio_complete_tx();
+    if (!sent || r32(w, RADIO_BASE, 0x10C) !== 1) return; // END
+    this.seenTx++;
+    // RX leg: drain one bridge frame into staged RX + complete.
+    // Inject-then-ramp (queue non-empty at START), same as oneRx.
+    const frame = this.bridge.takeRx();
+    if (!frame) return;
+    w.radio_inject_rx([...frame].slice(0, 252));
+    w32(w, RADIO_BASE, 0x504, 0x20002000);
+    w32(w, RADIO_BASE, 0x600, 0xEF); // DAB[0] matches echo byte 0
+    w32(w, RADIO_BASE, 0x530, 1); // listen addr 0
+    w32(w, RADIO_BASE, 0x004, 1); // RXEN
+    w32(w, RADIO_BASE, 0x008, 1); // START
+    const rxp = w.radio_take_rx();
+    if (!rxp.length) return;
+    cpu.mem_write(rxp[0], [...frame].slice(0, 252));
+    w.radio_complete_rx();
+    if (r32(w, RADIO_BASE, 0x10C) !== 1) return; // END
+    this.seenRx++;
+    this.done = this.seenTx >= 1 && this.seenRx >= 1;
+    void cpu;
+  }
+}
+// --- SoftDevice BLE SVC face: enable -> GATTS battery -> GAP connect ->
+// GATTC read stages a driver job -> driver completes -> READ_RSP drains.
+// Exercises the new ble_* wasm exports end to end (take_job/complete +
+// evt queue), the same pump contract index.html runs against the live
+// Bumble bridge. Local loopback: completions carry the battery value,
+// like the RADIO default when the bridge is down.
+export class MockBleSvc {
+  constructor(wasm) { this.wasm = wasm; this.done = false; this.seen = {}; }
+  register() {}
+  poll(cpu) {
+    const w = this.wasm;
+    if (this.done) return;
+    if (typeof w.ble_enabled !== 'function') return;
+    // Enable the stack (SVC 0x60 face) — but the mock drives the model
+    // through the exported take/complete surface, not raw SVC bytes.
+    // Battery table first: VALUE_SET then VALUE_GET round trip.
+    cpu.mem_write(0x20001000, [63]);
+    w.ble_post_gatts_write(0x13, 0x2A19, [63]);
+    if (w.ble_batt_level() !== 63) return;
+    this.seen.gatts = true;
+    // GAP connect job: stage via the bridge-shaped stub (local link).
+    w.ble_complete_gap_connect([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    if (w.ble_queue_len() < 1) return;
+    this.seen.connected = true;
+    // GATTC read: driver resolves the battery over the stub air.
+    w.ble_complete_gattc_read(0x13, 0, [w.ble_batt_level()]);
+    if (w.ble_queue_len() < 2) return;
+    this.seen.readRsp = true;
+    this.done = this.seen.gatts && this.seen.connected && this.seen.readRsp;
+    void cpu;
+  }
+}
 export class MockQspi {
   constructor(wasm) { this.wasm = wasm; this.stage = 0; this.done = false; }
   register() {

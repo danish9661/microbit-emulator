@@ -92,6 +92,17 @@
         <p class="sub">128×64 add-on on TWIM0, address <code>0x3C</code>.</p>
         <canvas id="oled" width="128" height="64"></canvas>
       </section>
+      <section class="panel" aria-labelledby="ble-h">
+        <h2 id="ble-h">BLE air (Bumble bridge)</h2>
+        <p class="sub">Optional live peer. Run <code>python3 tools/ble_air_bridge.py</code>, then enable. Off means addressed loopback.</p>
+        <div class="btn-row">
+          <button id="bleToggle" type="button" aria-pressed="false">Enable BLE air</button>
+          <span class="pin-note" id="bleStatus">air: bridge not connected</span>
+        </div>
+        <div class="send-row">
+          <input type="text" id="bleUrl" value="ws://127.0.0.1:8765" aria-label="BLE bridge WebSocket URL">
+        </div>
+      </section>
       <section class="panel" aria-labelledby="depth-h">
         <h2 id="depth-h">Depth probes</h2>
         <p class="sub">Live consumers for the handshake models — thermometer, comparator, knob, crypto, tag, slave engines, limits, setup, radio helpers, flash backend. Each runs its register handshake against the core and reports back. Probes program real peripheral state, so reset firmware after if it was running.</p>
@@ -121,6 +132,7 @@
   import { ROWS, COLS, INTERNAL } from './parts/pins.js';
   import { LSM303 } from './parts/lsm303.js';
   import { SSD1306 } from './parts/ssd1306.js';
+  import { BleAir } from './parts/ble_air.js';
   const grid = document.getElementById('matrix');
   const leds = [];
   for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) {
@@ -153,6 +165,24 @@
     });
   }
   document.getElementById('shake').addEventListener('click', () => parts[0].shake());
+  // BLE air peer (Bumble bridge, optional). Default off: the pump uses
+  // addressed loopback. Enabling opens the WebSocket from the URL box.
+  const bleStatus = document.getElementById('bleStatus');
+  const bleUrl = document.getElementById('bleUrl');
+  const bleToggle = document.getElementById('bleToggle');
+  const bleAir = new BleAir(bleStatus, bleUrl.value.trim() || undefined);
+  bleToggle.addEventListener('click', () => {
+    if (bleAir.wantConnect) {
+      bleAir.disable();
+      bleToggle.textContent = 'Enable BLE air';
+      bleToggle.setAttribute('aria-pressed', 'false');
+    } else {
+      if (bleUrl.value.trim()) bleAir.url = bleUrl.value.trim();
+      bleAir.enable();
+      bleToggle.textContent = 'Disable BLE air';
+      bleToggle.setAttribute('aria-pressed', 'true');
+    }
+  });
 
   await init();
   // Virtual board: parts register BEFORE every init() (taps snapshot once).
@@ -493,28 +523,74 @@
     }
     t = wasm.radio_take_tx();
     if (t.length) {
-      // Demo air: two-instance bridge. Same-instance loopback is the
-      // default (payload bytes travel driver-side); a peer hooked via
-      // window.__airPeer(bytes)->bytes[] (e.g. a second demo tab or a
-      // test harness) supplies FOREIGN bytes instead — BLE/BT without
-      // WebBluetooth. Peer return wins; empty return = loopback.
+      // Demo air, two modes. Bridge mode (user enabled BLE air and the
+      // Bumble process answered): TX bytes POST to the bridge, and the
+      // bridge's addressed echo lands in RX below — DEVMATCH path, real
+      // over-the-air bytes, GATT battery reported on the BLE panel.
+      // Loopback mode (default): addressed self-echo via inject_rx_to
+      // (DAB[0]-addressed, so the match unit reports DEVMATCH like a
+      // real peer address would). window.__airPeer hook retired.
       const bytes = cpu.mem_read(t[0], t[1]);
       lastAir = bytes;
-      let peer = null;
-      try {
-        if (typeof window.__airPeer === 'function') peer = window.__airPeer(bytes);
-      } catch (e) { peer = null; }
-      if (peer && peer.length) wasm.radio_inject_rx(peer);
-      else wasm.radio_inject_rx(bytes);
+      if (!bleAir.sendTx(bytes)) {
+        wasm.radio_inject_rx_to(0, bytes);
+      }
       wasm.radio_complete_tx();
     }
     t = wasm.radio_take_rx();
-    if (t.length && lastAir.length) {
-      // Loopback: the last injected packet lands in the RX buffer.
-      // (A real air layer would supply foreign bytes here instead.)
-      cpu.mem_write(t[0], lastAir.slice(0, 252));
-      lastAir = [];
+    if (t.length) {
+      // Bridge mode drains one live air frame; loopback replays lastAir.
+      // Inject-then-ramp: the queue must be non-empty when START runs,
+      // because do_start only stages take_rx from a non-empty queue.
+      const frame = bleAir.takeRx();
+      if (frame) {
+        wasm.radio_inject_rx([...frame].slice(0, 252));
+      } else if (lastAir.length) {
+        wasm.radio_inject_rx([...lastAir].slice(0, 252));
+        lastAir = [];
+      } else {
+        wasm.radio_inject_rx([]);
+      }
+      // Re-ramp so the queued bytes stage, then deliver to RAM.
+      wasm.periph_write(0x40001004, 4, 1); // RXEN
+      wasm.periph_write(0x40001008, 4, 1); // START
+      const staged = wasm.radio_take_rx();
+      if (staged.length) {
+        const bytes = frame ? frame.slice(0, 252) : lastAir.slice(0, 252);
+        cpu.mem_write(staged[0], bytes);
+        lastAir = [];
+      }
       wasm.radio_complete_rx();
+    }
+    // SoftDevice BLE face: firmware SVCs stage take/complete jobs (see
+    // src/sd_ble.rs). The driver resolves them here: GATTC reads and
+    // GAP connects go over the Bumble air when the bridge is up,
+    // else resolve locally (battery loopback, like the RADIO default).
+    const bj = wasm.ble_take_job();
+    if (bj.length) {
+      if (bj[0] === 0) {
+        // GattcRead {conn, handle, offset}: bridge read or local battery.
+        const [, conn, handle, off] = bj;
+        if (!bleAir.sendBle('read')) {
+          wasm.ble_complete_gattc_read(handle, off, [wasm.ble_batt_level()]);
+        }
+      } else if (bj[0] === 1) {
+        // GapConnect {addr[6]}: bridge connect or instant local link.
+        const addr = [...bj.slice(1, 7)];
+        if (!bleAir.sendBle('connect', { addr })) {
+          wasm.ble_complete_gap_connect(addr);
+        }
+      }
+    }
+    // Drain bridge SoftDevice replies into completions (take->complete,
+    // same discipline as every EASYDMA peripheral).
+    let air;
+    while ((air = bleAir.takeAir())) {
+      if (air.t === 'gatt' && typeof air.value === 'number') {
+        wasm.ble_complete_gattc_read(air.handle ?? 0x13, air.offset ?? 0, [air.value & 0xFF]);
+      } else if (air.t === 'connected' && Array.isArray(air.peer)) {
+        wasm.ble_complete_gap_connect(air.peer.slice(0, 6));
+      }
     }
   }
   function frame() {
