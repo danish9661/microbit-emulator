@@ -15,7 +15,9 @@
   ],
   "scripts": {
     "test:parts": "node parts/smoke.mjs",
+    "test:handshake": "node parts/handshake.mjs",
     "build:wasm": "wasm-pack build ../nrf52833-periph-wasm --target web --out-dir ./pkg",
+    "build:handshake": "wasm-pack build ../nrf52833-periph-wasm --target web --out-dir ./parts/pkg-test-handshake",
     "serve": "python3 -m http.server 8080"
   },
   "license": "MIT"

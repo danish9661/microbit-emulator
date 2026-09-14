@@ -36,6 +36,8 @@ Verify without a browser:
 
 ```bash
 npm run test:parts   # node parts/smoke.mjs — 17 checks, nonzero exit on fail
+npm run test:handshake  # node parts/handshake.mjs — 16 mock-consumer checks
+  # against a local pkg build (npm run build:handshake first)
 ```
 
 ## npm package

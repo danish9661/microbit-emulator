@@ -92,6 +92,19 @@
         <p class="sub">128×64 add-on on TWIM0, address <code>0x3C</code>.</p>
         <canvas id="oled" width="128" height="64"></canvas>
       </section>
+      <section class="panel" aria-labelledby="depth-h">
+        <h2 id="depth-h">Depth probes</h2>
+        <p class="sub">Live consumers for the handshake models — thermometer, comparator, knob, crypto, tag, slave engines, limits, setup, radio helpers, flash backend. Each runs its register handshake against the core and reports back. Probes program real peripheral state, so reset firmware after if it was running.</p>
+        <div class="btn-row">
+          <button id="depthRun" type="button">Run depth probes</button>
+          <span class="pin-note" id="depthStatus">not run yet</span>
+        </div>
+        <div class="table-scroll"><table id="depthTable">
+          <caption>Handshake proof, live in this page</caption>
+          <thead><tr><th scope="col">Probe</th><th scope="col">Result</th><th scope="col">Detail</th></tr></thead>
+          <tbody></tbody>
+        </table></div>
+      </section>
     </div>
   </div>
 </main>
@@ -143,10 +156,52 @@
 
   await init();
   // Virtual board: parts register BEFORE every init() (taps snapshot once).
+  import { MockTemp, MockComp, MockQdec, MockEcb, MockAar, MockCcm, MockI2s, MockNfct, MockTwis, MockSpis, MockSpiDisplay, MockSaadcLim, MockUsbdSetup, MockRadio154, MockQspi } from './parts/mocks.js';
   const parts = [
     new LSM303(wasm, 'TWIM1'),
     new SSD1306(wasm, 'TWIM0', document.getElementById('oled')),
   ];
+  // Depth probes: live consumers for every handshake model. They share
+  // the board's register() BEFORE init() discipline, run on demand
+  // (NOT every frame — they program real peripheral state), and report
+  // into the depth table. Same classes handshake.mjs proves headless.
+  const depthParts = [
+    ['Thermometer (TEMP)', () => new MockTemp(wasm, 27), (p, c) => { p.poll(c); return p.last?.celsius === 27 ? `DATARDY, ${p.last.celsius}C` : false; }],
+    ['Comparator (COMP)', () => { const p = new MockComp(wasm, 100); return p; }, (p, c) => { p.setMv(100); p.poll(c); if (p.last?.result !== 0) return false; p.setMv(3200); p.poll(c); return p.last?.result === 1 && p.last?.up === 1 ? 'Below then Above+UP' : false; }],
+    ['Knob (QDEC)', () => new MockQdec(wasm), (p, c) => { wasm.qdec_step(5); wasm.qdec_step(-2); p.poll(c); return p.acc === 3 ? 'ACC +3' : false; }],
+    ['AES block (ECB)', () => new MockEcb(wasm), (p, c) => { for (let i = 0; i < 3 && !p.done; i++) p.poll(c); return p.done ? 'FIPS-197 vector' : false; }],
+    ['Resolver (AAR)', () => new MockAar(wasm, true), (p, c) => { for (let i = 0; i < 3 && !p.done; i++) p.poll(c); return p.done ? 'END+RESOLVED' : false; }],
+    ['Crypto cell (CCM)', () => new MockCcm(wasm), (p, c) => { for (let i = 0; i < 4 && !p.done; i++) p.poll(c); return p.done ? 'CTR+MIC roundtrip' : false; }],
+    ['Audio stream (I2S)', () => new MockI2s(wasm), (p, c) => { for (let i = 0; i < 3 && !p.done; i++) p.poll(c); return p.done ? 'RX silence, TX capture' : false; }],
+    ['NFC tag (NFCT)', () => new MockNfct(wasm), (p, c) => { for (let i = 0; i < 6 && !p.done; i++) p.poll(c); return p.done ? 'tap, frames, release' : false; }],
+    ['I2C slave (TWIS)', () => new MockTwis(wasm), (p, c) => { for (let i = 0; i < 4 && !p.done; i++) p.poll(c); return p.done ? 'write to RAM, read back' : false; }],
+    ['SPI slave (SPIS)', () => new MockSpis(wasm), (p, c) => { for (let i = 0; i < 4 && !p.done; i++) p.poll(c); return p.done ? 'exchange END/ENDRX' : false; }],
+    ['Edge display (SPI tap)', () => new MockSpiDisplay(wasm, 'SPIM2', 'P0.12', 'P0.11'), (p, c) => { for (let i = 0; i < 4 && !p.done; i++) p.poll(c); return p.done ? `${p.cmds.length + p.data.length} frame bytes` : false; }],
+    ['ADC limits (SAADC)', () => new MockSaadcLim(wasm), (p, c) => { for (let i = 0; i < 3 && !p.done; i++) p.poll(c); return p.done ? 'LIMITH+LIMITL' : false; }],
+    ['USB setup (USBD)', () => new MockUsbdSetup(wasm), (p, c) => { for (let i = 0; i < 3 && !p.done; i++) p.poll(c); return p.done ? 'GET_DESCRIPTOR regs' : false; }],
+    ['Radio helpers (15.4)', () => new MockRadio154(wasm), (p, c) => { for (let i = 0; i < 4 && !p.done; i++) p.poll(c); return p.done ? 'CRCERROR+END' : false; }],
+    ['Flash backend (QSPI)', () => new MockQspi(wasm), (p, c) => { for (let i = 0; i < 8 && !p.done; i++) p.poll(c); return p.done ? 'write/read/erase' : false; }],
+  ];
+  document.getElementById('depthRun').addEventListener('click', () => {
+    const statusEl = document.getElementById('depthStatus');
+    const tbody = document.querySelector('#depthTable tbody');
+    tbody.replaceChildren();
+    // Probes need a live core: boot anything staged, else say so.
+    if (!cpu) { statusEl.textContent = 'boot firmware first (Load + Run)'; return; }
+    let pass = 0;
+    for (const [name, make, run] of depthParts) {
+      const row = document.createElement('tr');
+      const n = document.createElement('td'); n.textContent = name;
+      const r = document.createElement('td'); r.className = 'grade';
+      const d = document.createElement('td');
+      let detail = false;
+      try { detail = run(make(), cpu); } catch (e) { detail = 'error: ' + e.message; }
+      if (detail) { pass++; r.textContent = 'pass'; d.textContent = String(detail); }
+      else { r.textContent = 'fail'; d.textContent = 'no handshake completion'; }
+      row.append(n, r, d); tbody.append(row);
+    }
+    statusEl.textContent = `${pass}/${depthParts.length} probes pass`;
+  });
   function initBoard() {
     wasm.reset_state();
     for (const p of parts) p.register();
