@@ -1434,13 +1434,25 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut dyn Memory, op: u16, pc
     if o & 0xFF00 == 0xBE00 {
         return fault(cpu, pc, op, 0, 2);
     }
-    // SVC: synchronous exception. With delivery on, raise it through the
-    // priority gate (an SVC that cannot preempt escalates to HardFault,
-    // silicon rule); otherwise loud fault (polling firmware never SVCs,
-    // so hitting one is a bug worth surfacing).
+    // SVC: SoftDevice BLE face first (0x60..=0xBF, claimed SVCs write
+    // r0 + skip past the svc, zero-cost when idle: one range compare),
+    // then the synchronous exception path. With delivery on, raise
+    // through the priority gate (an SVC that cannot preempt escalates
+    // to HardFault, silicon rule); otherwise loud fault (polling
+    // firmware never SVCs, so hitting one is a bug worth surfacing).
     if o & 0xFF00 == 0xDF00 {
         if !cpu.deliver_irqs {
             return fault(cpu, pc, op, 0, 2);
+        }
+        let svc = (o & 0xFF) as u8;
+        if (0x60..=0xBF).contains(&svc) {
+            let mut r = [0u32; 13];
+            r.copy_from_slice(&cpu.regs.r[0..13]);
+            if let Some(r0) = crate::sd_ble::handle_svc(sys, mem, svc, &r) {
+                cpu.regs.r[0] = r0;
+                adv(cpu, pc, 2);
+                return cpu.fault.is_none();
+            }
         }
         adv(cpu, pc, 2);
         cpu.raise_sync(sys, mem, -5);

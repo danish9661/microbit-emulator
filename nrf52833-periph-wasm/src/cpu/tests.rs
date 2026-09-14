@@ -2276,6 +2276,24 @@ fn svc_taken_and_escalated() {
     assert_eq!(cpu.ipsr, 0, "SVC handler returned");
     assert_eq!(mem.read32(0x20001000), 1, "SVC vector (A) ran");
 
+    // SD_BLE SVC face (0x60..=0xBF, claimed SVCs complete synchronously,
+    // per docs/sd_evt_design.md §4 transport-not-synthesis discipline):
+    // firmware calling sd_ble_enable with no handler installed must NOT
+    // fault — r0 carries NRF_SUCCESS and execution resumes past the svc.
+    // Unclaimed BLE-range SVCs still fall through to the normal SVC path.
+    let (mut cpu3, mut mem3) = boot(&irq_test_image(false));
+    let sys3 = crate::sys();
+    crate::sd_ble::reset_for_test();
+    cpu3.deliver_irqs = true;
+    mem3.write16(0x20002000, 0xDF60); // svc #0x60 = sd_ble_enable
+    mem3.write16(0x20002002, 0xE7FE); // b .
+    cpu3.regs.r[15] = 0x20002001;
+    cpu3.run(sys3, &mut mem3, 6);
+    no_fault(&cpu3, &mem3);
+    assert_eq!(cpu3.regs.r[0], 0, "sd_ble_enable returns NRF_SUCCESS");
+    assert_eq!(cpu3.regs.r[15] & !1, 0x20002002, "resumes past the svc");
+    assert!(crate::sd_ble::is_enabled(), "SD_BLE enabled latch set");
+
     let (mut cpu2, mut mem2) = boot(&irq_test_image(false));
     let sys2 = crate::sys();
     cpu2.deliver_irqs = true;
