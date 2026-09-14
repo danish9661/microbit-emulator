@@ -2128,3 +2128,47 @@ NEXT: fiber-queue walk — dump the qhead @`0x20003b08` chain + fiber state
 words (`[fiber+#16]` bit31 runnable?, `[#20]`) per round: does the scroll
 fiber exist and is it runnable?
 Probes reverted; 191 green hold.
+
+## 78. P92 fiber-queue walk: the scroll fiber does not exist (2026-09-14, uncommitted probe, reverted)
+
+MC92 native probe (P91 recipe + per-round queue walk, 300M, reverted —
+`tmp_mc92.rs` + `mod.rs` hook deleted, 191 green hold):
+
+1. CODAL struct (ground truth `codal-core/inc/core/CodalFiber.h`):
+   `Fiber{+0 tcb, +4 stack_bottom, +8 stack_top, +12 context, +16 flags,
+   +20 queue, +24 qnext, +28 qprev, +32 next}`; queues link via QNEXT
+   (+24), NOT +0 (the first P92 draft walked +0 = the TCB pointer and
+   would have chased garbage — caught before running). TCB is the nRF52
+   `PROCESSOR_TCB` (R0-R12,SP,LR,stack_base = 16 words).
+2. Steady-state queues (identical all 15 rounds, 20M..300M): run
+   @`0x20003b08` = ONE fiber `0x2000621c` (TCB SP `0x2001fe9c`,
+   LR `0x2e453` = inside the `0x2e410` waiter, flag byte via R8-slot
+   `0x20004373`); sleep @`0x20003b20` = TWO fibers (`ctx=0x00010007`
+   key-matched sleeper + `ctx=0x2d58/0x2ee` event waiter); event-wait
+   @`0x20003b18` and t14 EMPTY; t24 mirrors run (same head — an aliased
+   queue slot, not a second list). NO third fiber anywhere: no scroll
+   fiber exists on ANY queue.
+3. The parked run fiber IS main: TCB LR `0x2e453` sits in `0x2e410`
+   (`fiber_wait_for_event`-shaped: flag-byte check at literal `0x2e4ac`
+   = `0x20004373`, encode id/value, dequeue, queue to wait, `schedule`);
+   its stack (`0x2001fe9c`) holds a `bl 0x2dc08` pump frame
+   (`0x31ffd @0x2e328` region: `0x2e314` event-drain + `0x2dc08` arg-
+   marshal) under the `0x35697` caller — a message-bus pump/wait frame,
+   i.e. main blocked waiting for an EVENT that never arrives, while
+   `0x20003b18` (the wait queue fibers block ON) stays EMPTY.
+   TCB SP slot `0x200063e8` vs live SP `0x2001fe9c` = saved-vs-live
+   window, normal for a descheduled fiber.
+4. The display path is never even constructed: the pump caller
+   `0x35697` sits in a `bl 0x2e99c`-then-`ldr [r5,#20]` region
+   (`0x35664`: `ldr r3,[r0,#20]` display-member load, NULL-checked,
+   `bgt 0x3573a` skips the `0x2e99c` fiber-create when the member/slot
+   test fails) — consistent with TIMER4 COUNTER 0 + DIR0 0: no strobe
+   timer, no row/col DIR, because the scroll call never happened.
+   Stack words `0x31c51/0x2e4e1/0x2e4d9/0x20873` (P91) remain
+   UNVALIDATED — not a call chain, do not cite.
+Verdict: gate moves one level up — the scroll fiber is never CREATED
+(main parks in event-wait first). NEXT: who should create/wake it —
+dump `0x20004373`-adjacent event state + the `0x35664` member-null
+inputs (r0/r5 at the `0x35696` NULL check): is the display member NULL
+(construct skipped) or is the event subscription missing?
+Probes reverted; 191 green hold.
