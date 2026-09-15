@@ -36,13 +36,13 @@
     <p class="lede">A lab bench for one board: the BBC micro:bit v2.2 and its nRF52833. It boots real firmware built for flash zero and shows what the silicon would do — matrix, buttons, sensors, serial — with nothing simulated beyond the chip and its parts.</p>
 
     <h2>What it is</h2>
-    <p>The bench is two layers. The chip core is Rust compiled to WASM: Cortex-M4F plus every nRF52833 peripheral, timed off one instruction-count clock. The virtual board is JavaScript: the LED matrix, the LSM303 motion sensor, the OLED add-on, and the serial line. Firmware stages a transfer, the bench moves the bytes, then completes it — the same take/complete round trip for UARTE, TWIM, SAADC, PDM, USBD, NVMC, radio, I2S, NFCT, and the crypto engines.</p>
-    <p>It boots MicroPython v2.1.2 to a working REPL, runs MakeCode builds to scheduler idle, and passes twelve GCC-built firmware proofs plus a parts smoke test. Suite reads 191 green.</p>
+    <p>The bench is two layers. The chip core is Rust compiled to WASM: Cortex-M4F plus every nRF52833 peripheral, timed off one instruction-count clock. The virtual board is JavaScript: the LED matrix, the LSM303 motion sensor, the OLED add-on, and the serial line. Firmware stages a transfer, the bench moves the bytes, then completes it — the same take/complete round trip for UARTE, TWIM, SAADC, PDM, USBD, NVMC, radio, I2S, NFCT, the crypto engines, and the BLE SVC jobs (GAP/GATTC/L2CAP staged, resolved over the Bumble air bridge or loopback, GATTS answered synchronously).</p>
+    <p>It boots MicroPython v2.1.2 to a working REPL, runs MakeCode builds to scheduler idle, and passes fourteen GCC-built firmware proofs plus the parts smoke test, the handshake run (18/18), and live BLE-over-air checks (42/42). Suite reads 203 green.</p>
 
     <h2>What it is not</h2>
     <ul>
       <li>No DAPLink or interface MCU. This page is the loader and the USB serial line.</li>
-      <li>No SoftDevice event synthesis and no BLE stack. Bare-metal radio works; pairing needs a BLE-enabled image first.</li>
+      <li>No SoftDevice binary, timing, or key storage. BLE exists as an SVC face — all 67 S132 BLE SVC numbers answer, with full pairing legs — over a virtual Bumble air bridge (two peers, not RF). Crypto is stubbed, and no BLE-enabled stock image proves it end-to-end yet; see the BLE section on the <a href="./doc.html">docs page</a>.</li>
       <li>No STM32, no UNO R4, no speaker, mic, touch, or NFC antenna models. Pins are mapped; parts are not built.</li>
       <li>No second clock and no silent faults: unimplemented instructions halt loudly by design.</li>
     </ul>

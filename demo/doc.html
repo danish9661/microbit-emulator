@@ -26,7 +26,7 @@
       <a href="./about.html">About</a>
     </nav>
     <div class="meters">
-      <span class="pill">docs, support matrix, 191 tests green</span>
+      <span class="pill">docs, support matrix, 203 tests green</span>
     </div>
   </div>
 </header>
@@ -55,7 +55,7 @@
     </ul>
 
     <h2>Board support matrix</h2>
-    <p>Status key: <span class="grade">F</span> runs timed with interrupts and a firmware proof, <span class="grade">H</span> answers the handshake minimum with no timed behavior or no consumer, <span class="grade">–</span> missing or deliberately out of scope. Source: the repo status audit against <code>monox/nrf52833.svd</code>, suite 201 green.</p>
+    <p>Status key: <span class="grade">F</span> runs timed with interrupts and a firmware proof, <span class="grade">H</span> answers the handshake minimum with no timed behavior or no consumer, <span class="grade">–</span> missing or deliberately out of scope. Source: the repo status audit against <code>monox/nrf52833.svd</code>, suite 203 green.</p>
     <div class="table-scroll">
       <table>
         <caption>micro:bit v2 board hardware → what the bench does</caption>
@@ -77,7 +77,7 @@
           <tr><td>QSPI external flash</td><td class="grade">F</td><td>Registered image, program, erase, take/complete API</td><td>No board chip wired</td><td>Model proven, no consumer</td></tr>
           <tr><td>USB device</td><td class="grade">F</td><td>EPIN/EPOUT pump, USBRESET inject, SETUP inject</td><td>Nothing</td><td><code>air</code> preset pre-signals USBRESET on Run</td></tr>
           <tr><td>Radio 2.4 GHz</td><td class="grade">H</td><td>Two-instance loopback bridge, RSSI and corrupt injects</td><td>No real air</td><td>Bare-metal CODAL datagram surface; no WebBluetooth</td></tr>
-          <tr><td>BLE stack (SoftDevice SVC face + Bumble air bridge)</td><td class="grade">F</td><td>SVC-claimed GAP/GATTC/L2CAP jobs with take/complete pump, GATTS table, pairing handshake, multi-link, live model reads on the BLE panel</td><td>Keys are stubbed (AUTH_STATUS pair is real, crypto is not); no BLE-enabled MPY image exists yet</td><td>Self-test button runs the full SVC flow on loopback; depth probe covers it headless; enable BLE air for the live Bumble peer</td></tr>
+          <tr><td>BLE stack (SoftDevice SVC face + Bumble air bridge)</td><td class="grade">F</td><td>All 67 S132 BLE SVC numbers claimed (common 0x60–0x69, GAP 0x70–0x8E, GATTC 0x90–0x99, GATTS 0xA0–0xAC, L2CAP 0xB0–0xB2); GAP connect/disconnect/scan/RSSI, full GATT client + local GATTS table with CCCD-gated notify/indicate, full SMP reply legs with S132 status codes, two-link two-peer air (battery 87 vs 64), serialized ATT queue, live reads on the BLE panel</td><td>No SMP crypto or key/bond storage; central-role only; no conn-param/MTU/DLE/PHY enforcement; no TX flow events; SoC/MBR SVCs unmodeled; no BLE-enabled stock image; virtual air, not RF — see "BLE: is it fully done?" below</td><td>Self-test button runs the full SVC flow on loopback; depth probe covers it headless; E2E proves 42 checks over air; enable BLE air for the live Bumble peers</td></tr>
         </tbody>
       </table>
     </div>
@@ -105,6 +105,31 @@
       </table>
     </div>
 
+    <h2>BLE: is it fully done?</h2>
+    <p>No — and here is the honest boundary, file by file. The firmware-visible contract is complete: every one of the 67 S132 BLE SVC numbers (common <code>0x60–0x69</code>, GAP <code>0x70–0x8E</code>, GATTC <code>0x90–0x99</code>, GATTS <code>0xA0–0xAC</code>, L2CAP <code>0xB0–0xB2</code>) is claimed by <code>nrf52833-periph-wasm/src/sd_ble.rs</code> and answered per the header register contracts — no call falls through to a fault, and <code>cargo test</code> (203 green, 10 sd_ble tests incl. byte-offset asserts) plus the headless mock (real SVC bytes, 18/18) plus the live E2E (42/42 over-air checks on two links) prove the whole flow: enable, table build, connect, discovery ×6, read, write, L2CAP, pairing + peer-pairing with passkey, indicate, scan, RSSI, disconnect. The air side is real too: <code>tools/ble_air_bridge.py</code> resolves every job over a Bumble LocalLink against two advertising peers (battery 87 <code>PeerBatt</code> + heart-rate twin 64 <code>PeerHR</code>, distinct addresses), with per-peer routing, serialized ATT bursts, and HCI-RSSI-first sampling.</p>
+    <p>What is genuinely finished:</p>
+    <ul>
+      <li>SVC dispatch: all 67 numbers claimed; unknown numbers still fall through to <code>raise_sync</code> untouched (zero-cost when BLE is idle); every return code is S132-verified (<code>NOT_ENABLED / INVALID_CONN_HANDLE / INVALID_STATE / BUSY / NO_TX_PACKETS / CID_IN_USE / DATA_SIZE / NOT_FOUND / INVALID_ADDR / INVALID_PARAM / NO_MEM</code>); RAM-pointer validation on every pointer arg.</li>
+      <li>GAP: enable with RAM-floor report, two-arg evt_get (length query, DATA_SIZE without popping, legacy drain), address get/set, advertising data/params validation, connect with staged air job + CONNECTED (CENTRAL role, real conn_params), disconnect with HCI reason echo, scan with live ADV_REPORT (one per peer, unpacked pad byte), RSSI start/stop/get with HCI-first sampling and <code>src</code> tagging.</li>
+      <li>GATT client: all six discovery kinds (primary/relationship/characteristic/descriptor/attr-info/UUID-read) plus multi-read, plain read with offset, write (REQ + CMD, bytes copied at SVC time), HV confirm; every response carries the gattc envelope head and unpacked pads; 128-bit rows encode null with vendor type.</li>
+      <li>GATT server: service/char/descriptor table with SoftDevice-shaped handles, struct-form VALUE_SET/GET (length query, offset checks, conn 0xFFFF allowed), ATTR_GET, CCCD tracking per link with notify-bit/indicate-bit gating (unsubscribed refuses INVALID_STATE), HVX staging with per-link TX budget.</li>
+      <li>Pairing legs: AUTHENTICATE stages the handshake; all six peer-initiated request events post with conn-first wire bodies; every reply SVC validates against the per-link state machine (accept/passkey/OOB/encrypt); S132 SEC_STATUS codes incl. the 0x29→0x85 fix; AUTH_STATUS carries the conn head; complete/fail post AUTH_STATUS (+CONN_SEC_UPDATE) with bonded/encrypted link state feeding CONN_SEC_GET.</li>
+      <li>L2CAP: dynamic-CID register/unregister with range + capacity checks, TX staging with bytes copied at SVC time, RX echo completion.</li>
+      <li>Multi-link: per-link handles, RSSI, TX budget, security, pairing, CIDs; events carry their conn; pump + bridge + E2E all prove two live links with distinct peers and values.</li>
+    </ul>
+    <p>What is deliberately not done (each is a named, bounded gap — none is a hidden fault):</p>
+    <ul>
+      <li>No SMP crypto and no key/bond storage: passkeys validate shape (6 ASCII digits) but never encrypt; OOB data zeroes 32 bytes; LTKs/IRKs/CSRKs are accepted as pointers and never stored; bonds do not persist across resets. A sniffer comparing air bytes against silicon would see the difference — the event pair firmware drains is real, the keys are not.</li>
+      <li>Central role only: the bridge dials out; peripheral-role advertising (ADV_START emits no air, CONNECTED never arrives unsolicited), accept-list/whitelist filtering, and directed advertising are absent.</li>
+      <li>No parameter enforcement: CONN_PARAM_UPDATE / PPCP_SET accept without posting updates; MTU exchange, data-length extension, and PHY update do not exist in S132 SVC form (no SVC numbers for them) and are not synthesized.</li>
+      <li>No TX flow events: TX_PACKET_COUNT_GET reports the per-link budget statically and HVX decrements it, but BLE_EVT_TX_COMPLETE / USER_MEM_REQUEST / USER_MEM_RELEASE never post; GATTC/GATTS TIMEOUT, CONN_PARAM_UPDATE(_REQUEST), SEC_REQUEST, SCAN_REQ_REPORT, RW_AUTHORIZE_REQUEST, SYS_ATTR_MISSING, SC_CONFIRM events never post; their reply SVCs (USER_MEM_REPLY, OPT_SET/GET, RW_AUTHORIZE_REPLY, SYS_ATTR_SET/GET, SERVICE_CHANGED) ack SUCCESS without effect.</li>
+      <li>GATTC write accepts only REQ(1)/CMD(2): SIGNED_WRITE(3)/PREP_WRITE(4)/EXEC_WRITE(5) refuse INVALID_PARAM — no queued-write or signed-write path.</li>
+      <li>SoC/MBR SVC numbers (mutex, rand pool, power/clock/PPI监管, ECB/CCM/AAR-adjacent sd_ calls) are unmodeled — out of scope for the BLE face; the on-chip crypto engines keep their own take/complete models.</li>
+      <li>No BLE-enabled stock image: MicroPython ships <code>MICROBIT_BLE_ENABLED: 0</code> and MakeCode builds here never init the stack, so no shipped firmware exercises this face end-to-end (proven instead by the GCC conformance firmware, the C face, the mock, and the E2E).</li>
+      <li>Virtual air, not RF: two Bumble peers on a LocalLink, not spectrum; RSSI is -50 dBm constant from the virtual controller with adv-sighting fallback; range/interference/whitening do not exist.</li>
+    </ul>
+    <p>If you need one sentence: the BLE contract firmware calls is fully answered and proven over virtual air; the radio physics, the crypto, and the bond store are not.</p>
+
     <h2>How the bench is built</h2>
     <p>The page runs a loop you can read in one sitting. Each animation frame steps the core five times — <code>cpu.step(20000)</code>, <code>tick_peripherals()</code>, then the DMA pump — because duties once per frame starve polled firmware: a one-byte transfer staged at slice zero would wait a hundred thousand instructions for completion. When firmware naps in <code>WFE/WFI</code>, the loop advances virtual time and wakes on a pending interrupt; without that the core sleeps forever at its first idle. Faults break the sub-loop and name the program counter on the status line.</p>
     <ul>
@@ -121,12 +146,14 @@
       <li>FIPS-197 AES block, address resolve, CTR plus MIC roundtrip.</li>
       <li>Audio stream silence and capture, NFC tap with frames, I2C and SPI slave engines, edge-display frames over the SPI tap.</li>
       <li>ADC limit edges, USB setup packet, radio CRC-error path, flash program plus erase.</li>
+      <li>BLE stack face: real SVC bytes for enable, table build, connect, all six discovery kinds, read, write, L2CAP, pairing plus peer-pairing with passkey, indicate, scan, RSSI, disconnect — with the self-test button running the same flow on loopback in-page.</li>
     </ul>
     <p>The KL27 stubs stay handshake by decision: the interface chip is deliberately not emulated, so an empty version frame and a request echo are the whole consumer. The NFC antenna stays handshake: pins work as GPIO with no antenna model.</p>
 
     <h2>Checks before you trust a run</h2>
     <ul>
-      <li>Suite green: run <code>cargo test</code> in the crate directory (191 green), <code>node demo/parts/smoke.mjs</code> for the parts, and <code>node demo/parts/handshake.mjs</code> for the handshake mocks (build the local package first with <code>npm run build:handshake</code> inside <code>demo/</code>).</li>
+      <li>Suite green: run <code>cargo test</code> in the crate directory (203 green — single-threaded; the parallel default flakes ~1/4 runs, see below), <code>node demo/parts/smoke.mjs</code> for the parts, and <code>node demo/parts/handshake.mjs</code> for the handshake mocks (18/18, build the local package first with <code>npm run build:handshake</code> inside <code>demo/</code>). Live BLE: serve the bench, start <code>python3 tools/ble_air_bridge.py --port 18771</code>, then <code>node demo/parts/ble_live_e2e.mjs</code> (42/42 over air) or <code>python3 tools/browser_verify_16.py</code> (blinky + self-test + 16/16 probes).</li>
+      <li>Parallel-test flake (open, pre-existing): stock multi-threaded <code>cargo test</code> intermittently fails sd_ble/MWU/MPU tests with <code>RefCell already borrowed</code> at <code>peripherals/mod.rs:131</code> (~1/4 runs; single-threaded <code>-- --test-threads=1</code> is always 203/203). Root cause is shared process-global state across threads — the <code>SYS AtomicPtr</code> box plus <code>Rc&lt;RefCell&gt;</code> peripherals and the MWU <code>AtomicBool</code> leak between tests (a leaked MWU-armed flag plus an installed foreign system makes <code>mem.watch</code> re-enter an already-borrowed slot; a leaked MPU-enabled flag makes MMIO reads fault through another thread's map). cpu/tests serializes its own installs with <code>lock_boot()</code>, but peripheral unit tests using <code>test_dummy_system()</code> do not join that lock — so this is a harness-isolation gap, not a model bug. Fix direction: join the same boot lock (or serialize the suite single-threaded in CI); not done here — docs only.</li>
       <li>Rebuild the package after Rust changes with <code>wasm-pack build</code> into <code>demo/pkg</code>, then serve over HTTP — <code>file://</code> cannot load the wasm module.</li>
       <li>Firmware proofs rebuild with the GCC flags in <code>docs/README.md</code>; the C recipe is verified bit-identical.</li>
     </ul>
@@ -138,7 +165,7 @@
     <a href="./doc.html">Docs and support matrix</a>
     <a href="./about.html">About and scope</a>
   </nav>
-  <p>Matrix source: repo status audit, 2026-09-12, plus P86–P97 firmware runs. Counts: 191 tests green, parts smoke green.</p>
+  <p>Matrix source: repo status audit, 2026-09-12, plus P86–P103 BLE runs. Counts: 203 tests green, parts smoke green, handshake 18/18, live E2E 42/42 over air, browser 16/16.</p>
 </footer>
 </body>
 </html>

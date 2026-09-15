@@ -8,9 +8,10 @@ DAPLink/interface MCU (KL27) is NOT emulated (JS loader + UART only).
 Status key: **F** = functional (timed, IRQs, driver take/complete,
 firmware proof) · **H** = handshake (TASKS/EVENTS/INTEN minimum, no
 timed behavior or no consumer) · **–** = missing / deliberately
-omitted. Counts: `cargo test` **191 green**,
-`node demo/parts/smoke.mjs` green. Working tree intentionally dirty
-(see §7); do not commit unless asked.
+omitted. Counts: `cargo test` **203 green**,
+`node demo/parts/smoke.mjs` green, `node demo/parts/handshake.mjs`
+18/18, `node demo/parts/ble_live_e2e.mjs` 42/42 over air, browser
+16/16 (`python3 tools/browser_verify_16.py`).
 
 Generated 2026-09-13 from: `monox/nrf52833.svd` (70 peripherals, 46
 unique base addresses), `src/peripherals/*.rs`, `src/lib.rs` exports,
@@ -181,7 +182,51 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | 5 | SPIM2/3 tap routing | Done + firmware-proven (START/STOP→STOPPED on both instances via extended `stubs_nrf`; preset base64 byte-identical) | No edge-SPI demo part (no consumer) — stays H by decision. |
 | 6 | Demo wall-time | Environmental (~6 MIPS, banner ~30s at speed) | Re-measure after (1); wasm-opt/pump-quantum only if still slow. |
 
-## 8. BLE/BT feasibility verdict (P58 — NO build, evidence only)
+## 8. BLE: is it fully done? (P58 verdict + P98–P103 build record)
+
+Short answer: the firmware-visible BLE contract is fully answered and
+proven over virtual air; the radio physics, the crypto, and the bond
+store are not. P58 said "needs a BLE-enabled image first, then SVC
+work" — the SVC work happened anyway against the S132 headers with a
+GCC conformance firmware + C face + headless mock + live Bumble air as
+proof instead of a stock image (no shipped MPY/MC image enables the
+stack to this day).
+
+### Added (P98–P103): what the BLE face covers
+
+All 67 S132 BLE SVC numbers are claimed by the `sd_ble` service
+(`nrf52833-periph-wasm/src/sd_ble.rs`, numbers verified against the
+Arduino nRF52 S132 headers, not guessed): common `0x60–0x69`, GAP
+`0x70–0x8E`, GATTC `0x90–0x99`, GATTS `0xA0–0xAC`, L2CAP
+`0xB0–0xB2`. The thumb SVC hook claims `0x60..=0xBF` first (r0 +
+skip, else fall through to `raise_sync` — zero-cost when idle).
+
+| Area | Done |
+|---|---|
+| Common | ENABLE with RAM-floor report; two-arg EVT_GET (length query, DATA_SIZE without popping, legacy drain); TX_PACKET_COUNT_GET per-link budget; UUID VS_ADD/DECODE/ENCODE; VERSION_GET; USER_MEM_REPLY + OPT_SET/GET as validated acks. |
+| GAP central | ADDRESS_SET/GET, ADV_DATA_SET validation, ADV_START/STOP, SCAN_START→live ADV_REPORT (one per peer, unpacked pad) / SCAN_STOP, CONNECT→staged air job→CONNECTED (CENTRAL role, real conn_params) / CONNECT_CANCEL, DISCONNECT with HCI reason echo, CONN_PARAM_UPDATE/PPCP/APPEARANCE/DEVICE_NAME/TX_POWER as validated acks. |
+| GAP RSSI | RSSI_START/STOP validation; RSSI_GET answers the link level synchronously AND stages air sampling; completion posts RSSI_CHANGED. Bridge probes HCI_READ_RSSI on the live link first (SoftDevice-faithful) with adv-sighting fallback (`src:"conn"\|"adv"`), because LocalLink answers UNKNOWN_HCI_COMMAND (probed). |
+| GATT client | All six discovery kinds (primary/relationship/characteristic/descriptor/attr-info/UUID-read) + multi-read + plain read with offset + write (REQ+CMD, bytes copied at SVC time) + HV_CONFIRM; gattc envelope head + unpacked pads on every RSP; 128-bit rows encode null+vendor type. |
+| GATT server | Service/char/descriptor table with SoftDevice-shaped handles; struct-form VALUE_SET/GET (length query, offset checks, conn 0xFFFF allowed); ATTR_GET; per-link CCCD tracking with notify/indicate-bit gating (unsubscribed refuses); HVX staging with per-link TX budget (notify decrements, empty budget refuses). |
+| Pairing legs | AUTHENTICATE stages the handshake; all six peer-initiated request events (SEC_PARAMS_REQUEST 0x13 / SEC_INFO_REQUEST 0x14 / PASSKEY_DISPLAY 0x15 / KEY_PRESSED 0x16 / AUTH_KEY_REQUEST 0x17 / LESC_DHKEY_REQUEST 0x18, conn-first bodies); per-link state machine (Idle/Requested/PeerRequested/Accepted/KeyEntry/LescDhkey/EncryptPending); every reply SVC validated (accept needs a request, passkey shape-checked, OOB/DHKEY/keypress/encrypt/SEC_INFO each gated); S132 SEC_STATUS codes incl. the 0x29→0x85 fix; AUTH_STATUS conn-first; complete/fail post AUTH_STATUS (+CONN_SEC_UPDATE) with bonded/encrypted state feeding CONN_SEC_GET. No crypto, no key storage — documented. |
+| L2CAP | Dynamic-CID register/unregister (range + capacity checks), TX staging with SVC-time byte copy, RX echo completion. |
+| Multi-link + air | Per-link handles/RSSI/TX/security/pairing/CIDs; events carry their conn; pump + bridge + E2E prove two live links. Bridge (`tools/ble_air_bridge.py`): two Bumble peers on one LocalLink (battery 87 `PeerBatt` + twin 64 `PeerHR`, distinct addresses), per-job `peer` routing, `peer` echo on disc RSPs, per-peer ATT locks + global scan lock (no timeouts under load). |
+| Proofs | 10 native sd_ble tests (byte-offset asserts) + SVC-hook proof in cpu/tests.rs; GCC `ble_conformance.c` + C face; headless MockBleSvc real-SVC flow 18/18; live E2E 42/42 over air (two links, 87-vs-64 reads); browser 16/16 (blinky + self-test pairing×2 + probes, zero page errors). |
+
+### Left: the named, bounded gaps (none is a hidden fault)
+
+| Gap | Why it stays |
+|---|---|
+| No SMP crypto / key / bond storage | Passkeys validate shape, OOB zeroes 32B, LTK/IRK/CSRK pointers are accepted never stored, bonds die with the link. A sniffer would see it; firmware draining events would not. |
+| Central role only | The bridge dials out; ADV_START emits no air, CONNECTED never arrives unsolicited; no whitelist/directed advertising. |
+| No parameter enforcement | CONN_PARAM_UPDATE/PPCP accept without posting updates; no MTU/DLE/PHY SVCs exist in S132 form and none are synthesized. |
+| No TX flow events | TX_PACKET_COUNT_GET is static; BLE_EVT_TX_COMPLETE / USER_MEM_REQUEST / RELEASE never post; GATTC/GATTS TIMEOUT, CONN_PARAM_UPDATE(_REQUEST), SEC_REQUEST, SCAN_REQ_REPORT, RW_AUTHORIZE_REQUEST, SYS_ATTR_MISSING, SC_CONFIRM never post (their reply SVCs ack SUCCESS without effect). |
+| GATTC write REQ/CMD only | SIGNED_WRITE/PREP_WRITE/EXEC_WRITE refuse INVALID_PARAM — no queued/signed-write path. |
+| SoC/MBR SVCs unmodeled | Mutex/rand-pool/power/clock/PPI sd_ calls are out of scope for the BLE face; on-chip crypto keeps its own take/complete models. |
+| No BLE-enabled stock image | MPY ships `MICROBIT_BLE_ENABLED: 0`; no shipped firmware exercises this face (proven by conformance fw + mock + E2E instead). |
+| Virtual air, not RF | LocalLink peers, not spectrum; RSSI -50 dBm constant with adv fallback; no range/interference/whitening. |
+
+### Original P58 verdict (kept for the record)
 
 | Question | Finding |
 |---|---|
@@ -205,8 +250,10 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | `docs/COVERAGE.md` | This file | Table audit (uncommitted, per order). |
 
 ```
-cargo test                       # 191 green (crate dir)
+cargo test -- --test-threads=1   # 203 green deterministic (parallel default flakes ~1/4 — see doc.html checks)
 node demo/parts/smoke.mjs        # parts green
+node demo/parts/handshake.mjs    # 18/18 vs the built pkg
+node demo/parts/ble_live_e2e.mjs # 42/42 over air (bridge on :18771)
 wasm-pack build nrf52833-periph-wasm --target web --out-dir ../demo/pkg
 rm -f demo/pkg/.gitignore        # pkg intentionally committed
 ```

@@ -72,9 +72,22 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   TWIM shifted-ADDR match, SCB AIRCR SYSRESETREQ,
   COMP/QDEC/NFCT/MWU/RADIO/SAADC/CCM depth, EGU slots, sd_ble
   peer-request pairing legs).
-- One rare parallel flake seen once
-  (`unaligned_device_faults_without_trap`, 1/10 runs, never
-  reproduced in 10 follow-ups) — kept on watch, not yet root-caused.
+- Parallel-test flake (open, pre-existing, now characterized):
+  stock multi-threaded `cargo test` intermittently fails sd_ble/MWU/MPU
+  tests with `RefCell already borrowed` at `peripherals/mod.rs:131`
+  (~1/4 runs; single-threaded `-- --test-threads=1` is always
+  203/203). Root cause is shared process-global state across threads
+  — the `SYS AtomicPtr` box plus `Rc<RefCell>` peripherals and the MWU
+  `AtomicBool` leak between tests (leaked MWU-armed + foreign installed
+  system makes `mem.watch` re-enter an already-borrowed slot; leaked
+  MPU-enabled makes MMIO reads fault through another thread's map).
+  cpu/tests serializes its own installs with `lock_boot()`, but
+  peripheral unit tests on `test_dummy_system()` do not join that
+  lock — a harness-isolation gap, not a model bug. (The old note
+  about `unaligned_device_faults_without_trap` 1/10 was the same
+  family.) Fix direction: join the same boot lock or run CI
+  single-threaded; not done here — use `-- --test-threads=1` for a
+  clean signal.
 - Thinnest: RTC/PWM/TEMP/RNG/EGU (1 handshake each).
 
 ## 4. JS API + demo (`demo/`, API frozen v1)
@@ -374,7 +387,7 @@ protection, publish to npm.
 ## 8. Verify
 
 ```
-cargo test                       # 203 green (crate dir)
+cargo test -- --test-threads=1    # 203 green deterministic (crate dir; parallel default flakes ~1/4 — see §3)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY-idiom face, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)

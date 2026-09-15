@@ -639,11 +639,14 @@ fn with_sd_ble<R>(f: impl FnOnce(&mut SdBle) -> R) -> R {
     SD_BLE_STATE.with(|s| f(&mut s.borrow_mut()))
 }
 
-/// Test/process reset: clears enable, queue, staged job, table.
+/// Test/process reset: clears enable, queue, staged job, table —
+// and the staged take bytes (WRITE/HVX/L2CAP payloads), which live in
+// their own thread-local and would otherwise survive the reset.
 pub fn reset_for_test() {
     with_sd_ble(|s| {
         *s = SdBle::fresh();
     });
+    TAKE_DATA.with(|t| t.borrow_mut().clear());
 }
 
 impl SdBle {
