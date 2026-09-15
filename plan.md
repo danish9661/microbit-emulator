@@ -2605,3 +2605,108 @@ fails too, so no thread theory can explain it):
 
 NEXT: B4 docs (STATUS §3 already updated this run) + commit alone;
 then C-frontiers; final gate + push only when green.
+
+## 88. P106 MakeCode wait-queue-OBJECT walk: waiter takes the pump path, LEFT-4 parked (2026-09-16, native probe, reverted)
+
+C1 asked for the wait-queue-OBJECT walk at `0x20003b18` (name the
+awaited event, trap THAT raise site). Done — answer: there is NO
+awaited event; the waiter is a NULL-or-flag-gated pump entry and it
+takes the pump path. LEFT-4 parked, LEFT-3 next.
+
+Static leg (fresh `/tmp/opencode/mc_full.dis` from `hex2bin.py` +
+xpack objdump; verifies the P97 decode on this tree's binary):
+- `0x2e410` waiter: `cmp r0,#0; beq ret-1000` else flag
+  `[0x20004373]` (`ldr.w r8,[pc,#144]` → literal `0x2e4ac` =
+  `0x20004373`) `lsls+bpl` gate → run queue `[0x20003b08]`
+  (literal `0x2e4a0`) → `bl 0x2e01c` pump. One static `bl` site
+  `@0x31f62` (acquire loop `0x31f00`: match id/value halfwords →
+  `bl 0x2df74` → `bl 0x31c50` callback → `ldr r4,[r4,#36]` next →
+  `bl 0x2e410` → loop). `0x31c50` = fiber-callback dispatcher
+  (`ldrh [r0,#4]` flag bits, `blx r4` listener-invoke,
+  `bl 0x3485c` cleanup). `0x2e01c` pump: marshal
+  (`bl 0x37ba0/0x37b74/0x37b88`) → compare → `bl 0x2dc08` queue
+  insert (QNEXT `strd [r4,#24]`, wait queue `0x20003b18` literal
+  `0x2e080`); `0x2e084` = flag-gated forward to the same pump.
+  `0x37ec6` = register-context SAVE (`str r0,[r0,#0]` ...
+  `str lr,[r0,#56]` — TCB store, 15 words).
+
+Dynamic leg (TEMP `tmp_mc_c1.rs` + `mod.rs` hook, P16 recipe:
+direct-app boot, MBR params, UICR seeds, 2 reset honors,
+sleep-aware pump; DELETED after, 204 green hold):
+- Park much earlier than P69's 300M: transition at ~160–164M
+  (RAM-delay `0x20002078/7a`, queues zero) → WFE-idle `0x37afa`
+  (run=`0x20006208`, wait EMPTY, sleep=`0x20006198`). Run fiber TCB
+  LR `0x2e453` (inside waiter), sleep fiber `ctx=0x00010007`
+  key-matched + `0x2d58/0x2ee` event waiter — matches P92 exactly.
+- Single-step trip (phase-1 coarse to 150M, then `run(1)` steps;
+  ~14.4M steps to hit): FIRST-HIT `0x2e410` with `r0=0x31c51`
+  (return addr — acquire-loop waiter family `0x31f00`, one insn
+  past the `bl 0x31c50` at `0x31f4e`), `r1=r4=0x200062fc`
+  (waiter struct), `r2=0x23a34e` (FLASH addr — NOT a RAM object,
+  so not a fiber/queue/event struct; never dereferenced on the
+  taken path), `r3=0x20004373` (flag byte, `0x03` at hit),
+  `r5=0x20006344`, `lr=0x31f67` (return past the `bl 0x2e410`).
+- Follow-through (40 single steps): flag `lsls r4,#31` sets N
+  (bit31=1: fiber-wait dispatched state) → `bpl` NOT taken → pump
+  path (not the ret-1000 NULL path) → run-queue load
+  (`r3=0x20006208`) → `cbz r4 → 0x2e44a` (queue object NULL —
+  the `bl 0x2e01c` pump call SKIPPED) → `ldr r0,[r3]` (own TCB
+  `0x20006234`) → `bl 0x37ec6` context SAVE → leaves waiter
+  region. So the waiter saves the parked main fiber's context and
+  returns — exactly P93's listener-invoke shape, one level down.
+- Waiter inputs: `0x200062fc` = fiber-create-arg shape
+  (`0x3fd/0x12` id/value pair, fiber `0x20006208`, `0x23a34e`
+  passthrough); `0x20006344` = listener-fn table (code addrs
+  `0x2b8d1/0x2500`, back-ptr `0x200063a8`, `0x23a34e` again).
+  Neither is an event id/value wait — the waiter never blocks ON
+  anything; it is entered from the acquire loop with the flag
+  already set, checks the flag, finds no queue object, saves
+  context, returns. The `0x2e084` raise-forward was never hit in
+  14.4M steps (nothing left to raise).
+- Trap-THAT-raise-site is therefore moot — C1's second half has no
+  target. The "awaited event" does not exist: main parks in the
+  pump waiter with the wait queue EMPTY, the scroll fiber never
+  created, the display path never touched (TIMER4 COUNTER 0).
+
+Verdict: LEFT-4 PARKED (pre-scroll sequencing fully characterized:
+acquire loop → `0x31c50` callback dispatch → `0x2e410` pump-entry
+waiter → context save → WFE-idle; scroll never constructed).
+Probes reverted (`rm tmp_mc_c1.rs`, hook out); suite file-free.
+NEXT: LEFT-3 bootloader pass-2 trace assessment (SD priorities
+shelved?) — C2.
+
+## 89. P107 bootloader pass-2 assessment: park LEFT-3, direct-app stays the recipe (2026-09-16, no probe)
+
+C2 asked for a pass-2 trace assessment (SD priorities shelved?) or
+park LEFT-3. Assessment from the settled record (STATUS §6.3 + plan
+P25/P29/P49/P52/P68, no new probe — a trace was never going to pass
+the gate below, so none was run):
+
+- Settled: BL entry `0x772F9`, FICR gather, benign post-UICR reset,
+  2nd CODED AIRCR `0x78514` via tbb `0x78498` BY DESIGN (r4==0 =
+  SD-enable SUCCESS through `0x7B530` `svc 16` + `0x7B5B4` IPR22
+  check + `0x7B568`); `0x7B5B4` needs nonzero IPR22 (SD-set
+  priorities — silicon state, out of scope); `0x784C4` = DFU-progress
+  gate (not the cause); MBR selector `0x417` never reads
+  `0x10001200/204` (P42 `0x0–0xB00` sweep refuted); seeded native MBR
+  run parks `0x77332`; P68 pass-2 (seeded UICR + IPR22
+  `0x40404040`, MBR entry): 1 reset then parks at app vector
+  `0x29C7A` with ZERO hits on `0x7B5B4`/`0x772F9`/`0x783FE` — pass 2
+  never reaches BL validation (MBR jumps straight to the app table).
+- A pass-2 trace would need: (a) SD-set NVIC priorities synthesized
+  into the model (IPR22 nonzero — today IPR22 reads 0 by reset and
+  nothing in the image sets it pre-validation; synthesizing
+  SD-written priorities = inventing silicon state, AGENTS.md-scope
+  violation by spirit), AND (b) a reason to believe pass 2 reaches BL
+  at all (P68 says it does not — MBR→app-direct bypasses validation,
+  so the trace would re-prove the bypass, not the chain). Cost:
+  a full MBR-entry native probe run for an informational re-proof.
+- Decision: PARK LEFT-3. The chain is characterized to the
+  silicon-state boundary; direct-app boot (P16 recipe) stays the
+  recipe; no model change expected or attempted. Reopen only with a
+  faulting config (e.g. an image whose MBR demonstrably enters BL
+  validation and fails on emulated state — none exists here).
+
+C-workstream closed: LEFT-4 (P106) + LEFT-3 (this note) both parked
+with evidence. No code touched in either (reverted probes only;
+suite file-free throughout).

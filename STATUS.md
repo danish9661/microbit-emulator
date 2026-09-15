@@ -306,6 +306,12 @@ beyond proof-level driving remain future work.
     cannot skip BL (native seeded run: 1 reset, parks `0x77332`).
     Blocker is BL-side `0x7B5B4` needing nonzero IPR22 (SD-set
     priorities — silicon state, out of scope); direct-app boot stays.
+    P107 (2026-09-16, assessment, no probe): LEFT-3 PARKED — a pass-2
+    trace would need SD-synthesized NVIC priorities (inventing silicon
+    state) AND a reason to believe pass 2 reaches BL at all (P68 says
+    it does not: MBR→app-direct bypasses validation). Cost is a full
+    MBR-entry probe for an informational re-proof; not run. Reopen
+    only with a faulting config (none exists here).
 4. **MakeCode display content** (ZERO-TOUCH proof, P57; re-run P69 on
    current tree: IDENTICAL — 300M, 0 `0x30C04` hits, `0x20002078/7A`→
    `0x3569C` WFE-idle at 300M, DIR0 sticky, TIMER4 untouched). So NO
@@ -328,11 +334,31 @@ beyond proof-level driving remain future work.
    reverted): `0x35664` statically = member-getter on `[obj+20]`
    slots (`0x104/0x148/0x15c`), one consuming `bl @0x358c8` + four
    `b.w` tails; `0x2e084` = flag-gated forward to pump `0x2e01c`;
-   `0x2e410` = NULL-or-flag-gated pump entry (one static `bl`
-   `@0x31f62`, live entries via runtime `blx`). Dynamic trap got
-   ZERO windows — quantum-boundary sampling can't catch the awake
-   bursts (park pc always WFE `0x37afa`). NEXT: wait-queue-OBJECT
-   walk, else park LEFT-4 → LEFT-3 bootloader chain.
+    `0x2e410` = NULL-or-flag-gated pump entry (one static `bl`
+    `@0x31f62`, live entries via runtime `blx`). Dynamic trap got
+    ZERO windows — quantum-boundary sampling can't catch the awake
+    bursts (park pc always WFE `0x37afa`). P106 (2026-09-16, native,
+    reverted): wait-queue-OBJECT walk at park — wait queue EMPTY, so
+    no awaited event exists to name; single-step trip on the waiter
+    path (14.4M steps from 150M) FIRST-HIT `0x2e410` with
+    `r0=0x31c51` (return addr = acquire-loop waiter `0x31f00`
+    family), `r1=r4=0x200062fc` (waiter struct), `r2=0x23a34e`
+    (FLASH addr — not RAM, so NOT a fiber/queue object; the waiter
+    never touches it), `r3=0x20004373` (flag byte, `0x03` at hit).
+    Follow-through: flag `lsls` sets N (bit31=1) → `bpl` falls into
+    the pump path (NOT the ret-1000 NULL path) → run-queue load →
+    `cbz r4 → 0x2e44a` (queue object NULL) → `bl 0x37ec6`
+    (register-context SAVE: r0=own TCB — the parked main fiber
+    saving itself, exactly P93's listener-invoke shape) → leaves the
+    waiter region. r4/r5 structs: fiber-create-arg shape
+    (`0x200062fc` = id/value pair + fiber `0x20006208`;
+    `0x20006344` = listener-fn table + `0x23a34e`), i.e. the waiter
+    is a NULL-or-flag-gated PUMP ENTRY, never an event wait — the
+    "awaited event" does not exist. Trap-THAT-raise-site is moot:
+    the raise-forward `0x2e084` was never hit (flag already set).
+    LEFT-4 PARKED (pre-scroll sequencing: main parked in pump
+    waiter, scroll fiber never created, display path never touched
+    — TIMER4 0, DIR0 0). NEXT: LEFT-3 bootloader chain.
     Strobe-OR proof (plan P52): 200-sample OR over +1M post-172M is
     all-zero — truly blank, not a multiplex alias. OUT never produces
     an on-phase; init stalls before display construction.
