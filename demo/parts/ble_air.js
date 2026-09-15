@@ -128,6 +128,8 @@ export class BleAir {
       this.say(`air: live (tx ${this.txFrames}, rx ${this.rxFrames})`);
     } else if (msg.t === 'gatt' || msg.t === 'write_rsp' || msg.t === 'prim_disc_rsp'
         || msg.t === 'char_disc_rsp' || msg.t === 'desc_disc_rsp' || msg.t === 'hvx'
+        || msg.t === 'rel_disc_rsp' || msg.t === 'attr_info_rsp' || msg.t === 'uuid_read_rsp'
+        || msg.t === 'vals_read_rsp'
         || msg.t === 'connected' || msg.t === 'adv_report' || msg.t === 'disconnected'
         || msg.t === 'rssi' || msg.t === 'cancel' || msg.t === 'written'
         || msg.t === 'paired' || msg.t === 'l2cap_rx') {
@@ -161,9 +163,9 @@ export class BleAir {
   // SoftDevice face: ask the bridge to resolve one staged BLE job
   // over air. The job object mirrors the ble_take_job() tags (see
   // lib.rs): {tag, conn, handle, offset, op, data, kind, start, end,
-  // type, addr, cid, reason}. Replies arrive as queued air messages
-  // handled above. Every message carries its conn so the pump
-  // completes the right link (multi-connection firmware).
+  // type, addr, cid, reason, uuid16, handles}. Replies arrive as queued
+  // air messages handled above. Every message carries its conn so the
+  // pump completes the right link (multi-connection firmware).
   sendBle(job) {
     if (!this.ws || this.ws.readyState !== 1) return false;
     const m = { t: 'ble_read', conn: job.conn ?? 1, handle: job.handle ?? 0x13, offset: job.offset ?? 0 };
@@ -180,6 +182,10 @@ export class BleAir {
       case 9: m.t = 'ble_hvx'; m.handle = job.handle ?? 0; m.type = job.type ?? 1; m.data = [...(job.data ?? [])]; break;
       case 10: m.t = 'ble_l2cap'; m.cid = job.cid ?? 0x40; m.data = [...(job.data ?? [])]; break;
       case 11: m.t = 'ble_pair'; break;
+      case 12: m.t = 'ble_disc'; m.kind = 1; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
+      case 13: m.t = 'ble_disc'; m.kind = 4; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
+      case 14: m.t = 'ble_uuid_read'; m.uuid16 = job.uuid16 ?? 0xFFFF; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
+      case 15: m.t = 'ble_vals_read'; m.handles = [...(job.handles ?? [])]; break;
       default: return false;
     }
     this.ws.send(JSON.stringify(m));

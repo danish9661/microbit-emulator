@@ -630,46 +630,52 @@ export class MockRadioAir {
 // SVC numbers (S132): ENABLE 0x60, EVT_GET 0x61, GAP SCAN_START 0x8A,
 // CONNECT 0x8C, DISCONNECT 0x76, RSSI_GET 0x8E, GATTC PRIM_DISC 0x90,
 // CHAR_DISC 0x92, READ 0x96, WRITE 0x98, GATTS SVC_ADD 0xA0,
-// CHAR_ADD 0xA2, VALUE_SET 0xA4, VALUE_GET 0xA5, HVX 0xA6.
-const BLE_SVC = { ENABLE: 0x60, EVT_GET: 0x61, SCAN_START: 0x8A, CONNECT: 0x8C, DISCONNECT: 0x76, RSSI_GET: 0x8E, PRIM_DISC: 0x90, CHAR_DISC: 0x92, READ: 0x96, WRITE: 0x98, SVC_ADD: 0xA0, CHAR_ADD: 0xA2, VSET: 0xA4, VGET: 0xA5, HVX: 0xA6 };
+// CHAR_ADD 0xA2, VALUE_SET 0xA4, VALUE_GET 0xA5, HVX 0xA6,
+// HV_CONFIRM 0x99.
+const BLE_SVC = { ENABLE: 0x60, EVT_GET: 0x61, SCAN_START: 0x8A, CONNECT: 0x8C, DISCONNECT: 0x76, RSSI_GET: 0x8E, PRIM_DISC: 0x90, CHAR_DISC: 0x92, READ: 0x96, WRITE: 0x98, HV_CONFIRM: 0x99, SVC_ADD: 0xA0, CHAR_ADD: 0xA2, VSET: 0xA4, VGET: 0xA5, HVX: 0xA6 };
 export class MockBleSvc {
   constructor(wasm) { this.wasm = wasm; this.done = false; this.seen = {}; }
   register() {}
   // Run one SVC on a scratch WasmCpu: r0-r3 in, r0 out. The hook needs
   // deliver_irqs on (else SVC faults); IRQs themselves never fire here
   // (no NVIC enables, no pending) so the run is a pure call.
-  svc(cpu, num, r0 = 0, r1 = 0, r2 = 0, r3 = 0) {
+  // Up to 8 register args (r0-r7) via two literal blocks: the first
+  // four load r0-r3 (ldr at 0x20000000..07, literals at 0x20000024),
+  // the second four load r4-r7 (ldr at 0x2000000C..13, literals at
+  // 0x20000034). Callers pass r4..r7 positionally after r3.
+  svc(cpu, num, r0 = 0, r1 = 0, r2 = 0, r3 = 0, r4 = 0, r5 = 0, r6 = 0, r7 = 0) {
     cpu.reset_cpu(0x20020000, 0x20000001);
     cpu.set_deliver_irqs(true);
-    cpu.write8(0x20000000, 0x00 + (num & 0xFF)); // placeholder replaced below
-    cpu.mem_write(0x20000000, [num & 0xFF, 0xDF]); // svc #num
-    cpu.mem_write(0x20000002, [0xFE, 0xE7]); // b .
-    const regs = cpu.get_regs();
-    cpu.mem_write(0x20001FF0, [...new Uint8Array(new Uint32Array([r0, r1, r2, r3]).buffer)]);
-    // Set r0-r3 via... WasmCpu has no set_regs; use the stack-slot trick:
-    // instead, drive handle_svc through a tiny native shim is impossible
-    // from JS — so seed registers by writing a movs/ldr preamble.
-    // Simplest correct: ldr r0-r3 from a literal block, then svc.
-    // ldr-literal bases are (pc+4)&!3 per instruction: r0@00 sees
-    // 0x20000004, r1@02 sees 0x20000004, r2@04 and r3@06 see
-    // 0x20000008 — so the immediates differ (+32/+36/+36/+40).
     cpu.mem_write(0x20000000, [
       0x08, 0x48, // ldr r0, [pc, #32] -> 0x20000024
       0x09, 0x49, // ldr r1, [pc, #36] -> 0x20000028
       0x09, 0x4A, // ldr r2, [pc, #36] -> 0x2000002C
       0x0A, 0x4B, // ldr r3, [pc, #40] -> 0x20000030
+      0x0A, 0x4C, // ldr r4, [pc, #40] -> 0x20000034
+      0x0B, 0x4D, // ldr r5, [pc, #44] -> 0x20000038
+      0x0B, 0x4E, // ldr r6, [pc, #44] -> 0x2000003C
+      0x0C, 0x4F, // ldr r7, [pc, #48] -> 0x20000040
       num & 0xFF, 0xDF, // svc #num
       0xFE, 0xE7, // b .
     ]);
     const w32 = (v) => [v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF];
-    // pc+4 alignment: at 0x20000008 pc reads 0x2000000C; +32 -> 0x2000002C.
-    // Recompute: ldr at 0x20000000 sees pc=0x20000004, +32 = 0x20000024. ✓
-    cpu.mem_write(0x20000024, [...w32(r0), ...w32(r1), ...w32(r2), ...w32(r3)]);
-    cpu.step(8);
+    // ldr bases: r0@00 sees 0x20000004; r1@02 sees 0x20000004; r2@04,
+    // r3@06 see 0x20000008; r4@08 and r5@0A see 0x2000000C(+4&!3);
+    // r6@0C, r7@0E see 0x20000010. Immediates above land each literal
+    // in its slot: r0->24, r1->28, r2->2C, r3->30, r4->34, r5->38,
+    // r6->3C, r7->40. (GAS-verified pattern; the 4-reg form above ran
+    // the whole suite before this extension.)
+    cpu.mem_write(0x20000024, [...w32(r0), ...w32(r1), ...w32(r2), ...w32(r3),
+                               ...w32(r4), ...w32(r5), ...w32(r6), ...w32(r7)]);
+    cpu.step(12);
     if (cpu.fault_pc() !== 0xFFFFFFFF) throw new Error(`SVC fault pc=${cpu.fault_pc().toString(16)} op=${cpu.fault_op1().toString(16)}`);
     return cpu.get_regs()[0] >>> 0;
   }
   // Drain one event via the two-arg contract; null when NOT_FOUND.
+  // NOTE: the scratch cpu runs with NO system installed (pure JS
+  // FlatMemory reads), so only aligned reads are used here — the
+  // native FlatMemory traps odd read16 (covers a real unaligned-
+  // access rule) unless a system is installed.
   drainEvt(cpu) {
     cpu.mem_write(0x20003FF0, [128, 0]); // room
     const rc = this.svc(cpu, BLE_SVC.EVT_GET, 0x20003000, 0x20003FF0);
@@ -699,6 +705,13 @@ export class MockBleSvc {
     else if (tag === 9) w.ble_complete_hvx(bj[1], bj[2]);
     else if (tag === 10) w.ble_complete_l2cap_rx(bj[1], bj[2], [...w.ble_take_data()]);
     else if (tag === 11) w.ble_complete_pairing(bj[1], true);
+    else if (tag === 12) w.ble_complete_rel_disc(bj[1], [bj[2]], [0x180F], [bj[2]], [bj[3]]);
+    else if (tag === 13) w.ble_complete_attr_info_disc(bj[1], [bj[2]], [0x2A19]);
+    else if (tag === 14) w.ble_complete_uuid_read(bj[1], [0x13], [w.ble_batt_level()], [1]);
+    else if (tag === 15) {
+      const n = bj[2];
+      w.ble_complete_vals_read(bj[1], new Array(n).fill(w.ble_batt_level()));
+    }
     return true;
   }
   poll(cpu) {
@@ -756,6 +769,31 @@ export class MockBleSvc {
     const pd = this.drainEvt(cpu);
     if (!pd || pd.id !== 0x30) throw new Error('PRIM_DISC_RSP missing');
     this.seen.disc = true;
+    // 4b. REL_DISC + ATTR_INFO_DISC + UUID_READ + VALS_READ (new RSPs).
+    // Range lives at 0x20001300 (written by the CHAR_DISC step's twin
+    // below — write it here first; each discovery step is independent).
+    cpu.mem_write(0x20001300, [0x10, 0x00, 0x16, 0x00]); // range{start,end}
+    cpu.mem_write(0x20001310, [0x19, 0x2A, 0x01, 0x00]); // uuid{0x2A19}
+    ok(this.svc(cpu, 0x91, H, 0x20001300), 'rel_disc');
+    this.resolveJob();
+    const rel = this.drainEvt(cpu);
+    if (!rel || rel.id !== 0x31) throw new Error('REL_DISC_RSP missing');
+    ok(this.svc(cpu, 0x94, H, 0x20001300), 'attr_info_disc');
+    this.resolveJob();
+    const ai = this.drainEvt(cpu);
+    if (!ai || ai.id !== 0x34) throw new Error('ATTR_INFO_RSP missing');
+    ok(this.svc(cpu, 0x95, H, 0x20001100, 0x20001300), 'uuid_read');
+    this.resolveJob();
+    const ur = this.drainEvt(cpu);
+    if (!ur || ur.id !== 0x35) throw new Error('UUID_READ_RSP missing');
+    if (ur.body[ur.body.length - 1] !== 87) throw new Error('uuid-read byte');
+    cpu.mem_write(0x20001320, [0x13, 0x00, 0x14, 0x00]);
+    ok(this.svc(cpu, 0x97, H, 0x20001320, 2), 'vals_read');
+    this.resolveJob();
+    const vr = this.drainEvt(cpu);
+    if (!vr || vr.id !== 0x37) throw new Error('VALS_READ_RSP missing');
+    if (vr.body[vr.body.length - 2] !== 87) throw new Error('vals-read bytes');
+    this.seen.disc2 = true;
     // 5. CHAR_DISC over the service range -> drain.
     cpu.mem_write(0x20001300, [0x10, 0x00, 0x16, 0x00]);
     ok(this.svc(cpu, BLE_SVC.CHAR_DISC, H, 0x20001300), 'char_disc');
@@ -804,6 +842,25 @@ export class MockBleSvc {
     const su = this.drainEvt(cpu);
     if (!su || su.id !== 0x1A) throw new Error('CONN_SEC_UPDATE missing');
     this.seen.paired = true;
+    // 7d. Indication roundtrip (CCCD-gated): subscribe indicate bit,
+    // HVX indication stages, peer confirms via HV_CONFIRM -> HVC.
+    // The HVX params block at 0x20003200 was left staged for notify by
+    // the native test shape; rewrite it here for indication (type=2).
+    cpu.mem_write(0x20003200, [valH & 0xFF, (valH >> 8) & 0xFF, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    cpu.mem_write(0x20003210, [0x01, 0x00]); // *len = 1
+    cpu.mem_write(0x20003220, [0x42]);
+    cpu.mem_write(0x20003208, [0x10, 0x32, 0x00, 0x20]); // *len ptr
+    cpu.mem_write(0x2000320C, [0x20, 0x32, 0x00, 0x20]); // *data ptr
+    w.ble_post_gatts_write(H, valH + 1, 0x2902, 1, [0x02, 0x00]);
+    this.drainEvt(cpu); // consume the WRITE event
+    ok(this.svc(cpu, BLE_SVC.HVX, H, 0x20003200), 'hvx-indicate');
+    this.resolveJob();
+    const hvc1 = this.drainEvt(cpu);
+    if (!hvc1 || hvc1.id !== 0x53) throw new Error('HVC (indicate) missing');
+    ok(this.svc(cpu, BLE_SVC.HV_CONFIRM, H, valH), 'hv_confirm');
+    const hvc2 = this.drainEvt(cpu);
+    if (!hvc2 || hvc2.id !== 0x53) throw new Error('HVC (confirm) missing');
+    this.seen.hvx = true;
     // 8. SCAN_START -> resolve -> drain ADV_REPORT (padded layout).
     ok(this.svc(cpu, BLE_SVC.SCAN_START, 0), 'scan');
     this.resolveJob();
@@ -823,7 +880,7 @@ export class MockBleSvc {
     if (!dc || dc.id !== 0x11 || dc.body[2] !== 19) throw new Error('DISCONNECTED missing');
     if (this.drainEvt(cpu) !== null) throw new Error('queue not drained');
     this.seen.full = true;
-    this.done = this.seen.gatts && this.seen.connected && this.seen.readRsp && this.seen.writeRsp && this.seen.paired && this.seen.full;
+    this.done = this.seen.gatts && this.seen.connected && this.seen.readRsp && this.seen.writeRsp && this.seen.paired && this.seen.hvx && this.seen.disc2 && this.seen.full;
     void cpu;
   }
 }

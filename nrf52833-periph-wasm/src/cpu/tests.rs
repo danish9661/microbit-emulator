@@ -274,6 +274,8 @@ fn nrf_ble_conformance_svc_face() {
         for m in ["BLE:BOOT", "BLE:enable:OK", "BLE:service:OK", "BLE:char:OK",
                   "BLE:vset:OK", "BLE:vget:OK", "BLE:connect-stage:OK",
                   "BLE:read-stage:OK", "BLE:prim-stage:OK", "BLE:char-stage:OK",
+                  "BLE:rel-stage:OK", "BLE:attrinfo-stage:OK",
+                  "BLE:uuidread-stage:OK", "BLE:valsread-stage:OK",
                   "BLE:write-stage:OK", "BLE:scan-stage:OK", "BLE:rssi-stage:OK",
                   "BLE:l2cap-reg:OK", "BLE:l2cap-stage:OK", "BLE:auth-stage:OK",
                   "BLE:disc-stage:OK", "BLE:evt-get:OK", "BLE:ALL-OK"] {
@@ -309,6 +311,23 @@ fn pump_ble_test_driver(sys: &crate::system::System) -> bool {
         }
         Some(BleJob::GattcDescDisc { conn, start, .. }) => {
             complete_desc_disc(conn, &[DiscDesc { handle: start, uuid16: Some(0x2902) }]);
+            true
+        }
+        Some(BleJob::GattcRelDisc { conn, start, .. }) => {
+            complete_rel_disc(conn, &[DiscInclude { handle: start, uuid16: Some(0x180F), start, end: start + 6 }]);
+            true
+        }
+        Some(BleJob::GattcAttrInfoDisc { conn, start, .. }) => {
+            complete_attr_info_disc(conn, &[DiscAttrInfo { handle: start, uuid16: Some(0x2A19) }]);
+            true
+        }
+        Some(BleJob::GattcUuidRead { conn, .. }) => {
+            complete_uuid_read(conn, &[HandleValue { handle: 0x13, value: vec![batt_level()] }]);
+            true
+        }
+        Some(BleJob::GattcValsRead { conn, handles }) => {
+            let data = handles.iter().map(|_| batt_level()).collect::<Vec<u8>>();
+            complete_vals_read(conn, &data);
             true
         }
         Some(BleJob::GattcRead { conn, handle, offset }) => {

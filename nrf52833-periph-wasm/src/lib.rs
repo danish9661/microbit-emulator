@@ -508,6 +508,10 @@ pub fn nvmc_complete_erase() {
 //   9 GattsHvx [conn, handle, type, len] + ble_take_data() bytes
 //   10 L2capTx [conn, cid, len] + ble_take_data() bytes
 //   11 GapAuthenticate [conn] (pairing handshake over air)
+//   12 GattcRelDisc [conn, start, end] (include walk)
+//   13 GattcAttrInfoDisc [conn, start, end] (table walk)
+//   14 GattcUuidRead [conn, uuid16|0xFFFF, start, end]
+//   15 GattcValsRead [conn, count] + ble_take_data() = handles u16[count]
 #[wasm_bindgen]
 pub fn ble_take_job() -> Vec<u32> {
     match crate::sd_ble::take_job() {
@@ -546,6 +550,20 @@ pub fn ble_take_job() -> Vec<u32> {
             vec![10, conn as u32, cid as u32, data.len() as u32]
         }
         Some(crate::sd_ble::BleJob::GapAuthenticate { conn }) => vec![11, conn as u32],
+        Some(crate::sd_ble::BleJob::GattcRelDisc { conn, start, end }) => {
+            vec![12, conn as u32, start as u32, end as u32]
+        }
+        Some(crate::sd_ble::BleJob::GattcAttrInfoDisc { conn, start, end }) => {
+            vec![13, conn as u32, start as u32, end as u32]
+        }
+        Some(crate::sd_ble::BleJob::GattcUuidRead { conn, uuid16, start, end }) => {
+            vec![14, conn as u32, uuid16.map(|u| u as u32).unwrap_or(0xFFFF), start as u32, end as u32]
+        }
+        Some(crate::sd_ble::BleJob::GattcValsRead { conn, ref handles }) => {
+            let mut v = vec![15u32, conn as u32, handles.len() as u32];
+            v.extend(handles.iter().map(|&h| h as u32));
+            v
+        }
         None => Vec::new(),
     }
 }
@@ -613,6 +631,58 @@ pub fn ble_complete_desc_disc(conn: u16, handles: &[u16], uuids: &[u16]) {
 #[wasm_bindgen]
 pub fn ble_complete_gattc_write(conn: u16, handle: u16, op: u8, data: &[u8]) {
     crate::sd_ble::complete_gattc_write(conn, handle, op, data);
+}
+
+/// Complete a relationship discovery: parallel arrays handles[i],
+/// uuids[i] (0xFFFF = 128-bit), starts[i], ends[i]. Posts REL_DISC_RSP.
+#[wasm_bindgen]
+pub fn ble_complete_rel_disc(conn: u16, handles: &[u16], uuids: &[u16], starts: &[u16], ends: &[u16]) {
+    let n = handles.len().min(uuids.len()).min(starts.len()).min(ends.len());
+    let incs: Vec<crate::sd_ble::DiscInclude> = (0..n)
+        .map(|i| crate::sd_ble::DiscInclude {
+            handle: handles[i],
+            uuid16: if uuids[i] == 0xFFFF { None } else { Some(uuids[i]) },
+            start: starts[i],
+            end: ends[i],
+        })
+        .collect();
+    crate::sd_ble::complete_rel_disc(conn, &incs);
+}
+
+/// Complete an attribute-info discovery: handles[i], uuids[i].
+/// Posts ATTR_INFO_RSP (16-bit format).
+#[wasm_bindgen]
+pub fn ble_complete_attr_info_disc(conn: u16, handles: &[u16], uuids: &[u16]) {
+    let n = handles.len().min(uuids.len());
+    let infos: Vec<crate::sd_ble::DiscAttrInfo> = (0..n)
+        .map(|i| crate::sd_ble::DiscAttrInfo {
+            handle: handles[i],
+            uuid16: if uuids[i] == 0xFFFF { None } else { Some(uuids[i]) },
+        })
+        .collect();
+    crate::sd_ble::complete_attr_info_disc(conn, &infos);
+}
+
+/// Complete a read-by-UUID: parallel handles[i] + flat values with
+/// per-pair lengths lens[i] (ragged pads to the longest on the wire).
+/// Posts UUID_READ_RSP.
+#[wasm_bindgen]
+pub fn ble_complete_uuid_read(conn: u16, handles: &[u16], flat: &[u8], lens: &[u16]) {
+    let mut pairs = Vec::new();
+    let mut off = 0usize;
+    for (i, &h) in handles.iter().enumerate() {
+        let n = lens.get(i).copied().unwrap_or(0) as usize;
+        let end = (off + n).min(flat.len());
+        pairs.push(crate::sd_ble::HandleValue { handle: h, value: flat[off..end].to_vec() });
+        off = end;
+    }
+    crate::sd_ble::complete_uuid_read(conn, &pairs);
+}
+
+/// Complete a multi-read: concatenated values. Posts VALS_READ_RSP.
+#[wasm_bindgen]
+pub fn ble_complete_vals_read(conn: u16, data: &[u8]) {
+    crate::sd_ble::complete_vals_read(conn, data);
 }
 
 /// Complete a peer notification/indication: posts HVX.

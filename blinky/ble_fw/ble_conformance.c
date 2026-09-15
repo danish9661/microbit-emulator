@@ -95,6 +95,13 @@ int main(void) {
     rc = SVC3(0x90, 1, 1, 0); CHECK(rc == 0, "prim-stage");
     range_buf[0] = 0x10; range_buf[1] = 0; range_buf[2] = 0x16; range_buf[3] = 0;
     rc = SVC2(0x92, 1, (u32)range_buf); CHECK(rc == 0, "char-stage");
+    /* New RSPs: REL_DISC + ATTR_INFO + UUID_READ + VALS_READ. */
+    rc = SVC2(0x91, 1, (u32)range_buf); CHECK(rc == 0, "rel-stage");
+    rc = SVC2(0x94, 1, (u32)range_buf); CHECK(rc == 0, "attrinfo-stage");
+    { static u8 uuid_le[3]; uuid_le[0] = 0x19; uuid_le[1] = 0x2A; uuid_le[2] = 1;
+      rc = SVC3(0x95, 1, (u32)uuid_le, (u32)range_buf); CHECK(rc == 0, "uuidread-stage"); }
+    { static u16 hlist[2]; hlist[0] = chr_h[0]; hlist[1] = chr_h[0] + 1;
+      rc = SVC3(0x97, 1, (u32)hlist, 2); CHECK(rc == 0, "valsread-stage"); }
     wbytes[0] = 0xAA; wbytes[1] = 0xBB;
     wparams[0] = 1; wparams[1] = 0;
     wparams[2] = chr_h[0] & 0xFF; wparams[3] = (chr_h[0] >> 8) & 0xFF;

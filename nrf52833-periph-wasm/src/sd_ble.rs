@@ -302,6 +302,32 @@ pub struct DiscDesc {
     pub uuid16: Option<u16>,
 }
 
+/// Include row for REL_DISC_RSP: ble_gattc_include_t = {handle,
+/// included service {uuid, start, end}} (ble_gattc.h, unpacked).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscInclude {
+    pub handle: u16,
+    pub uuid16: Option<u16>,
+    pub start: u16,
+    pub end: u16,
+}
+
+/// Attribute-info row: ble_gattc_attr_info_t = {handle, uuid16|uuid128}.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscAttrInfo {
+    pub handle: u16,
+    pub uuid16: Option<u16>,
+}
+
+/// Handle-value pair for UUID_READ_RSP: ble_gattc_handle_value_t.
+/// The S132 wire is {handle u16, value bytes}; value_len is shared.
+/// (The C struct carries a *pointer*; the event array inlines bytes.)
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HandleValue {
+    pub handle: u16,
+    pub value: Vec<u8>,
+}
+
 /// Bridge job staged for the driver (take_*/complete_* discipline).
 ///firmware SVCs stage exactly one job; the driver drains it via
 /// ble_take_job(), resolves over air, and completes with the matching
@@ -326,6 +352,19 @@ pub enum BleJob {
     GattcCharDisc { conn: u16, start: u16, end: u16 },
     /// GATTC descriptor discovery (SVC 0x93): (conn, start, end).
     GattcDescDisc { conn: u16, start: u16, end: u16 },
+    /// GATTC relationship discovery (SVC 0x91): (conn, start, end).
+    /// Driver walks includes over air; completes with REL_DISC_RSP.
+    GattcRelDisc { conn: u16, start: u16, end: u16 },
+    /// GATTC attribute-info discovery (SVC 0x94): (conn, start, end).
+    /// Driver walks the table over air; completes ATTR_INFO_RSP.
+    GattcAttrInfoDisc { conn: u16, start: u16, end: u16 },
+    /// GATTC read-by-UUID (SVC 0x95): (conn, uuid|none, start, end).
+    /// Driver resolves every matching handle over air; completes with
+    /// UUID_READ_RSP (handle,value pairs sharing one value_len).
+    GattcUuidRead { conn: u16, uuid16: Option<u16>, start: u16, end: u16 },
+    /// GATTC multi-read (SVC 0x97): (conn, handles[]); driver reads
+    /// each over air; completes with VALS_READ_RSP (concatenated).
+    GattcValsRead { conn: u16, handles: Vec<u16> },
     /// GATTC read (SVC 0x96): (conn, handle, offset); driver reads
     /// over air and completes with the bytes.
     GattcRead { conn: u16, handle: u16, offset: u16 },
@@ -348,12 +387,19 @@ pub enum BleJob {
 /// allocator: service decl, then per characteristic decl+value (+CCCD
 /// when the peer can subscribe). VALUE_SET/GET read and write `value`;
 /// HVX sends it; peer writes via post_gatts_write update it + queue.
+/// `subscribed` tracks per-link CCCD writes (bit0 notify, bit1
+/// indicate per 0x2902 semantics); notify/indicate HVX on a link
+/// without the matching bit refuses like silicon (0x0100-class GATT
+/// error would surface as BLE_ERROR_GATTS_SYS_ATTR_MISSING on real
+/// stacks — here INVALID_STATE, documented).
 #[derive(Clone, Debug, Default)]
 struct Attr {
     handle: u16,
     uuid16: Option<u16>,
     value: Vec<u8>,
     cccd: bool,
+    cccd_handle: u16,
+    subscribed: Vec<(u16, u8)>,
 }
 
 /// One link. S132 supports several concurrent connections; the old
@@ -728,6 +774,66 @@ impl SdBle {
             p.push(UUID_TYPE_BLE);
             p.push(0);
         }
+        p
+    }
+
+    /// GATTC REL_DISC_RSP params: {count, ble_gattc_include_t[count] =
+    /// {handle u16, service {uuid u16, type u8, pad, start u16, end
+    /// u16}}}.
+    fn rel_disc_payload(conn: u16, incs: &[DiscInclude]) -> Vec<u8> {
+        let mut p = Self::gattc_head(conn);
+        p.extend_from_slice(&(incs.len() as u16).to_le_bytes());
+        for r in incs {
+            p.extend_from_slice(&r.handle.to_le_bytes());
+            p.extend_from_slice(&r.uuid16.unwrap_or(0).to_le_bytes());
+            p.push(UUID_TYPE_BLE);
+            p.push(0);
+            p.extend_from_slice(&r.start.to_le_bytes());
+            p.extend_from_slice(&r.end.to_le_bytes());
+        }
+        p
+    }
+
+    /// GATTC ATTR_INFO_DISC_RSP params: {count u16, format u8 (1 =
+    /// 16-bit), ble_gattc_attr_info_t[count] = {handle u16, uuid u16,
+    /// type u8, pad}}. 128-bit rows would switch format to 2 with 16B
+    /// UUIDs — the bridge reports SIG tables, so format is always 1.
+    fn attr_info_payload(conn: u16, infos: &[DiscAttrInfo]) -> Vec<u8> {
+        let mut p = Self::gattc_head(conn);
+        p.extend_from_slice(&(infos.len() as u16).to_le_bytes());
+        p.push(1); // BLE_GATTC_ATTR_INFO_FORMAT_16BIT
+        for a in infos {
+            p.extend_from_slice(&a.handle.to_le_bytes());
+            p.extend_from_slice(&a.uuid16.unwrap_or(0).to_le_bytes());
+            p.push(UUID_TYPE_BLE);
+            p.push(0);
+        }
+        p
+    }
+
+    /// GATTC UUID_READ_RSP params: {count u16, value_len u16,
+    /// {handle u16, value[value_len]}[count]}. All pairs share one
+    /// value_len (S132); ragged values are padded with zeros to the
+    /// longest (documented; silicon requires uniform lengths).
+    fn uuid_read_payload(conn: u16, pairs: &[HandleValue]) -> Vec<u8> {
+        let mut p = Self::gattc_head(conn);
+        p.extend_from_slice(&(pairs.len() as u16).to_le_bytes());
+        let vlen = pairs.iter().map(|x| x.value.len()).max().unwrap_or(0) as u16;
+        p.extend_from_slice(&vlen.to_le_bytes());
+        for hv in pairs {
+            p.extend_from_slice(&hv.handle.to_le_bytes());
+            let mut v = hv.value.clone();
+            v.resize(vlen as usize, 0);
+            p.extend_from_slice(&v);
+        }
+        p
+    }
+
+    /// GATTC VALS_READ_RSP params: {len u16, values[]}.
+    fn vals_read_payload(conn: u16, data: &[u8]) -> Vec<u8> {
+        let mut p = Self::gattc_head(conn);
+        p.extend_from_slice(&(data.len() as u16).to_le_bytes());
+        p.extend_from_slice(data);
         p
     }
 
@@ -1288,8 +1394,26 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             s.staged = Some(BleJob::GattcPrimDisc { conn, start, uuid16 });
             Some(NRF_SUCCESS)
         }
-        x if x == SVC_GATTC_REL_DISC
-            || x == SVC_GATTC_DESC_DISC
+        x if x == SVC_GATTC_REL_DISC => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            // (conn, *handle_range{start,end}): include walk over air.
+            let (conn, p_range) = (r[0] as u16, r[1]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if !is_ram(p_range) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let (start, end) = (read_u16_le(mem, p_range), read_u16_le(mem, p_range.wrapping_add(2)));
+            if start == 0 || start > end {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            s.staged = Some(BleJob::GattcRelDisc { conn, start, end });
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTC_DESC_DISC
             || x == SVC_GATTC_ATTR_INFO_DISC =>
         {
             if require_enabled(s).is_err() {
@@ -1307,7 +1431,11 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             if start == 0 || start > end {
                 return Some(NRF_ERROR_INVALID_PARAM);
             }
-            s.staged = Some(BleJob::GattcDescDisc { conn, start, end });
+            if svc == SVC_GATTC_ATTR_INFO_DISC {
+                s.staged = Some(BleJob::GattcAttrInfoDisc { conn, start, end });
+            } else {
+                s.staged = Some(BleJob::GattcDescDisc { conn, start, end });
+            }
             Some(NRF_SUCCESS)
         }
         x if x == SVC_GATTC_CHAR_DISC => {
@@ -1328,18 +1456,52 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             s.staged = Some(BleJob::GattcCharDisc { conn, start, end });
             Some(NRF_SUCCESS)
         }
-        x if x == SVC_GATTC_UUID_READ || x == SVC_GATTC_CHAR_VALS_READ => {
+        x if x == SVC_GATTC_UUID_READ => {
             if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
-            let conn = r[0] as u16;
+            // (conn, *uuid, *handle_range): match every attr with the
+            // UUID in range; driver reads each value over air.
+            let (conn, p_uuid, p_range) = (r[0] as u16, r[1], r[2]);
             if let Err(e) = s.check_conn(conn) {
                 return Some(e);
             }
-            // By-UUID and multi-read both funnel to staged reads the
-            // driver resolves handle-by-handle; completion posts the
-            // matching RSP (UUID_READ_RSP / VALS_READ_RSP).
-            s.staged = Some(BleJob::GattcRead { conn, handle: 0, offset: 0 });
+            if !is_ram(p_uuid) || !is_ram(p_range) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let uuid16 = read_uuid(mem, p_uuid);
+            let (start, end) = (read_u16_le(mem, p_range), read_u16_le(mem, p_range.wrapping_add(2)));
+            if start == 0 || start > end {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            s.staged = Some(BleJob::GattcUuidRead { conn, uuid16, start, end });
+            Some(NRF_SUCCESS)
+        }
+        x if x == SVC_GATTC_CHAR_VALS_READ => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            // (conn, *handles u16[count], count): copy the handle list
+            // NOW (firmware may reuse it); driver reads each over air.
+            let (conn, p_handles, count) = (r[0] as u16, r[1], r[2] as usize);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if count == 0 || count > 32 {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            if !is_ram(p_handles) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            let mut handles = Vec::with_capacity(count);
+            for i in 0..count {
+                let h = read_u16_le(mem, p_handles.wrapping_add(2 * i as u32));
+                if h == GATT_HANDLE_INVALID {
+                    return Some(NRF_ERROR_INVALID_PARAM);
+                }
+                handles.push(h);
+            }
+            s.staged = Some(BleJob::GattcValsRead { conn, handles });
             Some(NRF_SUCCESS)
         }
         x if x == SVC_GATTC_READ => {
@@ -1412,7 +1574,7 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             let uuid16 = read_uuid(mem, uuid_ptr);
             let h = s.next_handle;
             s.next_handle = s.next_handle.wrapping_add(1);
-            s.attrs.push(Attr { handle: h, uuid16, value: Vec::new(), cccd: false });
+            s.attrs.push(Attr { handle: h, uuid16, value: Vec::new(), cccd: false, cccd_handle: 0, subscribed: Vec::new() });
             mem.write16(h_ptr, h);
             Some(NRF_SUCCESS)
         }
@@ -1474,7 +1636,7 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             } else {
                 0
             };
-            s.attrs.push(Attr { handle: value_h, uuid16, value: init.clone(), cccd });
+            s.attrs.push(Attr { handle: value_h, uuid16, value: init.clone(), cccd, cccd_handle: cccd_h, subscribed: Vec::new() });
             if uuid16 == Some(0x2A19) {
                 if let Some(&b) = init.first() {
                     s.batt_level = b;
@@ -1495,7 +1657,7 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             }
             let h = s.next_handle;
             s.next_handle = s.next_handle.wrapping_add(1);
-            s.attrs.push(Attr { handle: h, uuid16: Some(0x2902), value: vec![0, 0], cccd: true });
+            s.attrs.push(Attr { handle: h, uuid16: Some(0x2902), value: vec![0, 0], cccd: true, cccd_handle: 0, subscribed: Vec::new() });
             mem.write16(h_ptr, h);
             Some(NRF_SUCCESS)
         }
@@ -1622,6 +1784,18 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             let budget = s.conn(conn).map(|c| c.tx_count).unwrap_or(0);
             if hvx_type == GATT_HVX_NOTIFICATION && budget == 0 {
                 return Some(BLE_ERROR_NO_TX_PACKETS);
+            }
+            // CCCD gate (silicon refuses notify/indicate on a link that
+            // never subscribed): bit0 = notify, bit1 = indicate. The
+            // battery char allocates a CCCD; other chars only if the
+            // peer wrote one via DESC_ADD. Unsubscribed -> INVALID_STATE.
+            let want = if hvx_type == GATT_HVX_NOTIFICATION { 0x01 } else { 0x02 };
+            let subbed = s
+                .find_attr(handle)
+                .map(|a| a.subscribed.iter().any(|(c, b)| *c == conn && (*b & want) != 0))
+                .unwrap_or(false);
+            if !subbed {
+                return Some(NRF_ERROR_INVALID_STATE);
             }
             if let Some(c) = s.conn_mut(conn) {
                 if hvx_type == GATT_HVX_NOTIFICATION && c.tx_count > 0 {
@@ -1779,6 +1953,34 @@ pub fn complete_char_disc(conn: u16, chars: &[DiscChar]) {
     });
 }
 
+/// Complete a GATTC relationship discovery: posts REL_DISC_RSP.
+pub fn complete_rel_disc(conn: u16, incs: &[DiscInclude]) {
+    with_sd_ble(|s| {
+        s.push_evt(EVT_GATTC_REL_DISC_RSP, SdBle::rel_disc_payload(conn, incs));
+    });
+}
+
+/// Complete a GATTC attribute-info discovery: posts ATTR_INFO_RSP.
+pub fn complete_attr_info_disc(conn: u16, infos: &[DiscAttrInfo]) {
+    with_sd_ble(|s| {
+        s.push_evt(EVT_GATTC_ATTR_INFO_RSP, SdBle::attr_info_payload(conn, infos));
+    });
+}
+
+/// Complete a GATTC read-by-UUID: posts UUID_READ_RSP.
+pub fn complete_uuid_read(conn: u16, pairs: &[HandleValue]) {
+    with_sd_ble(|s| {
+        s.push_evt(EVT_GATTC_UUID_READ_RSP, SdBle::uuid_read_payload(conn, pairs));
+    });
+}
+
+/// Complete a GATTC multi-read: posts VALS_READ_RSP (concatenated).
+pub fn complete_vals_read(conn: u16, data: &[u8]) {
+    with_sd_ble(|s| {
+        s.push_evt(EVT_GATTC_VALS_READ_RSP, SdBle::vals_read_payload(conn, data));
+    });
+}
+
 /// Complete a GATTC descriptor discovery: posts DESC_DISC_RSP.
 pub fn complete_desc_disc(conn: u16, descs: &[DiscDesc]) {
     with_sd_ble(|s| {
@@ -1910,10 +2112,42 @@ pub fn post_adv_report(peer: [u8; 6], rssi: i8, scan_rsp: bool, data: &[u8]) {
 }
 
 /// Post a GATTS write (peer wrote our characteristic) for evt_get.
-/// Updates the local table value when the handle is known.
+/// Updates the local table value when the handle is known. A write to
+/// a CCCD handle (uuid 0x2902, or the auto CCCD of a notifiable char)
+/// records the subscription bits for that link (bit0 notify, bit1
+/// indicate) instead of attribute bytes — this is what gates HVX.
 pub fn post_gatts_write(conn: u16, handle: u16, uuid16: Option<u16>, op: u8, data: &[u8]) {
     with_sd_ble(|s| {
-        if let Some(a) = s.find_attr_mut(handle) {
+        // CCCD write? Find the owning characteristic by cccd_handle.
+        let mut cccd_owner: Option<u16> = None;
+        for a in s.attrs.iter() {
+            if a.cccd && a.cccd_handle == handle {
+                cccd_owner = Some(a.handle);
+                break;
+            }
+        }
+        if cccd_owner.is_none() {
+            // Direct write to a 0x2902 descriptor attr itself.
+            if let Some(a) = s.find_attr_mut(handle) {
+                if a.uuid16 == Some(0x2902) {
+                    cccd_owner = Some(handle);
+                }
+            }
+        }
+        if let Some(owner) = cccd_owner {
+            let bits = data.first().copied().unwrap_or(0) & 0x03;
+            if let Some(a) = s.find_attr_mut(owner) {
+                match a.subscribed.iter_mut().find(|(c, _)| *c == conn) {
+                    Some(slot) => slot.1 = bits,
+                    None => a.subscribed.push((conn, bits)),
+                }
+            }
+            // CCCD value itself is readable: store the two bytes.
+            if let Some(a) = s.find_attr_mut(handle) {
+                a.value.clear();
+                a.value.extend_from_slice(&[bits, 0]);
+            }
+        } else if let Some(a) = s.find_attr_mut(handle) {
             a.value.clear();
             a.value.extend_from_slice(data);
             if a.uuid16 == Some(0x2A19) {
@@ -2236,8 +2470,9 @@ mod tests {
         let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
         assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_RSSI_CHANGED));
         assert_eq!(mem.read8(0x20003006), 196, "rssi -60");
-        // GATTS HVX needs a table handle: build battery, then stage.
-        // hvx_params = {handle@0, type@2, offset@4, *len@8, *data@12}.
+        // GATTS HVX needs a table handle: build battery, subscribe the
+        // link via a CCCD write (silicon gates notify on subscription),
+        // then stage. Unsubscribed HVX must refuse INVALID_STATE first.
         let value = build_battery(&sys, &mut mem);
         mem.write16(0x20003200, value);
         mem.write8(0x20003202, GATT_HVX_NOTIFICATION);
@@ -2247,12 +2482,51 @@ mod tests {
         mem.write32(0x20003208, 0x20003210);
         mem.write32(0x2000320C, 0x20003220);
         let r = regs(1, 0x20003200, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTS_HVX, &r),
+            Some(NRF_ERROR_INVALID_STATE),
+            "notify without CCCD subscription refuses"
+        );
+        // Subscribe: the battery char auto-allocated a CCCD at value+1.
+        post_gatts_write(1, value + 1, Some(0x2902), GATT_OP_WRITE_REQ, &[0x01, 0x00]);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_WRITE));
+        let r = regs(1, 0x20003200, 0, 0);
         assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_HVX, &r), Some(NRF_SUCCESS));
         assert_eq!(
             take_job(),
             Some(BleJob::GattsHvx { conn: 1, handle: value, hvx_type: 1, data: vec![0x42] })
         );
         complete_hvx(1, value);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_HVC));
+        // Indication needs bit1 instead: re-subscribe indicate-only
+        // (first drain the HVC the notify completion just posted),
+        // stage an indication, peer confirms via HV_CONFIRM -> HVC.
+        post_gatts_write(1, value + 1, Some(0x2902), GATT_OP_WRITE_REQ, &[0x02, 0x00]);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_WRITE));
+        // Notify now refuses (only indicate subscribed)...
+        mem.write8(0x20003202, GATT_HVX_NOTIFICATION);
+        let r = regs(1, 0x20003200, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTS_HVX, &r),
+            Some(NRF_ERROR_INVALID_STATE),
+            "notify without notify-bit refuses"
+        );
+        // ...but indication stages, and HV_CONFIRM posts HVC server-side.
+        mem.write8(0x20003202, GATT_HVX_INDICATION);
+        let r = regs(1, 0x20003200, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_HVX, &r), Some(NRF_SUCCESS));
+        assert_eq!(
+            take_job(),
+            Some(BleJob::GattsHvx { conn: 1, handle: value, hvx_type: 2, data: vec![0x42] })
+        );
+        complete_hvx(1, value);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_HVC));
+        let r = regs(1, value as u32, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_HV_CONFIRM, &r), Some(NRF_SUCCESS));
         let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
         assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_HVC));
         // DISCONNECT stages; completion clears the link + posts reason.
@@ -2296,6 +2570,67 @@ mod tests {
         assert_eq!(len, 4 + 2 + 7 + 7 + 1 + 1 + 8, "connected wire size");
         assert_eq!(mem.read16(0x20004004), BRIDGE_CONN_HANDLE);
         assert_eq!(mem.read8(0x20004014), GAP_ROLE_CENTRAL, "we dial out");
+    }
+
+    #[test]
+    fn gattc_rel_attrinfo_uuid_vals_stage_take_complete() {
+        let sys = test_dummy_system();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        reset_for_test();
+        let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
+        connect(&sys, &mut mem);
+        // REL_DISC stages its own job (not the DESC funnel).
+        mem.write16(0x20001300, 0x10);
+        mem.write16(0x20001302, 0x16);
+        let r = regs(1, 0x20001300, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_REL_DISC, &r), Some(NRF_SUCCESS));
+        assert_eq!(take_job(), Some(BleJob::GattcRelDisc { conn: 1, start: 0x10, end: 0x16 }));
+        complete_rel_disc(1, &[DiscInclude { handle: 0x10, uuid16: Some(0x180F), start: 0x10, end: 0x16 }]);
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTC_REL_DISC_RSP));
+        assert_eq!(len, 4 + 6 + 2 + 10, "head + count + 1 include");
+        assert_eq!(mem.read16(0x2000300C), 0x10, "include handle");
+        assert_eq!(mem.read16(0x2000300E), 0x180F, "included uuid");
+        // ATTR_INFO_DISC stages its own job with 16-bit format rows.
+        let r = regs(1, 0x20001300, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_ATTR_INFO_DISC, &r), Some(NRF_SUCCESS));
+        assert_eq!(take_job(), Some(BleJob::GattcAttrInfoDisc { conn: 1, start: 0x10, end: 0x16 }));
+        complete_attr_info_disc(1, &[DiscAttrInfo { handle: 0x13, uuid16: Some(0x2A19) }]);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTC_ATTR_INFO_RSP));
+        assert_eq!(mem.read8(0x2000300C), 1, "16-bit format");
+        assert_eq!(mem.read8(0x2000300D) as u16 | ((mem.read8(0x2000300E) as u16) << 8), 0x13, "attr handle");
+        assert_eq!(mem.read8(0x2000300F) as u16 | ((mem.read8(0x20003010) as u16) << 8), 0x2A19, "attr uuid");
+        // UUID_READ stages (uuid, range); completion posts pairs.
+        mem.write16(0x20001310, 0x2A19);
+        mem.write8(0x20001312, UUID_TYPE_BLE);
+        let r = regs(1, 0x20001310, 0x20001300, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_UUID_READ, &r), Some(NRF_SUCCESS));
+        assert_eq!(
+            take_job(),
+            Some(BleJob::GattcUuidRead { conn: 1, uuid16: Some(0x2A19), start: 0x10, end: 0x16 })
+        );
+        complete_uuid_read(1, &[HandleValue { handle: 0x13, value: vec![87] }]);
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTC_UUID_READ_RSP));
+        assert_eq!(len, 4 + 6 + 2 + 2 + 2 + 1, "head + count/vlen + hdl + 1B");
+        // UUID_READ wire: head(6: conn,status,err) + count@+10 +
+        // vlen@+12 + pairs {handle@+14, value@+16}.
+        assert_eq!(mem.read8(0x20003010), 87, "uuid-read value byte");
+        // VALS_READ copies the handle list at SVC time; completion
+        // concatenates.
+        mem.write16(0x20001320, 0x13);
+        mem.write16(0x20001322, 0x14);
+        let r = regs(1, 0x20001320, 2, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_CHAR_VALS_READ, &r), Some(NRF_SUCCESS));
+        mem.write16(0x20001320, 0); // corrupt source: staged keeps copy
+        assert_eq!(take_job(), Some(BleJob::GattcValsRead { conn: 1, handles: vec![0x13, 0x14] }));
+        complete_vals_read(1, &[87, 0x42]);
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTC_VALS_READ_RSP));
+        assert_eq!(len, 4 + 6 + 2 + 2, "head + len + 2B");
+        assert_eq!(mem.read8(0x2000300C), 87);
+        assert_eq!(mem.read8(0x2000300D), 0x42);
     }
 
     #[test]

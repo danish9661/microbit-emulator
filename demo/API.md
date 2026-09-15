@@ -139,13 +139,20 @@ BLE jobs: ble_take_job() -> words, first word = tag:
   9 GattsHvx    [conn, handle, type, len] + ble_take_data() bytes
   10 L2capTx    [conn, cid, len] + ble_take_data() bytes
   11 GapAuthenticate [conn] (pairing handshake over air)
+  12 GattcRelDisc [conn, start, end] (include walk)
+  13 GattcAttrInfoDisc [conn, start, end] (table walk)
+  14 GattcUuidRead [conn, uuid16|0xFFFF, start, end]
+  15 GattcValsRead [conn, count] + handles u16[count] (in take words)
 BLE bytes: ble_take_data() -> staged WRITE/HVX/L2CAP bytes (once per job)
 BLE complete (driver -> model, posts the SoftDevice event):
   ble_complete_gattc_read(conn, handle, offset, data)  (READ_RSP)
   ble_complete_prim_disc(conn, uuids[], starts[], ends[]) (0xFFFF = 128-bit)
   ble_complete_char_disc(conn, uuids[], props[], decls[], values[])
   ble_complete_desc_disc(conn, handles[], uuids[])
-  ble_complete_gattc_write(conn, handle, op, data)     (WRITE_RSP)
+  ble_complete_rel_disc(conn, handles[], uuids[], starts[], ends[]) (REL_DISC_RSP)
+  ble_complete_attr_info_disc(conn, handles[], uuids[]) (ATTR_INFO_RSP, 16-bit)
+  ble_complete_uuid_read(conn, handles[], flat[], lens[]) (UUID_READ_RSP)
+  ble_complete_vals_read(conn, data[]) (VALS_READ_RSP, concatenated)
   ble_complete_gattc_hvx(conn, handle, type, data)     (HVX)
   ble_complete_gap_connect(peer6) -> void (legacy; handle = first link)
   ble_complete_gap_connect_ret(peer6) -> u16 (assigned handle)
@@ -162,11 +169,12 @@ BLE state: ble_enabled() | ble_queue_len() | ble_batt_level()
 ```
 
 Bridge protocol (`tools/ble_air_bridge.py`, JSON over WebSocket) mirrors
-the tags: `ble_read`/`ble_write`/`ble_disc`/`ble_hvx`/`ble_scan`/
-`ble_connect`/`ble_rssi`/`ble_disconnect`/`ble_pair`/`ble_l2cap` in,
-`gatt`/`write_rsp`/`prim_disc_rsp`/`char_disc_rsp`/`desc_disc_rsp`/
-`hvx`/`connected`/`adv_report`/`disconnected`/`rssi`/`paired`/
-`l2cap_rx`/`cancel` out — every reply echoes conn/handle
+the tags: `ble_read`/`ble_write`/`ble_disc`/`ble_uuid_read`/
+`ble_vals_read`/`ble_hvx`/`ble_scan`/`ble_connect`/`ble_rssi`/
+`ble_disconnect`/`ble_pair`/`ble_l2cap` in, `gatt`/`write_rsp`/
+`prim_disc_rsp`/`char_disc_rsp`/`desc_disc_rsp`/`rel_disc_rsp`/
+`attr_info_rsp`/`uuid_read_rsp`/`vals_read_rsp`/`hvx`/`connected`/
+`adv_report`/`disconnected`/`rssi`/`paired`/`l2cap_rx`/`cancel` out — every reply echoes conn/handle
 so the pump completes the right job. With no bridge the demo pump
 resolves every tag locally (`pumpBleLoopback`: battery 87 + fixed
 table mirroring the bridge peer), so the SVC face works with zero

@@ -216,7 +216,7 @@
       for (let i = 0; i < 4 && !p.done; i++) p.poll(svcCpu);
     } catch (e) { bleSelftestStatus.textContent = 'error: ' + e.message; refreshBlePanel(); return; }
     bleSelftestStatus.textContent = p.done
-      ? 'pass: enable, table, link, GATT, L2CAP, pairing, scan, RSSI, disconnect'
+      ? 'pass: enable, table, link, GATT×7, L2CAP, pairing, scan, RSSI, disconnect'
       : 'fail: ' + JSON.stringify(p.seen);
     refreshBlePanel();
   });
@@ -253,7 +253,9 @@
       // but the model state is process-global, resolved via loopback.
       const svcCpu = new wasm.WasmCpu(0x20020000, 0x20000001, 512 * 1024, 128 * 1024);
       try { for (let i = 0; i < 4 && !p.done; i++) p.poll(svcCpu); } catch (e) { return 'error: ' + e.message; }
-      return p.done ? 'enable, table, link, GATT, L2CAP, pairing' : false;
+      const keys = ['gatts', 'connected', 'disc', 'disc2', 'readRsp', 'writeRsp', 'paired', 'hvx', 'full'];
+      const missing = keys.filter((k) => !p.seen[k]);
+      return p.done && !missing.length ? 'enable, table, link, GATT×7, L2CAP, pairing' : false;
     }],
   ];
   document.getElementById('depthRun').addEventListener('click', () => {
@@ -614,6 +616,9 @@
     // src/sd_ble.rs, tags documented on ble_take_job in lib.rs). The
     // driver resolves them here: over the Bumble air when the bridge is
     // up, else locally (loopback defaults, like the RADIO pump).
+    // NOTE: the bridge learns each link's real-over-air handle with
+    // ble_complete_gap_connect_ret; the void legacy complete would
+    // leave the pump blind to multi-link numbering (fixed here).
     const bj = wasm.ble_take_job();
     if (bj.length) {
       const tag = bj[0];
@@ -629,6 +634,9 @@
       else if (tag === 9) { job.conn = bj[1]; job.handle = bj[2]; job.type = bj[3]; job.data = [...wasm.ble_take_data()]; }
       else if (tag === 10) { job.conn = bj[1]; job.cid = bj[2]; job.data = [...wasm.ble_take_data()]; }
       else if (tag === 11) { job.conn = bj[1]; }
+      else if (tag === 12 || tag === 13) { job.conn = bj[1]; job.start = bj[2]; job.end = bj[3]; }
+      else if (tag === 14) { job.conn = bj[1]; job.uuid16 = bj[2]; job.start = bj[3]; job.end = bj[4]; }
+      else if (tag === 15) { job.conn = bj[1]; job.handles = [...bj.slice(3)]; }
       if (!bleAir.sendBle(job)) pumpBleLoopback(tag, job);
     }
     // Drain bridge SoftDevice replies into completions (take->complete,
@@ -650,10 +658,26 @@
       } else if (air.t === 'desc_disc_rsp' && Array.isArray(air.descs)) {
         wasm.ble_complete_desc_disc(air.conn ?? 1,
           air.descs.map((d) => d.handle ?? 0), air.descs.map((d) => d.uuid16 ?? 0xFFFF));
+      } else if (air.t === 'rel_disc_rsp' && Array.isArray(air.includes)) {
+        wasm.ble_complete_rel_disc(air.conn ?? 1,
+          air.includes.map((r) => r.handle ?? 0), air.includes.map((r) => r.uuid16 ?? 0xFFFF),
+          air.includes.map((r) => r.start ?? 1), air.includes.map((r) => r.end ?? 1));
+      } else if (air.t === 'attr_info_rsp' && Array.isArray(air.attrs)) {
+        wasm.ble_complete_attr_info_disc(air.conn ?? 1,
+          air.attrs.map((a) => a.handle ?? 0), air.attrs.map((a) => a.uuid16 ?? 0xFFFF));
+      } else if (air.t === 'uuid_read_rsp' && Array.isArray(air.pairs)) {
+        const flat = [], lens = [], hs = [];
+        for (const p of air.pairs) { hs.push(p.handle ?? 0); lens.push((p.value ?? []).length); flat.push(...(p.value ?? [])); }
+        wasm.ble_complete_uuid_read(air.conn ?? 1, hs, flat, lens);
+      } else if (air.t === 'vals_read_rsp' && Array.isArray(air.data)) {
+        wasm.ble_complete_vals_read(air.conn ?? 1, air.data);
       } else if (air.t === 'hvx' && Array.isArray(air.data)) {
         wasm.ble_complete_gattc_hvx(air.conn ?? 1, air.handle ?? 0, air.type ?? 1, air.data);
       } else if (air.t === 'connected' && Array.isArray(air.peer)) {
-        wasm.ble_complete_gap_connect(air.peer.slice(0, 6));
+        // Handle-learning: the bridge assigns the real over-air link
+        // handle; the _ret variant returns it (multi-link numbering).
+        const h = wasm.ble_complete_gap_connect_ret(air.peer.slice(0, 6));
+        job.lastConn = h;
       } else if (air.t === 'adv_report' && Array.isArray(air.peer)) {
         wasm.ble_post_adv_report(air.peer.slice(0, 6), air.rssi ?? -50,
           (air.scan_rsp ?? 0) === 1, air.data ?? []);
@@ -682,7 +706,8 @@
     if (tag === 0) {
       wasm.ble_complete_gattc_read(job.conn ?? 1, job.handle ?? 0x13, job.offset ?? 0, [wasm.ble_batt_level()]);
     } else if (tag === 1) {
-      wasm.ble_complete_gap_connect(job.addr ?? [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+      const h = wasm.ble_complete_gap_connect_ret(job.addr ?? [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+      job.lastConn = h;
     } else if (tag === 2) {
       wasm.ble_complete_gap_disconnect(job.conn ?? 1, job.reason ?? 19);
     } else if (tag === 3) {
@@ -703,6 +728,14 @@
       wasm.ble_complete_l2cap_rx(job.conn ?? 1, job.cid ?? 0x40, job.data ?? []);
     } else if (tag === 11) {
       wasm.ble_complete_pairing(job.conn ?? 1, true);
+    } else if (tag === 12) {
+      wasm.ble_complete_rel_disc(job.conn ?? 1, [job.start ?? 1], [0x180F], [job.start ?? 1], [(job.end ?? 1)]);
+    } else if (tag === 13) {
+      wasm.ble_complete_attr_info_disc(job.conn ?? 1, [job.start ?? 1], [0x2A19]);
+    } else if (tag === 14) {
+      wasm.ble_complete_uuid_read(job.conn ?? 1, [0x13], [87], [1]);
+    } else if (tag === 15) {
+      wasm.ble_complete_vals_read(job.conn ?? 1, (job.handles ?? []).map(() => wasm.ble_batt_level()));
     }
   }
   function frame() {

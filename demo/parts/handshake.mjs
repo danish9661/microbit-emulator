@@ -256,8 +256,8 @@ function cpuWithBridge() {
   } catch (e) {
     console.error('FAIL: BLE SVC exception:', e.message);
   }
-  check(b.done === true && b.seen?.gatts && b.seen?.connected && b.seen?.readRsp && b.seen?.writeRsp && b.seen?.full,
-    `BLE SVC full flow enable->disc->read->write->rssi->disc (seen=${JSON.stringify(b.seen)})`);
+  check(b.done === true && b.seen?.gatts && b.seen?.connected && b.seen?.readRsp && b.seen?.writeRsp && b.seen?.hvx && b.seen?.disc2 && b.seen?.full,
+    `BLE SVC full flow enable->disc->rel/attr/uuid/vals->read->write->hvx->rssi->disc (seen=${JSON.stringify(b.seen)})`);
 }
 
 // --- QSPI: staged write/read/erase round trip ---

@@ -16,9 +16,13 @@
   "scripts": {
     "test:parts": "node parts/smoke.mjs",
     "test:handshake": "node parts/handshake.mjs",
+    "test:mpy": "node parts/ble_lang/run_mpy_face.mjs",
+    "test:live": "node parts/ble_live_e2e.mjs",
+    "test:wasm": "npm run test:handshake && npm run test:parts && npm run test:mpy",
     "build:wasm": "wasm-pack build ../nrf52833-periph-wasm --target web --out-dir ../demo/pkg",
     "build:handshake": "wasm-pack build ../nrf52833-periph-wasm --target web --out-dir ../demo/parts/pkg-test-handshake",
-    "serve": "python3 -m http.server 8080"
+    "serve": "python3 -m http.server 8080",
+    "bridge": "python3 ../tools/ble_air_bridge.py"
   },
   "license": "MIT"
 }

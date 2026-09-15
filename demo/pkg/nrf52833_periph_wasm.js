@@ -355,6 +355,21 @@ export function ble_batt_level() {
 }
 
 /**
+ * Complete an attribute-info discovery: handles[i], uuids[i].
+ * Posts ATTR_INFO_RSP (16-bit format).
+ * @param {number} conn
+ * @param {Uint16Array} handles
+ * @param {Uint16Array} uuids
+ */
+export function ble_complete_attr_info_disc(conn, handles, uuids) {
+    const ptr0 = passArray16ToWasm0(handles, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray16ToWasm0(uuids, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    wasm.ble_complete_attr_info_disc(conn, ptr0, len0, ptr1, len1);
+}
+
+/**
  * Complete a characteristic discovery: uuids[i] (0xFFFF = 128-bit),
  * props[i] (S132 u8 bitfield), decls[i], values[i]. Posts CHAR_DISC_RSP.
  * @param {number} conn
@@ -510,12 +525,63 @@ export function ble_complete_prim_disc(conn, uuids, starts, ends) {
 }
 
 /**
+ * Complete a relationship discovery: parallel arrays handles[i],
+ * uuids[i] (0xFFFF = 128-bit), starts[i], ends[i]. Posts REL_DISC_RSP.
+ * @param {number} conn
+ * @param {Uint16Array} handles
+ * @param {Uint16Array} uuids
+ * @param {Uint16Array} starts
+ * @param {Uint16Array} ends
+ */
+export function ble_complete_rel_disc(conn, handles, uuids, starts, ends) {
+    const ptr0 = passArray16ToWasm0(handles, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray16ToWasm0(uuids, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray16ToWasm0(starts, wasm.__wbindgen_export2);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArray16ToWasm0(ends, wasm.__wbindgen_export2);
+    const len3 = WASM_VECTOR_LEN;
+    wasm.ble_complete_rel_disc(conn, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+}
+
+/**
  * Complete an RSSI sample: posts RSSI_CHANGED.
  * @param {number} conn
  * @param {number} rssi
  */
 export function ble_complete_rssi(conn, rssi) {
     wasm.ble_complete_rssi(conn, rssi);
+}
+
+/**
+ * Complete a read-by-UUID: parallel handles[i] + flat values with
+ * per-pair lengths lens[i] (ragged pads to the longest on the wire).
+ * Posts UUID_READ_RSP.
+ * @param {number} conn
+ * @param {Uint16Array} handles
+ * @param {Uint8Array} flat
+ * @param {Uint16Array} lens
+ */
+export function ble_complete_uuid_read(conn, handles, flat, lens) {
+    const ptr0 = passArray16ToWasm0(handles, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(flat, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray16ToWasm0(lens, wasm.__wbindgen_export2);
+    const len2 = WASM_VECTOR_LEN;
+    wasm.ble_complete_uuid_read(conn, ptr0, len0, ptr1, len1, ptr2, len2);
+}
+
+/**
+ * Complete a multi-read: concatenated values. Posts VALS_READ_RSP.
+ * @param {number} conn
+ * @param {Uint8Array} data
+ */
+export function ble_complete_vals_read(conn, data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.ble_complete_vals_read(conn, ptr0, len0);
 }
 
 /**

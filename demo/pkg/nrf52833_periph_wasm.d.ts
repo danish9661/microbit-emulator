@@ -57,6 +57,12 @@ export function aar_take_job(): Uint32Array;
 export function ble_batt_level(): number;
 
 /**
+ * Complete an attribute-info discovery: handles[i], uuids[i].
+ * Posts ATTR_INFO_RSP (16-bit format).
+ */
+export function ble_complete_attr_info_disc(conn: number, handles: Uint16Array, uuids: Uint16Array): void;
+
+/**
  * Complete a characteristic discovery: uuids[i] (0xFFFF = 128-bit),
  * props[i] (S132 u8 bitfield), decls[i], values[i]. Posts CHAR_DISC_RSP.
  */
@@ -117,9 +123,27 @@ export function ble_complete_pairing(conn: number, bonded: boolean): void;
 export function ble_complete_prim_disc(conn: number, uuids: Uint16Array, starts: Uint16Array, ends: Uint16Array): void;
 
 /**
+ * Complete a relationship discovery: parallel arrays handles[i],
+ * uuids[i] (0xFFFF = 128-bit), starts[i], ends[i]. Posts REL_DISC_RSP.
+ */
+export function ble_complete_rel_disc(conn: number, handles: Uint16Array, uuids: Uint16Array, starts: Uint16Array, ends: Uint16Array): void;
+
+/**
  * Complete an RSSI sample: posts RSSI_CHANGED.
  */
 export function ble_complete_rssi(conn: number, rssi: number): void;
+
+/**
+ * Complete a read-by-UUID: parallel handles[i] + flat values with
+ * per-pair lengths lens[i] (ragged pads to the longest on the wire).
+ * Posts UUID_READ_RSP.
+ */
+export function ble_complete_uuid_read(conn: number, handles: Uint16Array, flat: Uint8Array, lens: Uint16Array): void;
+
+/**
+ * Complete a multi-read: concatenated values. Posts VALS_READ_RSP.
+ */
+export function ble_complete_vals_read(conn: number, data: Uint8Array): void;
 
 /**
  * Live connection handles (each u16 one link). Empty = no links.
@@ -359,6 +383,7 @@ export interface InitOutput {
     readonly aar_complete: (a: number) => void;
     readonly aar_take_job: (a: number) => void;
     readonly ble_batt_level: () => number;
+    readonly ble_complete_attr_info_disc: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly ble_complete_char_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly ble_complete_desc_disc: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly ble_complete_gap_connect: (a: number, b: number) => void;
@@ -371,7 +396,10 @@ export interface InitOutput {
     readonly ble_complete_l2cap_rx: (a: number, b: number, c: number, d: number) => void;
     readonly ble_complete_pairing: (a: number, b: number) => void;
     readonly ble_complete_prim_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly ble_complete_rel_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly ble_complete_rssi: (a: number, b: number) => void;
+    readonly ble_complete_uuid_read: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly ble_complete_vals_read: (a: number, b: number, c: number) => void;
     readonly ble_conn_handles: (a: number) => void;
     readonly ble_conn_sec: (a: number, b: number) => void;
     readonly ble_enabled: () => number;

@@ -43,15 +43,26 @@ echoes conn/handle/offset back so the pump completes the RIGHT job
           "len":M,"data":[...],"overAir":true} or
          {"t":"cancel","conn":N,"handle":H,"overAir":false} on link
          failure (firmware retries; never a ghost WRITE_RSP).
-  {"t":"ble_disc","conn":N,"kind":0|2|3,"start":S,"end":E}
+  {"t":"ble_disc","conn":N,"kind":0|1|2|3|4,"start":S,"end":E}
       -> read-only full walk; reply
          {"t":"prim_disc_rsp","conn":N,
           "services":[{uuid16,start,end}],"overAir":true} (kind 0),
+         {"t":"rel_disc_rsp","conn":N,
+          "includes":[{handle,uuid16,start,end}],"overAir":true} (kind 1),
          {"t":"char_disc_rsp","conn":N,
           "chars":[{uuid16,props,decl,value,descs:[{handle,uuid16}]}],
-          "overAir":true} (kind 2; 128-bit uuids encode null), or
+          "overAir":true} (kind 2; 128-bit uuids encode null),
          {"t":"desc_disc_rsp","conn":N,"descs":[{handle,uuid16}],
-          "overAir":true} (kind 3).
+          "overAir":true} (kind 3), or
+         {"t":"attr_info_rsp","conn":N,"attrs":[{handle,uuid16}],
+          "overAir":true} (kind 4).
+  {"t":"ble_uuid_read","conn":N,"uuid16":U|S,"start":S,"end":E}
+      -> match every table row with the UUID in range, read each value
+         over air; reply {"t":"uuid_read_rsp","conn":N,
+         "pairs":[{handle,value:[bytes]}],"overAir":true}.
+  {"t":"ble_vals_read","conn":N,"handles":[H..]}
+      -> read each handle over air, concatenate; reply
+         {"t":"vals_read_rsp","conn":N,"data":[bytes],"overAir":true}.
   {"t":"ble_hvx","conn":N,"handle":H,"type":1|2,"data":[...]}
       -> subscribe centrally, emit from the peer, reply
          {"t":"hvx","conn":N,"handle":H,"type":T,"data":[notified],
@@ -197,7 +208,7 @@ async def make_peer(link: LocalLink) -> Device:
     peer.gatt_server.add_service(gatt_server.Service(NUS_SVC, [nus_rx, nus_tx]))
 
     @nus_rx.on(gatt_server.Characteristic.EVENT_WRITE)
-    def _on_nus_rx_write(value):
+    def _on_nus_rx_write(connection, value):
         nus_rx_store['data'] = bytes(value)
 
     async def notify_nus(data: bytes) -> bool:
@@ -210,7 +221,11 @@ async def make_peer(link: LocalLink) -> Device:
 
     peer.advertising_data = bytes([0x02, 0x01, 0x06, 0x03, 0x03, 0x0F, 0x18])
     peer.scan_response_data = bytes([0x09, 0x09]) + b'PeerBatt'
-    await peer.start_advertising()
+    # auto_restart: the peer keeps advertising across central
+    # disconnects, so EVERY link op (not just the first) finds air.
+    # Without it the peer goes quiet after link #1 closes and later
+    # connects time out (observed: iter0 OK, iter1+ TimeoutError).
+    await peer.start_advertising(auto_restart=True)
     return peer, nus_rx_store, notify_nus, batt, nus_rx, nus_tx
 
 
@@ -344,9 +359,11 @@ async def gatt_discover_all(central: Device, address, timeout: float = 20.0):
                 chars = []
                 for char in svc.characteristics:
                     props = _props_byte(char.properties)
-                    # CharacteristicProxy has no value_handle (probed:
-                    # only .handle + .end_group_handle exist); the value
-                    # follows the declaration, descriptors follow that.
+                    # CharacteristicProxy exposes .handle (declaration)
+                    # and .end_group_handle (last handle of the
+                    # characteristic group); the VALUE handle is the
+                    # declaration + 1 (probed: no value_handle attr).
+                    # Descriptors discovered below confirm the span.
                     decl = char.handle
                     value = decl + 1
                     try:
@@ -357,23 +374,23 @@ async def gatt_discover_all(central: Device, address, timeout: float = 20.0):
                         {'handle': d.handle, 'uuid16': _sig_uuid16(d.type)}
                         for d in char.descriptors
                     ]
-                    if descs:
-                        value = max([decl + 1] + [d['handle'] for d in descs])
                     chars.append({
                         'uuid16': _sig_uuid16(char.uuid),
                         'props': props,
                         'decl': decl,
                         'value': value,
                         'descs': descs,
+                        '_end_group': getattr(char, 'end_group_handle', value),
                     })
                 start = svc.handle if hasattr(svc, 'handle') else 1
                 if chars:
                     last = chars[-1]
-                    end = max([last['value']] + [d['handle'] for d in last['descs']])
+                    end = max([c.get('_end_group', c['value']) for c in chars])
                 else:
                     end = start
                 out.append({'uuid16': uuid16, 'start': start, 'end': end,
-                            'chars': chars})
+                            'chars': [{k: c[k] for k in ('uuid16', 'props', 'decl', 'value', 'descs')}
+                                      for c in chars]})
             return out, None
     except Exception as exc:
         logging.debug('discover failed: %s', exc)
@@ -417,17 +434,22 @@ def _props_byte(props) -> int:
 async def gatt_write_over_air(central: Device, address, handle: int,
                               data: bytes, timeout: float = 20.0) -> bool | None:
     """Write `data` to `handle` on `address`: True=WRITE_RSP air proof,
-    False=ATT error from peer, None=link failure."""
+    False=ATT error from peer, None=link failure.
+
+    Handle mapping (probed): Bumble's CharacteristicProxy exposes the
+    DECLARATION handle as .handle; the VALUE is decl+1. A firmware
+    sd_ble_gattc_write targets the VALUE handle, so match decl+1 —
+    never the bare declaration (silicon would reject that too).
+    """
     try:
         async with link_lock(address), central.connect_as_gatt(address) as peer:
             await asyncio.wait_for(peer.discover_services(), timeout=timeout)
             for svc in peer.services:
                 await peer.discover_characteristics(service=svc)
                 for char in svc.characteristics:
-                    for h in (getattr(char, 'handle', -1), getattr(char, 'value_handle', -2)):
-                        if h == handle:
-                            await peer.write_value(char, bytes(data), with_response=True)
-                            return True
+                    if getattr(char, 'handle', -1) + 1 == handle:
+                        await peer.write_value(char, bytes(data), with_response=True)
+                        return True
                     for desc in char.descriptors:
                         if desc.handle == handle:
                             await peer.write_value(desc, bytes(data), with_response=True)
@@ -441,7 +463,14 @@ async def gatt_write_over_air(central: Device, address, handle: int,
 async def gatt_subscribe_and_notify(central: Device, address, handle: int,
                                     notify_fn, timeout: float = 20.0):
     """Subscribe to `handle`, call notify_fn() to make the peer emit,
-    return the notified bytes (HVX model). None on link failure."""
+    return the notified bytes (HVX model). None on link failure.
+
+    Same decl+1 mapping as writes: firmware subscribes by VALUE handle.
+    Do NOT walk descriptors first: Bumble's subscribe() writes the CCCD
+    itself, and a prior discover_descriptors can disturb that path
+    (probed: subscribe-then-notify works, walk-then-subscribe times
+    out on the notify).
+    """
     try:
         async with link_lock(address), central.connect_as_gatt(address) as peer:
             await asyncio.wait_for(peer.discover_services(), timeout=timeout)
@@ -449,8 +478,7 @@ async def gatt_subscribe_and_notify(central: Device, address, handle: int,
             for svc in peer.services:
                 await peer.discover_characteristics(service=svc)
                 for char in svc.characteristics:
-                    if getattr(char, 'handle', -1) == handle or \
-                       getattr(char, 'value_handle', -2) == handle:
+                    if getattr(char, 'handle', -1) + 1 == handle:
                         target = char
             if target is None:
                 return None
@@ -587,9 +615,9 @@ async def handle_socket(websocket, peer: Device, central: Device,
                 continue
             if msg.get('t') == 'ble_disc':
                 # SoftDevice discovery job: {conn, kind, start, end}.
-                # kind 0=primary services, 2=characteristics,
-                # 3=descriptors. Full read-only walk; reply lists the
-                # table firmware caches.
+                # kind 0=primary services, 1=relationships, 2=chars,
+                # 3=descriptors, 4=attribute-info. Full read-only walk;
+                # reply lists the table firmware caches.
                 conn = msg.get('conn', 1)
                 kind = msg.get('kind', 0)
                 start = msg.get('start', 1)
@@ -599,7 +627,14 @@ async def handle_socket(websocket, peer: Device, central: Device,
                 if err is None:
                     svcs = [s for s in svcs if s['end'] >= start
                             and s['start'] <= end]
-                    if kind == 2:
+                    if kind == 1:
+                        # Relationships: the LocalLink peer exposes no
+                        # include declarations; report the empty walk
+                        # honestly (silicon returns count 0 too).
+                        await websocket.send(json.dumps({
+                            't': 'rel_disc_rsp', 'conn': conn,
+                            'includes': [], 'overAir': True}))
+                    elif kind == 2:
                         chars = [c for s in svcs for c in s['chars']
                                  if start <= c['value'] <= end]
                         await websocket.send(json.dumps({
@@ -612,6 +647,20 @@ async def handle_socket(websocket, peer: Device, central: Device,
                         await websocket.send(json.dumps({
                             't': 'desc_disc_rsp', 'conn': conn,
                             'descs': descs, 'overAir': True}))
+                    elif kind == 4:
+                        attrs = []
+                        for s in svcs:
+                            for c in s['chars']:
+                                if start <= c['value'] <= end:
+                                    attrs.append({'handle': c['value'],
+                                                  'uuid16': c['uuid16']})
+                                for d in c['descs']:
+                                    if start <= d['handle'] <= end:
+                                        attrs.append({'handle': d['handle'],
+                                                      'uuid16': d['uuid16']})
+                        await websocket.send(json.dumps({
+                            't': 'attr_info_rsp', 'conn': conn,
+                            'attrs': attrs, 'overAir': True}))
                     else:
                         slim = [{'uuid16': s['uuid16'], 'start': s['start'],
                                  'end': s['end']} for s in svcs]
@@ -623,17 +672,64 @@ async def handle_socket(websocket, peer: Device, central: Device,
                         't': 'cancel', 'conn': conn, 'handle': 0,
                         'overAir': False}))
                 continue
+            if msg.get('t') == 'ble_uuid_read':
+                # Read-by-UUID: match rows, read each value over air.
+                conn = msg.get('conn', 1)
+                want = msg.get('uuid16', 0xFFFF)
+                start = msg.get('start', 1)
+                end = msg.get('end', 0xFFFF)
+                svcs, err = await gatt_discover_all(
+                    central, peer.random_address)
+                pairs = []
+                if err is None:
+                    for s in svcs:
+                        for c in s['chars']:
+                            if c['uuid16'] == want and start <= c['value'] <= end:
+                                v = await read_value_on_link(
+                                    central, peer.random_address, c['value'])
+                                if v is not None:
+                                    pairs.append({'handle': c['value'],
+                                                  'value': list(v)})
+                await websocket.send(json.dumps({
+                    't': 'uuid_read_rsp', 'conn': conn, 'pairs': pairs,
+                    'overAir': err is None}))
+                continue
+            if msg.get('t') == 'ble_vals_read':
+                # Multi-read: read each handle, concatenate in order.
+                conn = msg.get('conn', 1)
+                data: list = []
+                ok_all = True
+                for h in msg.get('handles', []):
+                    v = await read_value_on_link(
+                        central, peer.random_address, int(h))
+                    if v is None:
+                        ok_all = False
+                        break
+                    data.extend(v)
+                if ok_all:
+                    await websocket.send(json.dumps({
+                        't': 'vals_read_rsp', 'conn': conn, 'data': data,
+                        'overAir': True}))
+                else:
+                    await websocket.send(json.dumps({
+                        't': 'cancel', 'conn': conn, 'handle': 0,
+                        'overAir': False}))
+                continue
             if msg.get('t') == 'ble_hvx':
                 # SoftDevice HVX job (NUS TX notify model): {conn, handle,
-                # type, data}. Subscribe centrally, emit from the peer,
-                # reply with the notified bytes as the HVX air proof.
+                # type, data}. The staged handle is the firmware's VALUE
+                # handle; resolve the peer's matching char (decl+1) and
+                # subscribe centrally, emit from the peer, reply with the
+                # notified bytes as the HVX air proof. A handle of 0
+                # means "the NUS TX char" (legacy callers).
                 conn = msg.get('conn', 1)
                 handle = msg.get('handle', 0)
                 hvx_type = msg.get('type', 1)
                 data = bytes(msg.get('data', []))
-                tx_handle = getattr(nus_tx, 'handle', -1)
+                if not handle:
+                    handle = getattr(nus_tx, 'handle', -1) + 1
                 got = await gatt_subscribe_and_notify(
-                    central, peer.random_address, tx_handle,
+                    central, peer.random_address, handle,
                     lambda: notify_nus(data))
                 if got is None:
                     await websocket.send(json.dumps({
@@ -762,8 +858,33 @@ async def resolve_read(central, handle, offset, batt, nus_rx, nus_tx):
     return found[offset:], True
 
 
+async def read_value_on_link(central, address, handle, timeout: float = 20.0):
+    """Read one handle's value on an open walk (shared by uuid/vals).
+
+    Value handles are decl+1 (see gatt_write_over_air); descriptors
+    match by their own handle.
+    """
+    try:
+        async with link_lock(address), central.connect_as_gatt(address) as peer:
+            await asyncio.wait_for(peer.discover_services(), timeout=timeout)
+            for svc in peer.services:
+                await peer.discover_characteristics(service=svc)
+                for char in svc.characteristics:
+                    if getattr(char, 'handle', -1) + 1 == handle:
+                        return bytes(await peer.read_value(char))
+                    await peer.discover_descriptors(characteristic=char)
+                    for desc in char.descriptors:
+                        if desc.handle == handle:
+                            return bytes(await peer.read_value(desc))
+    except Exception as exc:
+        logging.debug('read-value failed: %s', exc)
+        return None
+    return None
+
+
 async def read_handle_over_air(central, handle, timeout: float = 20.0):
-    """Read any handle (char value or desc) by walking the peer table."""
+    """Read any handle (char value or desc) by walking the peer table
+    (decl+1 value mapping, see gatt_write_over_air)."""
     adv = await scan_one_adv(central, timeout=10.0)
     if adv is None:
         return None
@@ -773,8 +894,7 @@ async def read_handle_over_air(central, handle, timeout: float = 20.0):
             for svc in peer.services:
                 await peer.discover_characteristics(service=svc)
                 for char in svc.characteristics:
-                    if getattr(char, 'handle', -1) == handle or \
-                       getattr(char, 'value_handle', -2) == handle:
+                    if getattr(char, 'handle', -1) + 1 == handle:
                         return bytes(await peer.read_value(char))
                     await peer.discover_descriptors(characteristic=char)
                     for desc in char.descriptors:
