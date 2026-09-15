@@ -250,7 +250,7 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | `docs/COVERAGE.md` | This file | Table audit (uncommitted, per order). |
 
 ```
-cargo test -- --test-threads=1   # 204 green deterministic (parallel default flakes ~1/4 — see doc.html checks)
+cargo test -- --test-threads=1   # 204 green deterministic (parallel default still flakes ~2/15 — see doc.html checks)
 node demo/parts/smoke.mjs        # parts green
 node demo/parts/handshake.mjs    # 18/18 vs the built pkg
 node demo/parts/ble_live_e2e.mjs # 42/42 over air (bridge on :18771)

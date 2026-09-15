@@ -2566,3 +2566,42 @@ the MPY/MC app regions. Both done, no model change (`cargo test`
    same number, different SVC family, never claimed here).
 
 NEXT: B-workstream flake harness fix; final gate + commit.
+
+## 87. P105 parallel-flake harness fix, part 1: deterministic MPU-gate order repro closed (2026-09-16, uncommitted)
+
+Two mechanisms separated by evidence (the handover's single "MWU_ARMED
+leak" theory was WRONG for the deterministic repro — single-thread
+fails too, so no thread theory can explain it):
+
+1. DETERMINISTIC order-dependence (FIXED): MPU ENABLE + programmed
+   regions live in the INSTALLED model and outlive the test. Next test
+   in the same process inherits a live gate into a foreign/fresh map.
+   `$BIN --test-threads=1 unaligned_device region_watch` failed 5/5
+   pre-fix (MWU test's watched write faulted through the stale MPU
+   gate, never reached `mwu_note`, WA stayed 0). Also
+   `ldrt_probes_as_unprivileged` + pregion (phase-C R3 FULL window vs
+   stale phase-A R1). Fix: exit disarm (`mem.write32(0xE000ED94, 0)`
+   at the end of both MPU-programming cpu tests — model + latch
+   together). Entry clears (boot()/Cpu::new) run BEFORE the test
+   programs the model, so only an exit close works. Filtered
+   `$BIN mpu mwu unalign` now 10/10 single AND 10/10 parallel.
+   Tried and REVERTED (all made it worse or broke isolation):
+   `reset_globals()` inside `boot()` (wipes EXT_DEVICES taps mid-test
+   → dma_nrf TWIM NACK; also wipes UART mid-assert), `MWU_ARMED` clear
+   in `reset_globals()`/`Cpu::new` (wrong gate — MPU, not MWU, is the
+   order repro), `try_borrow_mut` in `mpu_check`/`mpu_is_device`/
+   `mwu_note` (masks real contention, full-suite parallel got WORSE:
+   stale reads + lost MWU notes).
+2. NONDETERMINISTIC cross-thread borrow (STILL OPEN, rarer):
+   `SYS AtomicPtr` + `Rc<RefCell>` peripherals shared across OS threads
+   with no join — backtraces prove foreign re-entry: `mod.rs:471/495`
+   read/write (owner holds the MWU/MPU slot, foreign thread's SYS
+   re-enters through mem.watch), `mwu_nrf.rs:237` (same shape),
+   QSPI `QSPI_FLASH OnceLock` registry shared across threads. Full
+   suite parallel ~13/15 post-fix (was ~3/4); single-threaded
+   `-- --test-threads=1` stays 204/204 and is the gate.
+   Fix direction for (b): join the same boot lock or run CI
+   single-threaded; not done here.
+
+NEXT: B4 docs (STATUS §3 already updated this run) + commit alone;
+then C-frontiers; final gate + push only when green.

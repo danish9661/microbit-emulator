@@ -76,18 +76,30 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   stock multi-threaded `cargo test` intermittently fails sd_ble/MWU/MPU
   tests with `RefCell already borrowed` at `peripherals/mod.rs:131`
   (~1/4 runs; single-threaded `-- --test-threads=1` is always
-  203/203). Root cause is shared process-global state across threads
-  — the `SYS AtomicPtr` box plus `Rc<RefCell>` peripherals and the MWU
-  `AtomicBool` leak between tests (leaked MWU-armed + foreign installed
-  system makes `mem.watch` re-enter an already-borrowed slot; leaked
-  MPU-enabled makes MMIO reads fault through another thread's map).
-  cpu/tests serializes its own installs with `lock_boot()`, but
-  peripheral unit tests on `test_dummy_system()` do not join that
-  lock — a harness-isolation gap, not a model bug. (The old note
-  about `unaligned_device_faults_without_trap` 1/10 was the same
-  family.) Fix direction: join the same boot lock or run CI
-  single-threaded; not done here — use `-- --test-threads=1` for a
-  clean signal.
+  204/204). Two mechanisms, separated by evidence (P105):
+  (a) DETERMINISTIC order-dependence (fixed this tree, uncommitted):
+  the MPU ENABLE + programmed regions live in the INSTALLED model and
+  outlive the test — the next test in the same process inherits a live
+  gate into a foreign/fresh map (`$BIN --test-threads=1
+  unaligned_device region_watch` failed 10/10 pre-fix: the MWU test's
+  watched write faulted through the stale MPU gate and never reached
+  `mwu_note`, so WA stayed 0). Fix: exit disarm (`mem.write32
+  (0xE000ED94, 0)` at the end of `ldrt_probes_as_unprivileged` +
+  `unaligned_device_faults_without_trap`) — entry clears in
+  `boot()`/`Cpu::new` run BEFORE the test programs the model, so only
+  an exit close works. Filtered `$BIN mpu mwu unalign` is now 10/10
+  both thread modes.
+  (b) NONDETERMINISTIC cross-thread borrow (still open, rarer):
+  `SYS AtomicPtr` + `Rc<RefCell>` peripherals are shared across OS
+  threads with no join — a foreign thread's installed SYS re-enters
+  through `mem.watch`/`mwu_note` while the owner holds the slot
+  (backtraces at `mod.rs:471/495` + `mwu_nrf.rs:237`, plus the QSPI
+  `QSPI_FLASH OnceLock` registry shared across threads). Full-suite
+  parallel is ~13/15 green post-fix (was ~3/4); single-threaded stays
+  the gate — use `-- --test-threads=1` for a clean signal. (The old
+  note about `unaligned_device_faults_without_trap` 1/10 was mechanism
+  (a).) Fix direction for (b): join the same boot lock or run CI
+  single-threaded; not done here.
 - Thinnest: RTC/PWM/TEMP/RNG/EGU (1 handshake each).
 - P104 BLE pairing-fw proof (this tree, uncommitted): `blinky/ble_fw/
   ble_pairing_fw.c` (CODAL-BLE-shaped JustWorks flow: ENABLE → GATTS

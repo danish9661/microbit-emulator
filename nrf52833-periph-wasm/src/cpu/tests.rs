@@ -2802,6 +2802,14 @@ assert_eq!(cpu.regs.r[2], 0xA5A5A5A5, "privileged load passes");
     no_fault(&cpu, &mem);
     assert_eq!(cpu.regs.r[2], 0x11223344, "unpriv load from FULL region");
     assert_eq!(cpu.ipsr, 16, "no fault taken");
+    // P105 exit hygiene: MPU enable + programmed regions live in the
+    // INSTALLED model and outlive this test. The next test in this
+    // process inherits a live gate into a foreign/fresh map (the
+    // deterministic mpu+MWU order repro: the MWU test's watched write
+    // faults through the stale gate and never reaches mwu_note).
+    // Entry clears (boot()/Cpu::new) run BEFORE this test programs the
+    // model, so only an exit disarm closes it.
+    mem.write32(0xE000ED94, 0); // MPU CTRL disable (model + latch)
 }
 
 #[test]
@@ -3097,6 +3105,10 @@ fn unaligned_device_faults_without_trap() {
     assert_eq!(cpu.ipsr, 0, "UsageFault handler returned");
     assert_eq!(mem.read32(0x20001000), 1, "UsageFault vector (A) ran");
     assert_ne!(mem.read32(0xE000ED28) & (1 << 24), 0, "UNALIGNED sticky");
+    // P105 exit hygiene (same as ldrt_probes_as_unprivileged): the R4
+    // Device region + MPU ENABLE outlive this test in the installed
+    // model; disarm so the next test inherits no live gate.
+    mem.write32(0xE000ED94, 0); // MPU CTRL disable (model + latch)
 }
 
 #[test]
