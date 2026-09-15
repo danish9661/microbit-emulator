@@ -2,10 +2,10 @@
 
 Audited 2026-09-12 by cross-checking all 39 `monox/nrf52833.svd`
 peripherals against `src/peripherals/`, running the suite
-(**203 passed, 0 failed** — +18 since audit: SPIM RXD MISO +
+(**204 passed, 0 failed** — +19 since audit: SPIM RXD MISO +
 GPIO CNF→DIR + UARTE TX snapshot + TWIM shifted-ADDR match +
 SCB AIRCR SYSRESETREQ + RADIO 802.15.4 helpers + sd_ble SVC face ×10
-(+peer-request pairing legs) + BLE conformance/C-face firmware proofs),
+(+peer-request pairing legs) + BLE conformance/C-face/pairing-fw firmware proofs),
 reading every model, and replaying the
 live firmware runs. Grades: **F** = functional (timed, IRQs,
 driver take/complete, firmware proof), **H** = handshake
@@ -59,13 +59,13 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 203 green (`cargo test`)
+## 3. Tests — 204 green (`cargo test`)
 
-- 110 integration tests (`src/cpu/tests.rs`): 14 GCC-built firmware
+- 111 integration tests (`src/cpu/tests.rs`): 15 GCC-built firmware
   proofs (`blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
   `dma_nrf`, `air_nrf`, `c_irq_nrf.c`, `usbep_nrf`, `usbdev_nrf.c`,
   `i2s_nrf`, `wdt_nrf`, `nfct_nrf`, `ble_conformance.c`,
-  `c_ble_face.bin`, +2nd-run reset-state checks each).
+  `c_ble_face.bin`, `ble_pairing_fw.c`, +2nd-run reset-state checks each).
 - ~83 unit tests at the peripheral level (register handshake,
   SHORTS/NACK/OVERRUN/CAPTURE, FIPS-197, reboot latch, TXSTOPPED,
   SPIM RXD MISO, GPIO CNF→DIR, UARTE TX STARTTX-snapshot,
@@ -89,6 +89,20 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   single-threaded; not done here — use `-- --test-threads=1` for a
   clean signal.
 - Thinnest: RTC/PWM/TEMP/RNG/EGU (1 handshake each).
+- P104 BLE pairing-fw proof (this tree, uncommitted): `blinky/ble_fw/
+  ble_pairing_fw.c` (CODAL-BLE-shaped JustWorks flow: ENABLE → GATTS
+  battery service+char → CONNECT → CONNECTED drain → PRIM/CHAR/READ/
+  WRITE → AUTHENTICATE → AUTH_STATUS + SEC_UPDATE drain → CONN_SEC_GET
+  (encrypted `0x21`) → DISCONNECT) drives 17 `BLEP:*` markers through
+  `nrf_ble_pairing_fw_markers` (2 runs, mid-spin pump like P54 —
+  `pump_ble_test_driver` unchanged, CONN_SEC_GET is synchronous).
+  Static SVC rescan of the stock app regions (`0x1C000–0x77000`,
+  type-02+04 records, imm@even/DF@odd halfwords): MPY shows
+  ENABLE/EVT_GET/ADV_DATA_SET/ADV_START/CONNECT-class SVCs (its BLE is
+  compiled but `MICROBIT_DAL_BLUETOOTH_ENABLED: 0` gates runtime init —
+  `mc/built/codal.json` confirms); MC shows the same family. Either
+  way no static-hit claim replaces a runtime proof — the pairing-fw
+  image IS the BLE-enabled image proof for this face.
 
 ## 4. JS API + demo (`demo/`, API frozen v1)
 
@@ -352,7 +366,7 @@ beyond proof-level driving remain future work.
      post_auth_key_request/post_passkey_display/post_keypress/
      post_lesc_dhkey_request/enabled/queue_len/batt_level/conn_handles/
      conn_sec` exports (40 ble exports); 10 native tests + SVC-hook proof in cpu/tests.rs
-     (203 green); headless `MockBleSvc` executes REAL SVC bytes on a
+     (204 green); headless `MockBleSvc` executes REAL SVC bytes on a
      WasmCpu end to end (enable→table→connect→disc×6→read→write→L2CAP→
      pairing→peer-pairing(passkey)→HVX-indicate→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
      (READ+NOTIFY, 87 `PeerBatt`) + heart-rate twin (64 `PeerHR`,
@@ -387,7 +401,7 @@ protection, publish to npm.
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 203 green deterministic (crate dir; parallel default flakes ~1/4 — see §3)
+cargo test -- --test-threads=1    # 204 green deterministic (crate dir; parallel default flakes ~1/4 — see §3)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY-idiom face, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)

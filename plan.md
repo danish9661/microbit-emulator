@@ -2511,3 +2511,58 @@ pip `playwright` package + its bundled Chromium; the earlier
 fixed along the way: preset select STAGES (Run boots — there is no
 separate Load button, `#fwrun` is it) and the UART box is a
 `<textarea>`, so read `.value`, not `.textContent`.)
+
+## 86. P104 BLE pairing-fw image proof + static SVC rescan (2026-09-15, uncommitted)
+
+Workstream A asked for a BLE-enabled image proof + static rescan of
+the MPY/MC app regions. Both done, no model change (`cargo test`
+204 green single-threaded — +1 pairing-fw test).
+
+1. Pairing-fw image (`blinky/ble_fw/ble_pairing_fw.c` → `.bin`,
+   xpack GCC 14.2.1 + `blinky/link_c_nrf.ld`, RWX-LOAD-segment ld
+   warning harmless): CODAL-BLE-shaped JustWorks flow — ENABLE →
+   GATTS battery service+char → CONNECT (staged, driver completes) →
+   CONNECTED drain → PRIM_DISC/CHAR_DISC/READ/WRITE (staged) →
+   AUTHENTICATE (staged, driver `complete_pairing(conn, true)`) →
+   AUTH_STATUS (0x19) + CONN_SEC_UPDATE (0x1A) drain → CONN_SEC_GET
+   (expects encrypted mode `0x21`) → DISCONNECT (staged) →
+   DISCONNECTED drain. 17 `BLEP:*` markers incl. `BLEP:ALL-OK`.
+   SVC dispatcher macros copied from `ble_conformance.c` exactly
+   (SVC1/2/3 + the manual 4-reg CHAR_ADD block — SVC3 cannot carry
+   r3). Objdump check: `svc 96/160/162/140/144/146/150/152/126/135/
+   118` all present.
+2. Native test `nrf_ble_pairing_fw_markers` (cpu/tests.rs, mirrors
+   `nrf_ble_conformance_svc_face`): 2-run loop with
+   `reset_for_test()` + `lock_boot()` + `boot(include_bytes!(
+   ble_pairing_fw.bin))`, 500-instr slices × 4000 with
+   `pump_ble_test_driver(sys)` between slices (mid-spin pump is
+   load-bearing — P54 lesson; `pump_ble_test_driver` reused
+   unchanged, CONN_SEC_GET is synchronous so no driver arm needed),
+   break on `BLEP:ALL-OK`/`SOME-FAIL`, assert no fault + every
+   `BLEP:` marker + `reset_globals()` per run.
+3. Static SVC rescan (ad-hoc `/tmp/opencode/svc_rescan.py`, never
+   committed): Intel HEX with BOTH type-02 (segment<<4) and type-04
+   (upper<<16) records (MPY needs both — type-02-only parsers
+   silently miss app bytes), app filter `0x1C000–0x77000`,
+   imm@even/DF@odd halfwords (Thumb-2 `svc #imm` = `0xDF00|imm` LE,
+   so the DF byte sits at the ODD address — the earlier DF@even
+   scan had the polarity backwards and counted data). Results:
+   MPY 83 SVC-shaped sites (BLE-range 42 distinct / 55 sites —
+   ENABLE/EVT_GET/ADV_DATA_SET/ADV_START/CONNECT-class incl. SD
+   ENABLE `0x54D4E` + AUTHENTICATE `0x54AAC` + SEC legs), MC 78
+   (BLE-range 39/51 — ENABLE `0x3BEBc` + AUTHENTICATE `0x3AF5c` +
+   same families). Context dumps (`svc_context.py`) confirm the
+   anchors sit in `svc; bx lr` thunk runs. `svc 82`
+   (GAP_KEYPRESS_NOTIFY, NOT sd_evt_get — the old "zero `svc 82`
+   sites" claims conflated the two numbers) is absent in both, as
+   expected for non-pairing images. MPY's BLE is compiled but
+   `MICROBIT_DAL_BLUETOOTH_ENABLED: 0` (`mc/built/codal.json`)
+   gates runtime init — static hits prove compiled-in, the
+   pairing-fw image IS the runtime proof.
+4. Trap log: DF-byte polarity (imm@even/DF@odd — verify with
+   `svc; bx lr` (`60 df 70 47`) context before believing any scan);
+   type-02+04 both required; `svc 82` means GAP_KEYPRESS_NOTIFY in
+   the BLE face (sd_evt_get is a different `82` in the SoC series —
+   same number, different SVC family, never claimed here).
+
+NEXT: B-workstream flake harness fix; final gate + commit.

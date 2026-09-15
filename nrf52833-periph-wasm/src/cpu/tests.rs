@@ -374,6 +374,55 @@ fn nrf_ble_c_face_markers() {
 }
 
 #[test]
+fn nrf_ble_pairing_fw_markers() {
+    // BLE pairing firmware (blinky/ble_fw/ble_pairing_fw.c, GCC):
+    // CODAL-BLE-shaped JustWorks flow — ENABLE -> GATTS battery
+    // service+char -> CONNECT(staged, driver completes) ->
+    // CONNECTED drain -> PRIM/CHAR/READ/WRITE(staged) ->
+    // AUTHENTICATE(staged, driver completes via complete_pairing) ->
+    // AUTH_STATUS + SEC_UPDATE drain -> CONN_SEC_GET (encrypted 0x21)
+    // -> DISCONNECT(staged) -> DISCONNECTED drain. The native driver
+    // resolves every staged job (take_* -> complete_*), exactly like
+    // the JS pump + Bumble bridge do live. Markers prove each stage;
+    // a 2nd consecutive run proves reset_state leaves no leak.
+    use crate::sd_ble::*;
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    for run in 0..2 {
+        reset_for_test();
+        let _g = lock_boot();
+        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/ble_fw/ble_pairing_fw.bin"));
+        let sys = crate::sys();
+        cpu.deliver_irqs = true;
+        // SMALL slices + pump every slice. The firmware spins on evt
+        // arrival inside drain_until (like silicon firmware); the
+        // completion only lands if the driver pumps mid-spin, so 20K
+        // slices would starve it (same lesson as the demo's 5x20K
+        // pumpDma-in-loop, plan P54).
+        for _ in 0..4000 {
+            cpu.run(sys, &mut mem, 500);
+            if cpu.fault.is_some() { break; }
+            let _ = pump_ble_test_driver(sys);
+            let out = crate::system::get_uart_output().lock().unwrap().clone();
+            if out.contains("BLEP:ALL-OK") || out.contains("BLEP:SOME-FAIL") { break; }
+        }
+        assert!(cpu.fault.is_none(), "pairing fw faulted (run {run}): {:?}", cpu.fault);
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        for m in ["BLEP:BOOT", "BLEP:enable:OK", "BLEP:service:OK", "BLEP:char:OK",
+                  "BLEP:connect-stage:OK", "BLEP:connected-evt:OK",
+                  "BLEP:prim-stage:OK", "BLEP:char-stage:OK",
+                  "BLEP:read-stage:OK", "BLEP:write-stage:OK",
+                  "BLEP:auth-stage:OK", "BLEP:auth-status:OK",
+                  "BLEP:sec-update:OK", "BLEP:conn-sec:OK",
+                  "BLEP:disc-stage:OK", "BLEP:disconnected-evt:OK",
+                  "BLEP:ALL-OK"] {
+            assert!(out.contains(m), "run {run} missing {m}, got {out:?}");
+        }
+        crate::system::reset_globals();
+    }
+}
+
+#[test]
 fn nrf_c_irq_timer_uart() {
     // P8a firmware (c_irq_nrf.c, GCC -O2): C vector table, TIMER0 IRQ via
     // NVIC delivery (stacking + EXC_RETURN), UARTE prints from thread and

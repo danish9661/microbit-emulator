@@ -8,7 +8,7 @@ DAPLink/interface MCU (KL27) is NOT emulated (JS loader + UART only).
 Status key: **F** = functional (timed, IRQs, driver take/complete,
 firmware proof) · **H** = handshake (TASKS/EVENTS/INTEN minimum, no
 timed behavior or no consumer) · **–** = missing / deliberately
-omitted. Counts: `cargo test` **203 green**,
+omitted. Counts: `cargo test` **204 green**,
 `node demo/parts/smoke.mjs` green, `node demo/parts/handshake.mjs`
 18/18, `node demo/parts/ble_live_e2e.mjs` 42/42 over air, browser
 16/16 (`python3 tools/browser_verify_16.py`).
@@ -211,7 +211,7 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | Pairing legs | AUTHENTICATE stages the handshake; all six peer-initiated request events (SEC_PARAMS_REQUEST 0x13 / SEC_INFO_REQUEST 0x14 / PASSKEY_DISPLAY 0x15 / KEY_PRESSED 0x16 / AUTH_KEY_REQUEST 0x17 / LESC_DHKEY_REQUEST 0x18, conn-first bodies); per-link state machine (Idle/Requested/PeerRequested/Accepted/KeyEntry/LescDhkey/EncryptPending); every reply SVC validated (accept needs a request, passkey shape-checked, OOB/DHKEY/keypress/encrypt/SEC_INFO each gated); S132 SEC_STATUS codes incl. the 0x29→0x85 fix; AUTH_STATUS conn-first; complete/fail post AUTH_STATUS (+CONN_SEC_UPDATE) with bonded/encrypted state feeding CONN_SEC_GET. No crypto, no key storage — documented. |
 | L2CAP | Dynamic-CID register/unregister (range + capacity checks), TX staging with SVC-time byte copy, RX echo completion. |
 | Multi-link + air | Per-link handles/RSSI/TX/security/pairing/CIDs; events carry their conn; pump + bridge + E2E prove two live links. Bridge (`tools/ble_air_bridge.py`): two Bumble peers on one LocalLink (battery 87 `PeerBatt` + twin 64 `PeerHR`, distinct addresses), per-job `peer` routing, `peer` echo on disc RSPs, per-peer ATT locks + global scan lock (no timeouts under load). |
-| Proofs | 10 native sd_ble tests (byte-offset asserts) + SVC-hook proof in cpu/tests.rs; GCC `ble_conformance.c` + C face; headless MockBleSvc real-SVC flow 18/18; live E2E 42/42 over air (two links, 87-vs-64 reads); browser 16/16 (blinky + self-test pairing×2 + probes, zero page errors). |
+| Proofs | 10 native sd_ble tests (byte-offset asserts) + SVC-hook proof in cpu/tests.rs; GCC `ble_conformance.c` + C face + `ble_pairing_fw.c` (CODAL-BLE-shaped JustWorks flow, 17 `BLEP:*` markers, 2nd-run clean); headless MockBleSvc real-SVC flow 18/18; live E2E 42/42 over air (two links, 87-vs-64 reads); browser 16/16 (blinky + self-test pairing×2 + probes, zero page errors). |
 
 ### Left: the named, bounded gaps (none is a hidden fault)
 
@@ -250,7 +250,7 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | `docs/COVERAGE.md` | This file | Table audit (uncommitted, per order). |
 
 ```
-cargo test -- --test-threads=1   # 203 green deterministic (parallel default flakes ~1/4 — see doc.html checks)
+cargo test -- --test-threads=1   # 204 green deterministic (parallel default flakes ~1/4 — see doc.html checks)
 node demo/parts/smoke.mjs        # parts green
 node demo/parts/handshake.mjs    # 18/18 vs the built pkg
 node demo/parts/ble_live_e2e.mjs # 42/42 over air (bridge on :18771)
