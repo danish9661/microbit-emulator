@@ -216,7 +216,7 @@
       for (let i = 0; i < 4 && !p.done; i++) p.poll(svcCpu);
     } catch (e) { bleSelftestStatus.textContent = 'error: ' + e.message; refreshBlePanel(); return; }
     bleSelftestStatus.textContent = p.done
-      ? 'pass: enable, table, link, GATT×7, L2CAP, pairing, scan, RSSI, disconnect'
+      ? 'pass: enable, table, link, GATT×7, L2CAP, pairing×2, scan, RSSI, disconnect'
       : 'fail: ' + JSON.stringify(p.seen);
     refreshBlePanel();
   });
@@ -249,13 +249,14 @@
     ['BLE stack (SVC face)', () => new MockBleSvc(wasm), (p) => {
       // MockBleSvc drives REAL svc bytes on its own scratch WasmCpu
       // (enable, table, connect, discovery, read, write, L2CAP,
-      // pairing, scan, RSSI, disconnect), so the bench cpu is unused —
-      // but the model state is process-global, resolved via loopback.
+      // pairing + peer-pair leg, scan, RSSI, disconnect), so the bench
+      // cpu is unused — but the model state is process-global,
+      // resolved via loopback.
       const svcCpu = new wasm.WasmCpu(0x20020000, 0x20000001, 512 * 1024, 128 * 1024);
       try { for (let i = 0; i < 4 && !p.done; i++) p.poll(svcCpu); } catch (e) { return 'error: ' + e.message; }
-      const keys = ['gatts', 'connected', 'disc', 'disc2', 'readRsp', 'writeRsp', 'paired', 'hvx', 'full'];
+      const keys = ['gatts', 'connected', 'disc', 'disc2', 'readRsp', 'writeRsp', 'paired', 'peerPair', 'hvx', 'full'];
       const missing = keys.filter((k) => !p.seen[k]);
-      return p.done && !missing.length ? 'enable, table, link, GATT×7, L2CAP, pairing' : false;
+      return p.done && !missing.length ? 'enable, table, link, GATT×7, L2CAP, pairing×2' : false;
     }],
   ];
   document.getElementById('depthRun').addEventListener('click', () => {
@@ -686,8 +687,20 @@
       } else if (air.t === 'rssi' && typeof air.rssi === 'number') {
         wasm.ble_complete_rssi(air.conn ?? 1, air.rssi);
       } else if (air.t === 'paired') {
-        if (air.overAir === false) wasm.ble_fail_pairing(air.conn ?? 1, 0x29);
+        if (air.overAir === false) wasm.ble_fail_pairing(air.conn ?? 1, 0x85);
         else wasm.ble_complete_pairing(air.conn ?? 1, air.bonded !== false);
+      } else if (air.t === 'sec_params_request' && Array.isArray(air.peer_params)) {
+        wasm.ble_post_sec_params_request(air.conn ?? 1, air.peer_params);
+      } else if (air.t === 'sec_info_request' && Array.isArray(air.peer_addr)) {
+        wasm.ble_post_sec_info_request(air.conn ?? 1, air.peer_addr, air.master_id ?? [], air.req ?? 0);
+      } else if (air.t === 'auth_key_request') {
+        wasm.ble_post_auth_key_request(air.conn ?? 1, air.key_type ?? 1);
+      } else if (air.t === 'passkey_display' && Array.isArray(air.passkey)) {
+        wasm.ble_post_passkey_display(air.conn ?? 1, air.passkey, air.match_request === true);
+      } else if (air.t === 'key_pressed') {
+        wasm.ble_post_keypress(air.conn ?? 1, air.kp_not ?? 0);
+      } else if (air.t === 'lesc_dhkey_request') {
+        wasm.ble_post_lesc_dhkey_request(air.conn ?? 1, air.oobd_req === true);
       } else if (air.t === 'l2cap_rx' && Array.isArray(air.data)) {
         wasm.ble_complete_l2cap_rx(air.conn ?? 1, air.cid ?? 0x40, air.data);
       } else if (air.t === 'cancel') {

@@ -632,7 +632,7 @@ export function ble_enabled() {
 
 /**
  * Fail a pairing handshake: posts AUTH_STATUS with the S132 status
- * (e.g. 0x29 PAIRING_NOT_SUPP); link stays up, unencrypted.
+ * (e.g. 0x85 PAIRING_NOT_SUPP); link stays up, unencrypted.
  * @param {number} conn
  * @param {number} status
  */
@@ -655,6 +655,19 @@ export function ble_post_adv_report(peer, rssi, scan_rsp, data) {
 }
 
 /**
+ * Post an AUTH_KEY_REQUEST: the driver needs a key of `key_type`
+ * (0 none, 1 passkey, 2 OOB); firmware answers AUTH_KEY_REPLY.
+ * Returns false outside an accepted handshake.
+ * @param {number} conn
+ * @param {number} key_type
+ * @returns {boolean}
+ */
+export function ble_post_auth_key_request(conn, key_type) {
+    const ret = wasm.ble_post_auth_key_request(conn, key_type);
+    return ret !== 0;
+}
+
+/**
  * Post a peer write to our table: conn handle, attr handle,
  * uuid16 (0xFFFF = 128-bit/vendor), op (1 = write request), bytes.
  * @param {number} conn
@@ -667,6 +680,82 @@ export function ble_post_gatts_write(conn, handle, uuid16, op, data) {
     const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
     wasm.ble_post_gatts_write(conn, handle, uuid16, op, ptr0, len0);
+}
+
+/**
+ * Post a peer KEYPRESS_NOTIFY (type 0..=4). Returns false with no link.
+ * @param {number} conn
+ * @param {number} kp_not
+ * @returns {boolean}
+ */
+export function ble_post_keypress(conn, kp_not) {
+    const ret = wasm.ble_post_keypress(conn, kp_not);
+    return ret !== 0;
+}
+
+/**
+ * Post an LESC_DHKEY_REQUEST (firmware answers LESC_DHKEY_REPLY;
+ * OOB via LESC_OOB_DATA_SET when oobd_req). Returns false outside an
+ * accepted handshake.
+ * @param {number} conn
+ * @param {boolean} oobd_req
+ * @returns {boolean}
+ */
+export function ble_post_lesc_dhkey_request(conn, oobd_req) {
+    const ret = wasm.ble_post_lesc_dhkey_request(conn, oobd_req);
+    return ret !== 0;
+}
+
+/**
+ * Post a PASSKEY_DISPLAY: the driver shows this 6-digit ASCII passkey
+ * (firmware answers AUTH_KEY_REPLY when match_request).
+ * @param {number} conn
+ * @param {Uint8Array} passkey
+ * @param {boolean} match_request
+ * @returns {boolean}
+ */
+export function ble_post_passkey_display(conn, passkey, match_request) {
+    const ptr0 = passArray8ToWasm0(passkey, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ble_post_passkey_display(conn, ptr0, len0, match_request);
+    return ret !== 0;
+}
+
+/**
+ * Post a peer-initiated SEC_INFO_REQUEST: the peer asks to re-encrypt
+ * (peer_addr 7B type+6, master_id 10B ediv+rand[8], req bits: bit0
+ * enc_info, bit1 id_info, bit2 sign_info). Firmware answers
+ * SEC_INFO_REPLY, then ENCRYPT. Returns false when the link cannot
+ * take a request.
+ * @param {number} conn
+ * @param {Uint8Array} peer_addr
+ * @param {Uint8Array} master_id
+ * @param {number} req
+ * @returns {boolean}
+ */
+export function ble_post_sec_info_request(conn, peer_addr, master_id, req) {
+    const ptr0 = passArray8ToWasm0(peer_addr, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(master_id, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.ble_post_sec_info_request(conn, ptr0, len0, ptr1, len1, req);
+    return ret !== 0;
+}
+
+/**
+ * Post a peer-initiated SEC_PARAMS_REQUEST: the peer started SMP
+ * with these ble_gap_sec_params_t wire bytes (flags, min/max key
+ * size, kdist_own, kdist_peer); firmware answers SEC_PARAMS_REPLY.
+ * Returns false when the link cannot take a request.
+ * @param {number} conn
+ * @param {Uint8Array} peer_params
+ * @returns {boolean}
+ */
+export function ble_post_sec_params_request(conn, peer_params) {
+    const ptr0 = passArray8ToWasm0(peer_params, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ble_post_sec_params_request(conn, ptr0, len0);
+    return ret !== 0;
 }
 
 /**

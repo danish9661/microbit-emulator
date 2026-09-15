@@ -132,7 +132,9 @@ export class BleAir {
         || msg.t === 'vals_read_rsp'
         || msg.t === 'connected' || msg.t === 'adv_report' || msg.t === 'disconnected'
         || msg.t === 'rssi' || msg.t === 'cancel' || msg.t === 'written'
-        || msg.t === 'paired' || msg.t === 'l2cap_rx') {
+        || msg.t === 'paired' || msg.t === 'sec_params_request' || msg.t === 'sec_info_request'
+        || msg.t === 'auth_key_request' || msg.t === 'passkey_display' || msg.t === 'key_pressed'
+        || msg.t === 'lesc_dhkey_request' || msg.t === 'l2cap_rx') {
       // SoftDevice-facing air replies: queued for the BLE pump below,
       // which completes the matching staged job (take/complete, no
       // cross-talk: every reply echoes conn/handle back). 'gatt' also
@@ -163,12 +165,15 @@ export class BleAir {
   // SoftDevice face: ask the bridge to resolve one staged BLE job
   // over air. The job object mirrors the ble_take_job() tags (see
   // lib.rs): {tag, conn, handle, offset, op, data, kind, start, end,
-  // type, addr, cid, reason, uuid16, handles}. Replies arrive as queued
-  // air messages handled above. Every message carries its conn so the
-  // pump completes the right link (multi-connection firmware).
+  // type, addr, cid, reason, uuid16, handles, peer}. `peer` (6 LE
+  // bytes) addresses a NON-default air peer (multi-peer air); absent
+  // means the default peer. Replies arrive as queued air messages
+  // handled above. Every message carries its conn so the pump
+  // completes the right link (multi-connection firmware).
   sendBle(job) {
     if (!this.ws || this.ws.readyState !== 1) return false;
     const m = { t: 'ble_read', conn: job.conn ?? 1, handle: job.handle ?? 0x13, offset: job.offset ?? 0 };
+    if (job.peer) m.peer = [...job.peer];
     switch (job.tag) {
       case 0: m.t = 'ble_read'; break;
       case 1: return this.sendBleConnect(job.addr ?? []);

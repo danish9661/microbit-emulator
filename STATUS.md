@@ -2,10 +2,10 @@
 
 Audited 2026-09-12 by cross-checking all 39 `monox/nrf52833.svd`
 peripherals against `src/peripherals/`, running the suite
-(**202 passed, 0 failed** — +17 since audit: SPIM RXD MISO +
+(**203 passed, 0 failed** — +18 since audit: SPIM RXD MISO +
 GPIO CNF→DIR + UARTE TX snapshot + TWIM shifted-ADDR match +
-SCB AIRCR SYSRESETREQ + RADIO 802.15.4 helpers + sd_ble SVC face ×9
-+ BLE conformance/C-face firmware proofs),
+SCB AIRCR SYSRESETREQ + RADIO 802.15.4 helpers + sd_ble SVC face ×10
+(+peer-request pairing legs) + BLE conformance/C-face firmware proofs),
 reading every model, and replaying the
 live firmware runs. Grades: **F** = functional (timed, IRQs,
 driver take/complete, firmware proof), **H** = handshake
@@ -59,18 +59,19 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 202 green (`cargo test`)
+## 3. Tests — 203 green (`cargo test`)
 
 - 110 integration tests (`src/cpu/tests.rs`): 14 GCC-built firmware
   proofs (`blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
   `dma_nrf`, `air_nrf`, `c_irq_nrf.c`, `usbep_nrf`, `usbdev_nrf.c`,
   `i2s_nrf`, `wdt_nrf`, `nfct_nrf`, `ble_conformance.c`,
   `c_ble_face.bin`, +2nd-run reset-state checks each).
-- ~82 unit tests at the peripheral level (register handshake,
+- ~83 unit tests at the peripheral level (register handshake,
   SHORTS/NACK/OVERRUN/CAPTURE, FIPS-197, reboot latch, TXSTOPPED,
   SPIM RXD MISO, GPIO CNF→DIR, UARTE TX STARTTX-snapshot,
   TWIM shifted-ADDR match, SCB AIRCR SYSRESETREQ,
-  COMP/QDEC/NFCT/MWU/RADIO/SAADC/CCM depth, EGU slots).
+  COMP/QDEC/NFCT/MWU/RADIO/SAADC/CCM depth, EGU slots, sd_ble
+  peer-request pairing legs).
 - One rare parallel flake seen once
   (`unaligned_device_faults_without_trap`, 1/10 runs, never
   reproduced in 10 follow-ups) — kept on watch, not yet root-caused.
@@ -312,34 +313,48 @@ beyond proof-level driving remain future work.
     SVCs BLE firmware actually calls — full S132-verified coverage:
     common ENABLE (RAM-floor report) + two-arg EVT_GET (length query,
     DATA_SIZE, legacy drain), GAP ADDR/ADV/SCAN/CONNECT/DISCONNECT/
-    RSSI (stage air jobs), pairing handshake (AUTHENTICATE stages,
-    SEC_PARAMS_REPLY accept/reject, AUTH_STATUS + CONN_SEC_UPDATE
-    events, keys stubbed — documented), L2CAP CID register/TX/RX
-    (0xB0–0xB2), multi-connection links (per-link handles, RSSI, TX
-    budget, security; conn_handles/conn_sec exports), GATTC PRIM/CHAR/
-    DESC/REL/ATTR_INFO discovery + READ-by-UUID + multi-READ + READ +
-    WRITE (bytes copied at SVC time) + HV_CONFIRM, GATTS
-    service/char/descriptor table with real handles + struct-form
-    VALUE_SET/GET + CCCD-gated HVX staging (notify bit0 / indicate
-    bit1, unsubscribed refuses). Event envelopes carry
-    the gattc head / unpacked pads per the headers (tests assert byte
-    offsets). thumb.rs SVC hook claims 0x60..=0xBF first (r0 + skip,
-    else fall through to raise_sync — zero-cost when idle); air-backed
-    ops stage take/complete jobs (16 tags incl. take_data for WRITE/
-    HVX/L2CAP bytes) the demo pump resolves via the Bumble bridge
-    (local loopback default mirrors the bridge peer table: battery 87
-    + NUS). `ble_take_job/take_data/complete_*×16/post_adv_report/
-    post_gatts_write/enabled/queue_len/batt_level/conn_handles/
-    conn_sec` exports; 9 native tests + SVC-hook proof in cpu/tests.rs
-    (202 green); headless `MockBleSvc` executes REAL SVC bytes on a
-    WasmCpu end to end (enable→table→connect→disc×6→read→write→L2CAP→
-    pairing→HVX-indicate→scan→rssi→disconnect, 18 mocks OK). Bridge peer: battery
-    (READ+NOTIFY) + Nordic UART (RX write, TX notify) + live handles +
-    full job protocol incl. desc_disc/pair/l2cap; per-peer link locks
-    serialize ATT bursts; RSSI is adv-derived (no HCI RSSI on
-    LocalLink, probed). Bench: BLE panel shows live stack/links/queue/
-    battery + loopback self-test button; depth probes include the BLE
-    stack probe (16/16 green in real Chromium, zero page errors).
+     RSSI (stage air jobs), pairing handshake (AUTHENTICATE stages,
+     SEC_PARAMS_REPLY accept/reject, AUTH_STATUS + CONN_SEC_UPDATE
+     events; P103: full peer-initiated legs — SEC_PARAMS_REQUEST /
+     SEC_INFO_REQUEST / AUTH_KEY_REQUEST / PASSKEY_DISPLAY /
+     KEY_PRESSED / LESC_DHKEY_REQUEST events with conn-first wire
+     bodies, per-link state machine, accept/reject/passkey/OOB/
+     encrypt reply surface, S132 SEC_STATUS codes incl. the 0x29→0x85
+     fix, keys stubbed — documented), L2CAP CID register/TX/RX
+     (0xB0–0xB2), multi-connection links (per-link handles, RSSI, TX
+     budget, security; conn_handles/conn_sec exports), GATTC PRIM/CHAR/
+     DESC/REL/ATTR_INFO discovery + READ-by-UUID + multi-READ + READ +
+     WRITE (bytes copied at SVC time) + HV_CONFIRM, GATTS
+     service/char/descriptor table with real handles + struct-form
+     VALUE_SET/GET + CCCD-gated HVX staging (notify bit0 / indicate
+     bit1, unsubscribed refuses). Event envelopes carry
+     the gattc head / unpacked pads per the headers (tests assert byte
+     offsets). thumb.rs SVC hook claims 0x60..=0xBF first (r0 + skip,
+     else fall through to raise_sync — zero-cost when idle); air-backed
+     ops stage take/complete jobs (16 tags incl. take_data for WRITE/
+     HVX/L2CAP bytes) the demo pump resolves via the Bumble bridge
+     (local loopback default mirrors the bridge peer table: battery 87
+     + NUS). `ble_take_job/take_data/complete_*×16/post_adv_report/
+     post_gatts_write/post_sec_params_request/post_sec_info_request/
+     post_auth_key_request/post_passkey_display/post_keypress/
+     post_lesc_dhkey_request/enabled/queue_len/batt_level/conn_handles/
+     conn_sec` exports (40 ble exports); 10 native tests + SVC-hook proof in cpu/tests.rs
+     (203 green); headless `MockBleSvc` executes REAL SVC bytes on a
+     WasmCpu end to end (enable→table→connect→disc×6→read→write→L2CAP→
+     pairing→peer-pairing(passkey)→HVX-indicate→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
+     (READ+NOTIFY, 87 `PeerBatt`) + heart-rate twin (64 `PeerHR`,
+     distinct address) + Nordic UART (RX write, TX notify) + live handles +
+     full job protocol incl. desc_disc/pair/l2cap with per-job `peer`
+     routing + `peer` echo on disc RSPs (both peers share handle
+     numbers — unaddressed reads crossed peers, fixed by addressing);
+     per-peer ATT locks + global scan lock serialize air (no timeouts
+     under load); HCI_READ_RSSI probed first on the live link
+     (UNKNOWN_HCI_COMMAND on LocalLink — falls back to adv sighting,
+     `src:"conn"|"adv"` tagged). Bench: BLE panel shows live stack/links/queue/
+     battery + loopback self-test button; depth probes include the BLE
+     stack probe (16/16 green in real Chromium, zero page errors —
+     re-ran P103 on this tree via tools/browser_verify_16.py: blinky
+     BOOT/BLINK/BLINK, self-test pairing×2 pass, 16/16 probes).
 6. **Demo wall-time**: meter now shows slice + sustained average
    (`6.02 MIPS (avg 6.00)` on both blinky AND mpy park — P71: the
    16-class bursts the user saw are peak slice rates; sustained == slice
@@ -359,10 +374,12 @@ protection, publish to npm.
 ## 8. Verify
 
 ```
-cargo test                       # 202 green (crate dir)
+cargo test                       # 203 green (crate dir)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY-idiom face, all vs the BUILT pkg
-python3 tools/ble_air_bridge.py --port 18771 &  # live air peer
-node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 22 over-air checks green
+python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
+node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)
+python3 -m http.server 8080 --directory demo &  # bench
+python3 tools/browser_verify_16.py  # blinky + BLE self-test + 16/16 probes, zero page errors
 wasm-pack build nrf52833-periph-wasm --target web --out-dir ../demo/pkg
 ```
 Firmware proofs rebuild with `docs/README.md` recipes (xpack GCC

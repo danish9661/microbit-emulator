@@ -198,9 +198,20 @@ pub const SVC_L2CAP_CID_REGISTER: u8 = 0xB0;
 pub const SVC_L2CAP_CID_UNREGISTER: u8 = 0xB1;
 pub const SVC_L2CAP_TX: u8 = 0xB2;
 
-// ---- event ids (S132 ble_ranges.h series) ----
+// ---- GAP peer-initiated security event ids (S132 ble_gap.h series;
+// the numeric values follow from BLE_GAP_EVT_BASE 0x10 + enum order:
+// CONNECTED 0x10, DISCONNECTED 0x11, CONN_PARAM_UPDATE 0x12,
+// SEC_PARAMS_REQUEST 0x13, SEC_INFO_REQUEST 0x14, PASSKEY_DISPLAY 0x15,
+// KEY_PRESSED 0x16, AUTH_KEY_REQUEST 0x17, LESC_DHKEY_REQUEST 0x18,
+// AUTH_STATUS 0x19, CONN_SEC_UPDATE 0x1A, TIMEOUT 0x1B, ...) ----
 pub const EVT_GAP_CONNECTED: u16 = 0x10;
 pub const EVT_GAP_DISCONNECTED: u16 = 0x11;
+pub const EVT_GAP_SEC_PARAMS_REQUEST: u16 = 0x13;
+pub const EVT_GAP_SEC_INFO_REQUEST: u16 = 0x14;
+pub const EVT_GAP_PASSKEY_DISPLAY: u16 = 0x15;
+pub const EVT_GAP_KEY_PRESSED: u16 = 0x16;
+pub const EVT_GAP_AUTH_KEY_REQUEST: u16 = 0x17;
+pub const EVT_GAP_LESC_DHKEY_REQUEST: u16 = 0x18;
 pub const EVT_GAP_AUTH_STATUS: u16 = 0x19;
 pub const EVT_GAP_CONN_SEC_UPDATE: u16 = 0x1A;
 pub const EVT_GAP_RSSI_CHANGED: u16 = 0x1C;
@@ -239,9 +250,18 @@ pub const BLE_CONN_HANDLE_INVALID: u16 = 0xFFFF;
 pub const L2CAP_CID_DYN_BASE: u16 = 0x0040;
 pub const L2CAP_CID_DYN_MAX: u16 = 8;
 pub const L2CAP_MTU_DEF: u16 = 23;
-// Security status codes (ble_gap.h SEC_STATUS): SUCCESS + pair-fail.
+// Security status codes (ble_gap.h SEC_STATUS): the passkey/OOB/
+// encrypt/auth handshake maps silicon's pair-fail codes onto the
+// AUTH_STATUS firmware drains (see Pairing).
 pub const SEC_STATUS_SUCCESS: u8 = 0x00;
-pub const SEC_STATUS_PAIRING_NOT_SUPP: u8 = 0x29;
+pub const SEC_STATUS_PASSKEY_ENTRY_FAILED: u8 = 0x81;
+pub const SEC_STATUS_OOB_NOT_AVAILABLE: u8 = 0x82;
+pub const SEC_STATUS_AUTH_REQ: u8 = 0x83;
+pub const SEC_STATUS_CONFIRM_VALUE: u8 = 0x84;
+pub const SEC_STATUS_PAIRING_NOT_SUPP: u8 = 0x85;
+// NOTE: the old code spelled this 0x29 (wrong series — a BLE_ATT
+// error, not a GAP SEC_STATUS). SEC_PARAMS_REPLY reject used to emit
+// it; fixed alongside the handshake work below.
 
 // Roles (ble_gap.h): we initiate the bridge connection -> CENTRAL.
 pub const GAP_ROLE_CENTRAL: u8 = 2;
@@ -380,6 +400,10 @@ pub enum BleJob {
     L2capTx { conn: u16, cid: u16, data: Vec<u8> },
     /// GAP authenticate (SVC 0x7E): (conn). Driver runs the pairing
     /// handshake over air (bridge confirms); reply SVCs complete it.
+    /// (Peer-initiated security needs no job: the driver posts
+    /// SEC_PARAMS_REQUEST / AUTH_KEY_REQUEST / ... events directly via
+    /// post_sec_params_request / post_auth_key_request / ..., and
+    /// firmware answers with the reply SVCs.)
     GapAuthenticate { conn: u16 },
 }
 
@@ -420,16 +444,29 @@ struct Conn {
     cids: Vec<u16>,
 }
 
-/// Pairing state per link (honest stub, S132-observable behavior):
-/// silicon runs SMP over air (out of scope for the emulator core —
-/// no crypto, no key storage). Idle = no procedure; Requested =
-/// AUTHENTICATE staged, driver resolves; the reply SVCs then complete
-/// or fail it, posting AUTH_STATUS + CONN_SEC_UPDATE like silicon.
+/// Pairing state per link (S132-observable behavior; no crypto, no
+/// key storage — the emulator core cannot do SMP, so the driver-side
+/// bridge confirms the air handshake and the reply SVCs below complete
+/// or fail it, posting AUTH_STATUS + CONN_SEC_UPDATE like silicon).
+/// Idle = no procedure. Requested = AUTHENTICATE staged locally,
+/// driver resolves. PeerRequested = the PEER started pairing: the
+/// driver posted SEC_PARAMS_REQUEST / AUTH_KEY_REQUEST / ... and
+/// firmware must answer with SEC_PARAMS_REPLY / AUTH_KEY_REPLY / ....
+/// Accepted = firmware accepted (SEC_PARAMS_REPLY with params, or an
+/// AUTH_KEY/DHKEY reply); the driver handshake completes it. KeyEntry
+/// = AUTH_KEY_REQUEST outstanding (passkey/OOB expected). LescDhkey =
+/// LESC_DHKEY_REQUEST outstanding. EncryptPending = SEC_INFO_REQUEST
+/// answered with keys (SEC_INFO_REPLY non-NULL), ENCRYPT expected.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 enum Pairing {
     #[default]
     Idle,
     Requested,
+    PeerRequested,
+    Accepted,
+    KeyEntry { key_type: u8 },
+    LescDhkey { oobd_req: bool },
+    EncryptPending,
 }
 
 /// SoftDevice BLE SVC state. Process-wide singleton (same pattern as
@@ -905,18 +942,80 @@ impl SdBle {
         p
     }
 
-    /// GAP AUTH_STATUS body (ble_gap.h): {auth_status u8, err_src:2 +
-    /// bonded:1 packed u8, sm1 levels u8, sm2 levels u8, kdist_own u8,
-    /// kdist_peer u8}. Levels byte: sec_mode bit0 + encr key size hi.
-    fn auth_status_payload(status: u8, bonded: bool) -> Vec<u8> {
-        vec![
-            status,
-            if bonded { 0x04 } else { 0x00 },
-            0x01, // sm1: mode1 level1 (open link, like our stub)
-            0x01, // sm2: level1
-            0x00, // kdist_own: nothing exchanged
-            0x00, // kdist_peer: nothing exchanged
-        ]
+    /// GAP AUTH_STATUS body (ble_gap.h): {conn u16, auth_status u8,
+    /// err_src:2 + bonded:1 packed u8, sm1 levels u8, sm2 levels u8,
+    /// kdist_own u8, kdist_peer u8}. Conn FIRST (ble_gap_evt_t head),
+    /// then the ble_gap_evt_auth_status_t params. Levels byte: sec_mode
+    /// bit0 + encr key size hi.
+    fn auth_status_payload(conn: u16, status: u8, bonded: bool) -> Vec<u8> {
+        let mut p = Vec::with_capacity(8);
+        p.extend_from_slice(&conn.to_le_bytes());
+        p.push(status);
+        p.push(if bonded { 0x04 } else { 0x00 });
+        p.push(0x01); // sm1: mode1 level1 (open link, like our stub)
+        p.push(0x01); // sm2: level1
+        p.push(0x00); // kdist_own: nothing exchanged
+        p.push(0x00); // kdist_peer: nothing exchanged
+        p
+    }
+
+    /// GAP SEC_PARAMS_REQUEST body (ble_gap.h): {conn u16,
+    /// ble_gap_sec_params_t peer_params (5B: flags, min/max key size,
+    /// kdist_own, kdist_peer)}.
+    fn sec_params_request_payload(conn: u16, peer_params: &[u8; 5]) -> Vec<u8> {
+        let mut p = Vec::with_capacity(7);
+        p.extend_from_slice(&conn.to_le_bytes());
+        p.extend_from_slice(peer_params);
+        p
+    }
+
+    /// GAP SEC_INFO_REQUEST body (ble_gap.h): {conn u16, peer_addr 7B,
+    /// master_id 10B (ediv u16 + rand[8]), req-bits u8 (bit0 enc_info,
+    /// bit1 id_info, bit2 sign_info)}.
+    fn sec_info_request_payload(conn: u16, peer_addr: &[u8; 7], master_id: &[u8; 10], req: u8) -> Vec<u8> {
+        let mut p = Vec::with_capacity(20);
+        p.extend_from_slice(&conn.to_le_bytes());
+        p.extend_from_slice(peer_addr);
+        p.extend_from_slice(master_id);
+        p.push(req & 0x07);
+        p
+    }
+
+    /// GAP PASSKEY_DISPLAY body (ble_gap.h): {conn u16, passkey[6]
+    /// ASCII, match_request bit0 u8}.
+    fn passkey_display_payload(conn: u16, passkey: &[u8; 6], match_request: bool) -> Vec<u8> {
+        let mut p = Vec::with_capacity(9);
+        p.extend_from_slice(&conn.to_le_bytes());
+        p.extend_from_slice(passkey);
+        p.push(if match_request { 0x01 } else { 0x00 });
+        p
+    }
+
+    /// GAP KEY_PRESSED body (ble_gap.h): {conn u16, kp_not u8}.
+    fn key_pressed_payload(conn: u16, kp_not: u8) -> Vec<u8> {
+        let mut p = Vec::with_capacity(3);
+        p.extend_from_slice(&conn.to_le_bytes());
+        p.push(kp_not);
+        p
+    }
+
+    /// GAP AUTH_KEY_REQUEST body (ble_gap.h): {conn u16, key_type u8}.
+    fn auth_key_request_payload(conn: u16, key_type: u8) -> Vec<u8> {
+        let mut p = Vec::with_capacity(3);
+        p.extend_from_slice(&conn.to_le_bytes());
+        p.push(key_type);
+        p
+    }
+
+    /// GAP LESC_DHKEY_REQUEST body (ble_gap.h): {conn u16, oobd_req u8}.
+    /// (The S132 struct carries a *pointer* to the peer public key in
+    /// app-supplied keyset memory; the event on the wire names only the
+    /// link + OOB requirement — the key bytes move via the reply SVC.)
+    fn lesc_dhkey_request_payload(conn: u16, oobd_req: bool) -> Vec<u8> {
+        let mut p = Vec::with_capacity(3);
+        p.extend_from_slice(&conn.to_le_bytes());
+        p.push(if oobd_req { 0x01 } else { 0x00 });
+        p
     }
 
     /// GAP CONN_SEC_UPDATE body (ble_gap.h): {sec_mode u8, key_size u8}.
@@ -1212,8 +1311,15 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             Some(NRF_SUCCESS)
         }
         x if x == SVC_GAP_SEC_PARAMS_REPLY => {
-            // Reply to SEC_PARAMS_REQUEST: NULL params = reject (silicon
-            // pairs-fail path); non-NULL = accept, driver completes.
+            // Reply to SEC_PARAMS_REQUEST (peer-initiated pairing): NULL
+            // params (or nonzero sec_status) = reject, AUTH_STATUS
+            // pair-fail, link stays up. Non-NULL params = accept: with
+            // an outstanding peer request the link moves to Accepted and
+            // the driver handshake completes it (AUTH_STATUS success +
+            // CONN_SEC_UPDATE via complete_pairing). With NO request
+            // outstanding there is nothing to reply to (silicon
+            // INVALID_STATE). p_sec_keyset (r3) only names key memory;
+            // never dereferenced (no key storage — documented).
             if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
@@ -1224,44 +1330,189 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             if p_params != 0 && !is_ram(p_params) {
                 return Some(NRF_ERROR_INVALID_ADDR);
             }
+            let outstanding = matches!(
+                s.conn(conn).map(|c| &c.pairing),
+                Some(Pairing::PeerRequested) | Some(Pairing::Accepted)
+            );
             if status != 0 || p_params == 0 {
-                // Reject: AUTH_STATUS pair-fail, link stays up.
+                // Reject: AUTH_STATUS pair-fail, link stays up. A reject
+                // answers a peer request when one is outstanding; with
+                // none outstanding silicon still accepts the call as a
+                // no-op reject (only the accept path needs a request).
                 s.push_evt(
                     EVT_GAP_AUTH_STATUS,
-                    SdBle::auth_status_payload(SEC_STATUS_PAIRING_NOT_SUPP, false),
+                    SdBle::auth_status_payload(conn, SEC_STATUS_PAIRING_NOT_SUPP, false),
                 );
                 if let Some(c) = s.conn_mut(conn) {
                     c.pairing = Pairing::Idle;
                 }
                 return Some(NRF_SUCCESS);
             }
-            // Accept: mark requested; the driver handshake completes it.
+            if !outstanding {
+                return Some(NRF_ERROR_INVALID_STATE);
+            }
+            // Accept: mark accepted; the driver handshake completes it.
             if let Some(c) = s.conn_mut(conn) {
-                c.pairing = Pairing::Requested;
+                c.pairing = Pairing::Accepted;
             }
             s.staged = Some(BleJob::GapAuthenticate { conn });
             Some(NRF_SUCCESS)
         }
-        x if x == SVC_GAP_AUTH_KEY_REPLY
-            || x == SVC_GAP_LESC_DHKEY_REPLY
-            || x == SVC_GAP_KEYPRESS_NOTIFY
-            || x == SVC_GAP_ENCRYPT
-            || x == SVC_GAP_SEC_INFO_REPLY =>
-        {
-            // Key/encrypt replies complete an outstanding pairing
-            // request; with none outstanding there is nothing to reply
-            // to (silicon INVALID_STATE).
+        x if x == SVC_GAP_AUTH_KEY_REPLY => {
+            // Reply to AUTH_KEY_REQUEST (passkey / OOB entry): (conn,
+            // key_type, *key). NONE(0)+NULL accepts a no-key request;
+            // PASSKEY(1) needs 6 ASCII digits; OOB(2) needs 16 bytes.
+            // Completes an outstanding KeyEntry (or an Accepted legacy
+            // handshake the driver is resolving); with nothing
+            // outstanding there is nothing to reply to (silicon
+            // INVALID_STATE).
             if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
-            let conn = r[0] as u16;
+            let (conn, key_type, p_key) = (r[0] as u16, r[1] as u8, r[2]);
             if let Err(e) = s.check_conn(conn) {
                 return Some(e);
             }
+            if key_type > 2 {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            let need = match key_type {
+                0 => 0,
+                1 => 6,
+                _ => 16,
+            };
+            if need != 0 {
+                if !is_ram(p_key) {
+                    return Some(NRF_ERROR_INVALID_ADDR);
+                }
+                if key_type == 1 {
+                    for i in 0..6u32 {
+                        let b = mem.read8(p_key.wrapping_add(i));
+                        if !(b as char).is_ascii_digit() {
+                            return Some(NRF_ERROR_INVALID_PARAM);
+                        }
+                    }
+                }
+            }
             match s.conn(conn) {
-                Some(c) if c.pairing == Pairing::Requested => Some(NRF_SUCCESS),
+                Some(c)
+                    if matches!(c.pairing, Pairing::KeyEntry { .. } | Pairing::Accepted) =>
+                {
+                    Some(NRF_SUCCESS)
+                }
                 _ => Some(NRF_ERROR_INVALID_STATE),
             }
+        }
+        x if x == SVC_GAP_LESC_DHKEY_REPLY => {
+            // Reply to LESC_DHKEY_REQUEST: (conn, *dhkey32). Completes
+            // an outstanding LescDhkey; otherwise INVALID_STATE.
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let (conn, p_key) = (r[0] as u16, r[1]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if !is_ram(p_key) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            match s.conn(conn) {
+                Some(c) if matches!(c.pairing, Pairing::LescDhkey { .. }) => Some(NRF_SUCCESS),
+                _ => Some(NRF_ERROR_INVALID_STATE),
+            }
+        }
+        x if x == SVC_GAP_KEYPRESS_NOTIFY => {
+            // Keypress notification during passkey entry: (conn,
+            // kp_not). Needs an outstanding KeyEntry (silicon
+            // INVALID_STATE otherwise); posts KEY_PRESSED so the peer
+            // side can drain it. Types 0..=4 (ble_gap.h KP_NOT_TYPES).
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let (conn, kp_not) = (r[0] as u16, r[1] as u8);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if kp_not > 4 {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            match s.conn(conn) {
+                Some(c) if matches!(c.pairing, Pairing::KeyEntry { .. }) => {
+                    s.push_evt(EVT_GAP_KEY_PRESSED, SdBle::key_pressed_payload(conn, kp_not));
+                    Some(NRF_SUCCESS)
+                }
+                _ => Some(NRF_ERROR_INVALID_STATE),
+            }
+        }
+        x if x == SVC_GAP_ENCRYPT => {
+            // Master re-encrypt with stored keys: (conn, *master_id{ediv
+            // u16, rand[8]}, *enc_info{ltk[16], lesc/auth/keylen u8}).
+            // Completes an EncryptPending (SEC_INFO_REPLY answered with
+            // keys) or an Accepted handshake; otherwise INVALID_STATE.
+            // NULL master_id = use local keys (peripheral role).
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let (conn, p_mid, p_enc) = (r[0] as u16, r[1], r[2]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if p_mid != 0 && !is_ram(p_mid) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            if !is_ram(p_enc) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            match s.conn(conn) {
+                Some(c)
+                    if matches!(
+                        c.pairing,
+                        Pairing::EncryptPending | Pairing::Accepted
+                    ) =>
+                {
+                    Some(NRF_SUCCESS)
+                }
+                _ => Some(NRF_ERROR_INVALID_STATE),
+            }
+        }
+        x if x == SVC_GAP_SEC_INFO_REPLY => {
+            // Reply to SEC_INFO_REQUEST: all-NULL = no keys (bond not
+            // found — AUTH_STATUS pair-fail AUTH_REQ, link stays up);
+            // non-NULL enc (16B LTK block) = keys found, ENCRYPT
+            // expected next (EncryptPending). Needs an outstanding
+            // peer request; otherwise INVALID_STATE.
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let (conn, p_enc, p_id, p_sign) = (r[0] as u16, r[1], r[2], r[3]);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            for p in [p_enc, p_id, p_sign] {
+                if p != 0 && !is_ram(p) {
+                    return Some(NRF_ERROR_INVALID_ADDR);
+                }
+            }
+            if !matches!(
+                s.conn(conn).map(|c| &c.pairing),
+                Some(Pairing::PeerRequested)
+            ) {
+                return Some(NRF_ERROR_INVALID_STATE);
+            }
+            if p_enc == 0 {
+                s.push_evt(
+                    EVT_GAP_AUTH_STATUS,
+                    SdBle::auth_status_payload(conn, SEC_STATUS_AUTH_REQ, false),
+                );
+                if let Some(c) = s.conn_mut(conn) {
+                    c.pairing = Pairing::Idle;
+                }
+                return Some(NRF_SUCCESS);
+            }
+            if let Some(c) = s.conn_mut(conn) {
+                c.pairing = Pairing::EncryptPending;
+            }
+            Some(NRF_SUCCESS)
         }
         x if x == SVC_GAP_LESC_OOB_DATA_GET => {
             if require_enabled(s).is_err() {
@@ -2057,17 +2308,27 @@ pub fn complete_rssi(conn: u16, rssi: i8) {
 
 /// Complete a pairing handshake the driver ran over air: marks the
 /// link bonded+encrypted and posts AUTH_STATUS (success) plus
-/// CONN_SEC_UPDATE, like silicon after SMP completes.
+/// CONN_SEC_UPDATE, like silicon after SMP completes. The handshake
+/// stays open for the key exchange: an Accepted link keeps accepting
+/// AUTH_KEY_REQUEST / LESC_DHKEY_REQUEST legs (silicon runs passkey /
+/// OOB / numeric-comparison INSIDE the same SMP procedure), and only
+/// returns to Idle after AUTH_STATUS is drained... in practice the
+/// driver completes each leg explicitly, so complete_pairing leaves an
+/// Accepted link Accepted (firmware answers the posted key requests),
+/// while a locally-Requested handshake (AUTHENTICATE initiator) goes
+/// Idle like silicon's completed procedure.
 pub fn complete_pairing(conn: u16, bonded: bool) {
     with_sd_ble(|s| {
         if let Some(c) = s.conn_mut(conn) {
-            c.pairing = Pairing::Idle;
+            if c.pairing == Pairing::Requested {
+                c.pairing = Pairing::Idle;
+            }
             c.bonded = bonded;
             c.encrypted = true;
         }
         s.push_evt(
             EVT_GAP_AUTH_STATUS,
-            SdBle::auth_status_payload(SEC_STATUS_SUCCESS, bonded),
+            SdBle::auth_status_payload(conn, SEC_STATUS_SUCCESS, bonded),
         );
         // CONN_SEC_UPDATE envelope: {conn, sec_mode, key_size}.
         let mut p = conn.to_le_bytes().to_vec();
@@ -2084,8 +2345,141 @@ pub fn fail_pairing(conn: u16, status: u8) {
         if let Some(c) = s.conn_mut(conn) {
             c.pairing = Pairing::Idle;
         }
-        s.push_evt(EVT_GAP_AUTH_STATUS, SdBle::auth_status_payload(status, false));
+        s.push_evt(EVT_GAP_AUTH_STATUS, SdBle::auth_status_payload(conn, status, false));
     });
+}
+
+/// Post a peer-initiated SEC_PARAMS_REQUEST: the bridge observed the
+/// peer start SMP with these params; firmware must answer with
+/// SEC_PARAMS_REPLY (accept or reject). The link must be up and idle;
+/// posts the event and marks PeerRequested (silicon INVALID_STATE on
+/// the reply SVCs without this). Returns false when the link cannot
+/// take a request (down, busy, or stack disabled).
+pub fn post_sec_params_request(conn: u16, peer_params: [u8; 5]) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled {
+            return false;
+        }
+        match s.conn_mut(conn) {
+            Some(c) if c.pairing == Pairing::Idle => {
+                c.pairing = Pairing::PeerRequested;
+            }
+            _ => return false,
+        }
+        s.push_evt(
+            EVT_GAP_SEC_PARAMS_REQUEST,
+            SdBle::sec_params_request_payload(conn, &peer_params),
+        );
+        true
+    })
+}
+
+/// Post a peer-initiated SEC_INFO_REQUEST: the peer asks to re-encrypt
+/// with stored keys (firmware answers SEC_INFO_REPLY, then ENCRYPT).
+/// Same link rules as SEC_PARAMS_REQUEST.
+pub fn post_sec_info_request(
+    conn: u16,
+    peer_addr: [u8; 7],
+    master_id: [u8; 10],
+    req: u8,
+) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled {
+            return false;
+        }
+        match s.conn_mut(conn) {
+            Some(c) if c.pairing == Pairing::Idle => {
+                c.pairing = Pairing::PeerRequested;
+            }
+            _ => return false,
+        }
+        s.push_evt(
+            EVT_GAP_SEC_INFO_REQUEST,
+            SdBle::sec_info_request_payload(conn, &peer_addr, &master_id, req),
+        );
+        true
+    })
+}
+
+/// Post an AUTH_KEY_REQUEST: the driver needs a passkey/OOB key of
+/// `key_type` (ble_gap.h AUTH_KEY_TYPES) from firmware, which answers
+/// with AUTH_KEY_REPLY. Needs an Accepted (or already key-entering)
+/// handshake; otherwise returns false and posts nothing.
+pub fn post_auth_key_request(conn: u16, key_type: u8) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || key_type > 2 {
+            return false;
+        }
+        match s.conn_mut(conn) {
+            Some(c)
+                if matches!(
+                    c.pairing,
+                    Pairing::Accepted | Pairing::KeyEntry { .. }
+                ) =>
+            {
+                c.pairing = Pairing::KeyEntry { key_type };
+            }
+            _ => return false,
+        }
+        s.push_evt(EVT_GAP_AUTH_KEY_REQUEST, SdBle::auth_key_request_payload(conn, key_type));
+        true
+    })
+}
+
+/// Post a PASSKEY_DISPLAY: the driver shows this 6-digit ASCII passkey
+/// to the user (firmware answers AUTH_KEY_REPLY when match_request).
+pub fn post_passkey_display(conn: u16, passkey: [u8; 6], match_request: bool) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled {
+            return false;
+        }
+        if s.conn(conn).is_none() {
+            return false;
+        }
+        s.push_evt(
+            EVT_GAP_PASSKEY_DISPLAY,
+            SdBle::passkey_display_payload(conn, &passkey, match_request),
+        );
+        true
+    })
+}
+
+/// Post a KEYPRESS_NOTIFY from the peer (keypress notification type
+/// 0..=4, ble_gap.h KP_NOT_TYPES). Needs a live link; returns false
+/// without one.
+pub fn post_keypress(conn: u16, kp_not: u8) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || kp_not > 4 {
+            return false;
+        }
+        if s.conn(conn).is_none() {
+            return false;
+        }
+        s.push_evt(EVT_GAP_KEY_PRESSED, SdBle::key_pressed_payload(conn, kp_not));
+        true
+    })
+}
+
+/// Post an LESC_DHKEY_REQUEST: the driver needs the DHKey (firmware
+/// answers LESC_DHKEY_REPLY; OOB data via LESC_OOB_DATA_SET when
+/// oobd_req). Needs an Accepted handshake; otherwise false.
+pub fn post_lesc_dhkey_request(conn: u16, oobd_req: bool) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled {
+            return false;
+        }
+        match s.conn_mut(conn) {
+            Some(c) if c.pairing == Pairing::Accepted => {
+                c.pairing = Pairing::LescDhkey { oobd_req };
+            }
+            _ => return false,
+        }
+        s.push_evt(
+            EVT_GAP_LESC_DHKEY_REQUEST,
+            SdBle::lesc_dhkey_request_payload(conn, oobd_req),
+        );
+        true
+    })
 }
 
 /// Complete an L2CAP TX: driver moved the frame over air on the
@@ -2719,18 +3113,20 @@ mod tests {
             handle_svc(&sys, &mut mem, SVC_GAP_AUTHENTICATE, &r),
             Some(NRF_ERROR_BUSY)
         );
-        // Key reply with a request outstanding: accepted (driver owns it).
+        // Key replies with a locally-initiated request outstanding are
+        // NOT for the driver to consume — the driver owns the handshake
+        // (silicon INVALID_STATE: no AUTH_KEY_REQUEST was ever posted).
         let r = regs(1, 0, 0, 0);
         assert_eq!(
             handle_svc(&sys, &mut mem, SVC_GAP_AUTH_KEY_REPLY, &r),
-            Some(NRF_SUCCESS)
+            Some(NRF_ERROR_INVALID_STATE)
         );
         // Driver completes over air: AUTH_STATUS success + SEC_UPDATE.
         complete_pairing(1, true);
         let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
         assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_AUTH_STATUS));
-        assert_eq!(mem.read8(0x20003004), SEC_STATUS_SUCCESS);
-        assert_eq!(mem.read8(0x20003005) & 0x04, 0x04, "bonded bit");
+        assert_eq!(mem.read8(0x20003006), SEC_STATUS_SUCCESS);
+        assert_eq!(mem.read8(0x20003007) & 0x04, 0x04, "bonded bit");
         let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
         assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_CONN_SEC_UPDATE));
         // Link now encrypted: CONN_SEC_GET reports mode1 + 16-octet key.
@@ -2751,11 +3147,157 @@ mod tests {
         );
         let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
         assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_AUTH_STATUS));
-        assert_eq!(mem.read8(0x20003004), SEC_STATUS_PAIRING_NOT_SUPP);
+        assert_eq!(mem.read8(0x20003006), SEC_STATUS_PAIRING_NOT_SUPP);
         // Rejected link still connected: reads stage fine.
         let r = regs(h2 as u32, 0x13, 0, 0);
         assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_READ, &r), Some(NRF_SUCCESS));
         let _ = take_job();
+    }
+
+    #[test]
+    fn pairing_peer_request_accept_passkey_oob_encrypt_flow() {
+        let sys = test_dummy_system();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        reset_for_test();
+        let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
+        connect(&sys, &mut mem);
+        // Peer starts pairing: driver posts SEC_PARAMS_REQUEST (2B
+        // conn + 5B peer params). Firmware drains it before replying.
+        assert!(post_sec_params_request(1, [0x0D, 7, 16, 0x01, 0x00]));
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_SEC_PARAMS_REQUEST));
+        assert_eq!(len, 4 + 2 + 5, "hdr + conn + peer_params");
+        assert_eq!(mem.read16(0x20003004), 1, "conn head");
+        assert_eq!(mem.read8(0x20003006), 0x0D, "peer flags echo");
+        // Accept needs key memory named; NULL keyset is fine (never
+        // dereferenced). Accept stages the air handshake.
+        mem.write8(0x20004000, 0x0D);
+        mem.write8(0x20004001, 7);
+        mem.write8(0x20004002, 16);
+        mem.write8(0x20004003, 0x01);
+        mem.write8(0x20004004, 0x00);
+        let r = regs(1, 0, 0x20004000, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_SEC_PARAMS_REPLY, &r),
+            Some(NRF_SUCCESS)
+        );
+        assert_eq!(take_job(), Some(BleJob::GapAuthenticate { conn: 1 }));
+        // Passkey entry: driver posts AUTH_KEY_REQUEST(PASSKEY);
+        // bad digits refuse, good digits complete the reply.
+        assert!(post_auth_key_request(1, 1));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_AUTH_KEY_REQUEST));
+        assert_eq!(mem.read8(0x20003006), 1, "key_type PASSKEY");
+        mem.write8(0x20004100, b'1');
+        mem.write8(0x20004101, b'2');
+        mem.write8(0x20004102, b'X'); // not a digit
+        mem.write8(0x20004103, b'4');
+        mem.write8(0x20004104, b'5');
+        mem.write8(0x20004105, b'6');
+        let r = regs(1, 1, 0x20004100, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_AUTH_KEY_REPLY, &r),
+            Some(NRF_ERROR_INVALID_PARAM)
+        );
+        mem.write8(0x20004102, b'3');
+        let r = regs(1, 1, 0x20004100, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_AUTH_KEY_REPLY, &r),
+            Some(NRF_SUCCESS)
+        );
+        // Keypress notify needs the key-entry state: posts KEY_PRESSED.
+        let r = regs(1, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_KEYPRESS_NOTIFY, &r),
+            Some(NRF_SUCCESS)
+        );
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_KEY_PRESSED));
+        // Driver handshake completes: AUTH_STATUS success + SEC_UPDATE.
+        complete_pairing(1, true);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_AUTH_STATUS));
+        assert_eq!(mem.read8(0x20003006), SEC_STATUS_SUCCESS);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_CONN_SEC_UPDATE));
+        // Re-encrypt path on a fresh link: SEC_INFO_REQUEST, no keys ->
+        // AUTH_REQ pair-fail, link stays up.
+        connect(&sys, &mut mem);
+        let h2 = conn_handles().into_iter().max().unwrap();
+        let peer_addr = [1u8, 2, 3, 4, 5, 6, 7];
+        let master_id = [0x34u8, 0x12, 1, 2, 3, 4, 5, 6, 7, 8];
+        assert!(post_sec_info_request(h2, peer_addr, master_id, 0x01));
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_SEC_INFO_REQUEST));
+        assert_eq!(len, 4 + 2 + 7 + 10 + 1, "hdr + conn + addr + mid + req");
+        let r = regs(h2 as u32, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_SEC_INFO_REPLY, &r),
+            Some(NRF_SUCCESS)
+        );
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_AUTH_STATUS));
+        assert_eq!(mem.read8(0x20003006), SEC_STATUS_AUTH_REQ);
+        // Keys found -> EncryptPending; ENCRYPT then answers SUCCESS.
+        connect(&sys, &mut mem);
+        let h3 = conn_handles().into_iter().max().unwrap();
+        assert!(post_sec_info_request(h3, peer_addr, master_id, 0x01));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_SEC_INFO_REQUEST));
+        // 16B LTK block + 8B master id + 18B enc info at RAM.
+        for i in 0..16u32 {
+            mem.write8(0x20004200 + i, i as u8);
+        }
+        mem.write8(0x20004210, 1);
+        let r = regs(h3 as u32, 0x20004200, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_SEC_INFO_REPLY, &r),
+            Some(NRF_SUCCESS)
+        );
+        for i in 0..16u32 {
+            mem.write8(0x20004300 + i, 0xA0 + i as u8);
+        }
+        mem.write8(0x20004310, 0);
+        let r = regs(h3 as u32, 0x20004300, 0x20004310, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_ENCRYPT, &r), Some(NRF_SUCCESS));
+        // LESC paths: DHKEY request needs Accepted; OOB data zeroes.
+        connect(&sys, &mut mem);
+        let h4 = conn_handles().into_iter().max().unwrap();
+        assert!(!post_lesc_dhkey_request(h4, false), "no handshake yet");
+        assert!(post_sec_params_request(h4, [0x09, 7, 16, 0x00, 0x00]));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_SEC_PARAMS_REQUEST));
+        let r = regs(h4 as u32, 0, 0x20004000, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_SEC_PARAMS_REPLY, &r),
+            Some(NRF_SUCCESS)
+        );
+        let _ = take_job();
+        assert!(post_lesc_dhkey_request(h4, true));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_LESC_DHKEY_REQUEST));
+        assert_eq!(mem.read8(0x20003006), 1, "oobd_req set");
+        for i in 0..32u32 {
+            mem.write8(0x20004400 + i, 0x55);
+        }
+        let r = regs(h4 as u32, 0x20004400, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_LESC_DHKEY_REPLY, &r),
+            Some(NRF_SUCCESS)
+        );
+        let r = regs(h4 as u32, 0, 0x20004500, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_LESC_OOB_DATA_GET, &r),
+            Some(NRF_SUCCESS)
+        );
+        // Passkey display + peer keypress post without a handshake.
+        assert!(post_passkey_display(h4, *b"123456", true));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_PASSKEY_DISPLAY));
+        assert_eq!(mem.read8(0x20003006), b'1', "passkey ASCII");
+        assert!(post_keypress(h4, 1));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_KEY_PRESSED));
     }
 
     #[test]

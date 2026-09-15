@@ -2435,3 +2435,79 @@ All five asked, all five done:
 
 NEXT: live-bridge run from the bench (Enable BLE air + Bumble peer);
 firmware-level proof on a BLE-enabled image (MPY/MC still BLE-less).
+
+## 85. P103 SMP pairing legs + conn-RSSI + multi-peer + ATT queue (2026-09-15)
+
+All four asked, all four done (`cargo test` 203 green, handshake 18/18,
+smoke + MPY-idiom face vs the BUILT pkg, live E2E 42/42 over air):
+
+1. SMP pairing handshake (sd_ble.rs + lib.rs + mocks.js + index.html):
+   peer-initiated request events (SEC_PARAMS_REQUEST 0x13 /
+   SEC_INFO_REQUEST 0x14 / AUTH_KEY_REQUEST 0x17 / PASSKEY_DISPLAY
+   0x15 / KEY_PRESSED 0x16 / LESC_DHKEY_REQUEST 0x18 — ids from
+   BLE_GAP_EVT_BASE 0x10 + ble_gap.h enum order) with conn-first wire
+   bodies (conn u16 head, then the ble_gap.h params: 5B sec_params,
+   7B addr + 10B master_id + req bits, 6B ASCII passkey + match bit,
+   kp_not/key_type/oobd_req bytes); per-link Pairing state machine
+   (Idle/Requested/PeerRequested/Accepted/KeyEntry/LescDhkey/
+   EncryptPending); full reply surface (SEC_PARAMS_REPLY accept needs
+   an outstanding request else INVALID_STATE, AUTH_KEY_REPLY
+   validates key_type + 6-digit passkey + 16B OOB, LESC_DHKEY_REPLY /
+   KEYPRESS_NOTIFY / ENCRYPT / SEC_INFO_REPLY each gate on their
+   outstanding state, OOB_DATA_GET zeroes 32B, OOB_DATA_SET acks);
+   S132 SEC_STATUS codes (0x81/0x82/0x83/0x84 passkey/OOB/auth/confirm
+   + 0x85 pairing-not-supp) incl. the 0x29→0x85 fix (0x29 is an ATT
+   error, not a GAP status); AUTH_STATUS body fixed to conn-first
+   (was missing the ble_gap_evt_t head — old tests read status at the
+   wrong offset); `complete_pairing` leaves Accepted links Accepted
+   for the key legs (initiator Requested legs still go Idle);
+   6 new wasm exports (`ble_post_sec_params_request`,
+   `ble_post_sec_info_request`, `ble_post_auth_key_request`,
+   `ble_post_passkey_display`, `ble_post_keypress`,
+   `ble_post_lesc_dhkey_request`); pump drains the 6 new bridge
+   messages; new native test (peer-request→accept→passkey→keypress→
+   AUTH_STATUS+SEC_UPDATE→re-encrypt→keys→ENCRYPT→LESC→OOB→display)
+   + MockBleSvc peer-pair leg through real SVC bytes (0x7F/0x80).
+   Two mock-ordering traps fixed along the way (AUTH_KEY_REQUEST must
+   sit ahead of the handshake's AUTH_STATUS in the FIFO; the
+   GapAuthenticate take must drain before `complete_pairing`).
+2. HCI RSSI path: `read_conn_rssi` opens the link and issues
+   HCI_READ_RSSI (Device.get_connection_rssi shape: send_sync_command
+   on the host connection handle) — SoftDevice-faithful, since
+   sd_ble_gap_rssi_get samples the CONNECTION. Probed on LocalLink:
+   virtual controller answers UNKNOWN_HCI_COMMAND (HCI_Error, caught
+   inside — an uncaught raise starved the WS loop and hung every later
+   job, fixed by catching inside read_conn_rssi), so ble_rssi falls
+   back to the live advertising sighting + RSSI_CACHE, tagged
+   `src:"conn"|"adv"`. E2E asserts overAir + number.
+3. Multi-peer air: second peer (`make_peer_hr`: same battery+NUS
+   table, value 64 `PeerHR`, distinct random address) on the same
+   LocalLink; per-job `peer:[6]` routes every ATT op (ble_connect's
+   `addr` selects the same way); `ble_scan` reports one adv_report
+   per peer; disc RSPs echo the answering `peer`. Real bug found by
+   the E2E: both peers share handle numbers (decl 16/value 17), so
+   the resolve_read fallback walk answered from the WRONG peer (first
+   link read 64) — fixed by addressing every read (known-handle fast
+   path + decl+1-mapped walk on the addressed peer). E2E grows a
+   second link (connect→disc→read 64→disconnect, handles differ,
+   FIRST_PEER echo asserted, scan collects 2 distinct sightings):
+   42 checks green. ble_air.js forwards `job.peer`.
+4. Serialized ATT queue: per-peer-address ATT locks (kept) + one
+   global scan lock — scans share the central's single scanner, and
+   scan-then-connect handoffs (gatt_read_battery_over_air,
+   read_handle_over_air) hold it across both steps so a second job's
+   scan cannot interleave (timeouts under load before this).
+
+NEXT: firmware-level proof on a BLE-enabled image (MPY/MC still
+BLE-less); browser 16/16 re-run on the rebuilt pkg.
+
+Browser re-run (P103, this tree, committed pkg): `python3
+tools/browser_verify_16.py` vs bench on :8080 — blinky
+`BOOT/BLINK/BLINK` at ~6 MIPS, BLE self-test
+`pass: enable, table, link, GATT×7, L2CAP, pairing×2, scan, RSSI,
+disconnect`, depth probes 16/16, zero page errors. (Script uses the
+pip `playwright` package + its bundled Chromium; the earlier
+`playwright-core` node module is not installed here. Two script bugs
+fixed along the way: preset select STAGES (Run boots — there is no
+separate Load button, `#fwrun` is it) and the UART box is a
+`<textarea>`, so read `.value`, not `.textContent`.)

@@ -144,6 +144,23 @@ BLE jobs: ble_take_job() -> words, first word = tag:
   14 GattcUuidRead [conn, uuid16|0xFFFF, start, end]
   15 GattcValsRead [conn, count] + handles u16[count] (in take words)
 BLE bytes: ble_take_data() -> staged WRITE/HVX/L2CAP bytes (once per job)
+Pairing legs (peer-initiated security; no job — the driver posts the
+request event and firmware answers with the reply SVC):
+  SEC_PARAMS_REQUEST -> sd_ble_gap_sec_params_reply(conn, status, params, keyset)
+    NULL params (or nonzero status) = reject (AUTH_STATUS pair-fail,
+    link stays up); non-NULL params = accept needs an outstanding peer
+    request (else INVALID_STATE), stages the air handshake
+  AUTH_KEY_REQUEST -> sd_ble_gap_auth_key_reply(conn, key_type, key)
+    key_type 0 none / 1 passkey (6 ASCII digits, validated) / 2 OOB
+    (16 bytes); needs an Accepted/key-entering handshake
+  LESC_DHKEY_REQUEST -> sd_ble_gap_lesc_dhkey_reply(conn, dhkey32)
+  KEYPRESS_NOTIFY posts KEY_PRESSED (types 0..4, validated)
+  SEC_INFO_REQUEST -> sd_ble_gap_sec_info_reply(conn, enc, id, sign)
+    all-NULL = no keys (AUTH_STATUS AUTH_REQ fail, link stays up);
+    non-NULL enc = keys found (ENCRYPT expected next)
+  sd_ble_gap_encrypt(conn, master_id, enc_info) re-encrypts (needs
+  EncryptPending/Accepted); sd_ble_gap_lesc_oob_data_get zeroes 32B
+  (no crypto — documented); LESC_OOB_DATA_SET is an ack
 BLE complete (driver -> model, posts the SoftDevice event):
   ble_complete_gattc_read(conn, handle, offset, data)  (READ_RSP)
   ble_complete_prim_disc(conn, uuids[], starts[], ends[]) (0xFFFF = 128-bit)
@@ -160,7 +177,22 @@ BLE complete (driver -> model, posts the SoftDevice event):
   ble_complete_rssi(conn, rssi)                        (RSSI_CHANGED)
   ble_complete_hvx(conn, handle)                       (HVC confirm)
   ble_complete_pairing(conn, bonded)                   (AUTH_STATUS + CONN_SEC_UPDATE)
-  ble_fail_pairing(conn, status)                       (AUTH_STATUS failure, link stays up)
+  ble_fail_pairing(conn, status)                       (AUTH_STATUS failure, link stays up;
+                                                        S132 SEC_STATUS codes: 0x00 success,
+                                                        0x81 passkey-fail, 0x82 OOB-missing,
+                                                        0x83 auth-req, 0x84 confirm, 0x85
+                                                        pairing-not-supp — the old code
+                                                        spelled this 0x29, an ATT error)
+  ble_post_sec_params_request(conn, peer_params5) -> bool  (peer started SMP;
+                                                        firmware answers SEC_PARAMS_REPLY)
+  ble_post_sec_info_request(conn, peer_addr7, master_id10, req) -> bool
+                                                      (peer re-encrypt ask;
+                                                       firmware answers SEC_INFO_REPLY)
+  ble_post_auth_key_request(conn, key_type) -> bool   (driver needs key;
+                                                       firmware answers AUTH_KEY_REPLY)
+  ble_post_passkey_display(conn, passkey6, match_request) -> bool
+  ble_post_keypress(conn, kp_not) -> bool             (peer keypress -> KEY_PRESSED)
+  ble_post_lesc_dhkey_request(conn, oobd_req) -> bool (firmware answers LESC_DHKEY_REPLY)
   ble_complete_l2cap_rx(conn, cid, data)               (L2CAP RX echo)
   ble_post_adv_report(peer6, rssi, scan_rsp, data31)   (ADV_REPORT)
   ble_post_gatts_write(conn, handle, uuid16, op, data) (WRITE + table update)
@@ -175,7 +207,24 @@ the tags: `ble_read`/`ble_write`/`ble_disc`/`ble_uuid_read`/
 `prim_disc_rsp`/`char_disc_rsp`/`desc_disc_rsp`/`rel_disc_rsp`/
 `attr_info_rsp`/`uuid_read_rsp`/`vals_read_rsp`/`hvx`/`connected`/
 `adv_report`/`disconnected`/`rssi`/`paired`/`l2cap_rx`/`cancel` out — every reply echoes conn/handle
-so the pump completes the right job. With no bridge the demo pump
+so the pump completes the right job. Two air peers share one
+LocalLink (default battery 87 `PeerBatt` + second battery 64
+`PeerHR`, distinct addresses): every job carries an optional
+`peer:[6 LE bytes]` selecting the peer (default when absent;
+`ble_connect`'s `addr` selects the same way), and `ble_scan`
+reports one `adv_report` per peer. `prim_disc_rsp`/`char_disc_rsp`
+echo the answering `peer` so the driver can pin reads to their link
+(both peers share handle numbers — decl 16/value 17 — so an
+unaddressed fallback walk could answer from the wrong peer; fixed
+here by addressing every read). `ble_rssi` probes HCI_READ_RSSI on
+the live link first (SoftDevice-faithful: the stack samples the
+CONNECTION) and falls back to the advertising sighting — LocalLink's
+virtual controller answers UNKNOWN_HCI_COMMAND (probed) — with
+`src:"conn"|"adv"` tagging the path. Air is serialized: one ATT
+burst per peer address (per-peer lock) + one global scan lock, so
+back-to-back jobs queue instead of colliding and scan-then-connect
+handoffs never interleave a second scan (timeouts under load before
+this). With no bridge the demo pump
 resolves every tag locally (`pumpBleLoopback`: battery 87 + fixed
 table mirroring the bridge peer), so the SVC face works with zero
 infrastructure. `demo/index.html:pumpDma()` + `demo/parts/ble_air.js`

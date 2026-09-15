@@ -160,17 +160,59 @@ export function ble_enabled(): boolean;
 
 /**
  * Fail a pairing handshake: posts AUTH_STATUS with the S132 status
- * (e.g. 0x29 PAIRING_NOT_SUPP); link stays up, unencrypted.
+ * (e.g. 0x85 PAIRING_NOT_SUPP); link stays up, unencrypted.
  */
 export function ble_fail_pairing(conn: number, status: number): void;
 
 export function ble_post_adv_report(peer: Uint8Array, rssi: number, scan_rsp: boolean, data: Uint8Array): void;
 
 /**
+ * Post an AUTH_KEY_REQUEST: the driver needs a key of `key_type`
+ * (0 none, 1 passkey, 2 OOB); firmware answers AUTH_KEY_REPLY.
+ * Returns false outside an accepted handshake.
+ */
+export function ble_post_auth_key_request(conn: number, key_type: number): boolean;
+
+/**
  * Post a peer write to our table: conn handle, attr handle,
  * uuid16 (0xFFFF = 128-bit/vendor), op (1 = write request), bytes.
  */
 export function ble_post_gatts_write(conn: number, handle: number, uuid16: number, op: number, data: Uint8Array): void;
+
+/**
+ * Post a peer KEYPRESS_NOTIFY (type 0..=4). Returns false with no link.
+ */
+export function ble_post_keypress(conn: number, kp_not: number): boolean;
+
+/**
+ * Post an LESC_DHKEY_REQUEST (firmware answers LESC_DHKEY_REPLY;
+ * OOB via LESC_OOB_DATA_SET when oobd_req). Returns false outside an
+ * accepted handshake.
+ */
+export function ble_post_lesc_dhkey_request(conn: number, oobd_req: boolean): boolean;
+
+/**
+ * Post a PASSKEY_DISPLAY: the driver shows this 6-digit ASCII passkey
+ * (firmware answers AUTH_KEY_REPLY when match_request).
+ */
+export function ble_post_passkey_display(conn: number, passkey: Uint8Array, match_request: boolean): boolean;
+
+/**
+ * Post a peer-initiated SEC_INFO_REQUEST: the peer asks to re-encrypt
+ * (peer_addr 7B type+6, master_id 10B ediv+rand[8], req bits: bit0
+ * enc_info, bit1 id_info, bit2 sign_info). Firmware answers
+ * SEC_INFO_REPLY, then ENCRYPT. Returns false when the link cannot
+ * take a request.
+ */
+export function ble_post_sec_info_request(conn: number, peer_addr: Uint8Array, master_id: Uint8Array, req: number): boolean;
+
+/**
+ * Post a peer-initiated SEC_PARAMS_REQUEST: the peer started SMP
+ * with these ble_gap_sec_params_t wire bytes (flags, min/max key
+ * size, kdist_own, kdist_peer); firmware answers SEC_PARAMS_REPLY.
+ * Returns false when the link cannot take a request.
+ */
+export function ble_post_sec_params_request(conn: number, peer_params: Uint8Array): boolean;
 
 export function ble_queue_len(): number;
 
@@ -405,7 +447,13 @@ export interface InitOutput {
     readonly ble_enabled: () => number;
     readonly ble_fail_pairing: (a: number, b: number) => void;
     readonly ble_post_adv_report: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly ble_post_auth_key_request: (a: number, b: number) => number;
     readonly ble_post_gatts_write: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
+    readonly ble_post_keypress: (a: number, b: number) => number;
+    readonly ble_post_lesc_dhkey_request: (a: number, b: number) => number;
+    readonly ble_post_passkey_display: (a: number, b: number, c: number, d: number) => number;
+    readonly ble_post_sec_info_request: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
+    readonly ble_post_sec_params_request: (a: number, b: number, c: number) => number;
     readonly ble_queue_len: () => number;
     readonly ble_take_data: (a: number) => void;
     readonly ble_take_job: (a: number) => void;

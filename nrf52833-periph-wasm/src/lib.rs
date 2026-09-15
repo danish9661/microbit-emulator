@@ -737,10 +737,74 @@ pub fn ble_complete_pairing(conn: u16, bonded: bool) {
 }
 
 /// Fail a pairing handshake: posts AUTH_STATUS with the S132 status
-/// (e.g. 0x29 PAIRING_NOT_SUPP); link stays up, unencrypted.
+/// (e.g. 0x85 PAIRING_NOT_SUPP); link stays up, unencrypted.
 #[wasm_bindgen]
 pub fn ble_fail_pairing(conn: u16, status: u8) {
     crate::sd_ble::fail_pairing(conn, status);
+}
+
+/// Post a peer-initiated SEC_PARAMS_REQUEST: the peer started SMP
+/// with these ble_gap_sec_params_t wire bytes (flags, min/max key
+/// size, kdist_own, kdist_peer); firmware answers SEC_PARAMS_REPLY.
+/// Returns false when the link cannot take a request.
+#[wasm_bindgen]
+pub fn ble_post_sec_params_request(conn: u16, peer_params: &[u8]) -> bool {
+    let mut p = [0u8; 5];
+    for (i, &b) in peer_params.iter().take(5).enumerate() {
+        p[i] = b;
+    }
+    crate::sd_ble::post_sec_params_request(conn, p)
+}
+
+/// Post a peer-initiated SEC_INFO_REQUEST: the peer asks to re-encrypt
+/// (peer_addr 7B type+6, master_id 10B ediv+rand[8], req bits: bit0
+/// enc_info, bit1 id_info, bit2 sign_info). Firmware answers
+/// SEC_INFO_REPLY, then ENCRYPT. Returns false when the link cannot
+/// take a request.
+#[wasm_bindgen]
+pub fn ble_post_sec_info_request(conn: u16, peer_addr: &[u8], master_id: &[u8], req: u8) -> bool {
+    let mut a = [0u8; 7];
+    for (i, &b) in peer_addr.iter().take(7).enumerate() {
+        a[i] = b;
+    }
+    let mut m = [0u8; 10];
+    for (i, &b) in master_id.iter().take(10).enumerate() {
+        m[i] = b;
+    }
+    crate::sd_ble::post_sec_info_request(conn, a, m, req)
+}
+
+/// Post an AUTH_KEY_REQUEST: the driver needs a key of `key_type`
+/// (0 none, 1 passkey, 2 OOB); firmware answers AUTH_KEY_REPLY.
+/// Returns false outside an accepted handshake.
+#[wasm_bindgen]
+pub fn ble_post_auth_key_request(conn: u16, key_type: u8) -> bool {
+    crate::sd_ble::post_auth_key_request(conn, key_type)
+}
+
+/// Post a PASSKEY_DISPLAY: the driver shows this 6-digit ASCII passkey
+/// (firmware answers AUTH_KEY_REPLY when match_request).
+#[wasm_bindgen]
+pub fn ble_post_passkey_display(conn: u16, passkey: &[u8], match_request: bool) -> bool {
+    let mut p = [0u8; 6];
+    for (i, &b) in passkey.iter().take(6).enumerate() {
+        p[i] = b;
+    }
+    crate::sd_ble::post_passkey_display(conn, p, match_request)
+}
+
+/// Post a peer KEYPRESS_NOTIFY (type 0..=4). Returns false with no link.
+#[wasm_bindgen]
+pub fn ble_post_keypress(conn: u16, kp_not: u8) -> bool {
+    crate::sd_ble::post_keypress(conn, kp_not)
+}
+
+/// Post an LESC_DHKEY_REQUEST (firmware answers LESC_DHKEY_REPLY;
+/// OOB via LESC_OOB_DATA_SET when oobd_req). Returns false outside an
+/// accepted handshake.
+#[wasm_bindgen]
+pub fn ble_post_lesc_dhkey_request(conn: u16, oobd_req: bool) -> bool {
+    crate::sd_ble::post_lesc_dhkey_request(conn, oobd_req)
 }
 
 /// Complete an L2CAP TX: posts the RX echo on (conn, cid).

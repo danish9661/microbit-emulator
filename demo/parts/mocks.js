@@ -839,9 +839,38 @@ export class MockBleSvc {
     this.resolveJob();
     const au = this.drainEvt(cpu);
     if (!au || au.id !== 0x19) throw new Error('AUTH_STATUS missing');
+    if (au.body[2] !== 0x00) throw new Error(`AUTH_STATUS success, got ${au.body[2]}`);
+    if ((au.body[3] & 0x04) === 0) throw new Error('AUTH_STATUS bonded bit unset');
     const su = this.drainEvt(cpu);
     if (!su || su.id !== 0x1A) throw new Error('CONN_SEC_UPDATE missing');
     this.seen.paired = true;
+    // 7c2. Peer-initiated pairing: driver posts SEC_PARAMS_REQUEST,
+    // firmware accepts, passkey roundtrip, paired again. Exercises the
+    // reply-SVC face (SEC_PARAMS_REPLY accept + AUTH_KEY_REQUEST +
+    // AUTH_KEY_REPLY) through the same real-SVC path as silicon.
+    // (ble_gap_sec_params_t wire: flags, min/max key size, kdist×2.)
+    w.ble_post_sec_params_request(H, [0x0D, 7, 16, 0x01, 0x00]);
+    const spr = this.drainEvt(cpu);
+    if (!spr || spr.id !== 0x13) throw new Error('SEC_PARAMS_REQUEST missing');
+    if (spr.body[2] !== 0x0D) throw new Error('peer params flags echo');
+    cpu.mem_write(0x20004000, [0x0D, 7, 16, 0x01, 0x00]);
+    ok(this.svc(cpu, 0x7F, H, 0, 0x20004000, 0), 'sec-params-accept');
+    // Drain order: the accept stages GapAuthenticate; post the key
+    // request BEFORE resolving the handshake (the event queue is
+    // FIFO — AUTH_KEY_REQUEST must sit ahead of the handshake's
+    // AUTH_STATUS + CONN_SEC_UPDATE). Then resolve (pairs the stub
+    // air) and drain in order: key request, reply, handshake pair.
+    w.ble_post_auth_key_request(H, 1);
+    this.resolveJob(); // driver handshake (GapAuthenticate -> paired)
+    const akr = this.drainEvt(cpu);
+    if (!akr || akr.id !== 0x17) throw new Error('AUTH_KEY_REQUEST missing');
+    cpu.mem_write(0x20004100, [0x31, 0x32, 0x33, 0x34, 0x35, 0x36]); // "123456"
+    ok(this.svc(cpu, 0x80, H, 1, 0x20004100), 'auth-key-passkey');
+    const hk = this.drainEvt(cpu);
+    if (!hk || hk.id !== 0x19) throw new Error('AUTH_STATUS (peer leg) missing');
+    const sk = this.drainEvt(cpu);
+    if (!sk || sk.id !== 0x1A) throw new Error('CONN_SEC_UPDATE (peer leg) missing');
+    this.seen.peerPair = true;
     // 7d. Indication roundtrip (CCCD-gated): subscribe indicate bit,
     // HVX indication stages, peer confirms via HV_CONFIRM -> HVC.
     // The HVX params block at 0x20003200 was left staged for notify by
@@ -880,7 +909,7 @@ export class MockBleSvc {
     if (!dc || dc.id !== 0x11 || dc.body[2] !== 19) throw new Error('DISCONNECTED missing');
     if (this.drainEvt(cpu) !== null) throw new Error('queue not drained');
     this.seen.full = true;
-    this.done = this.seen.gatts && this.seen.connected && this.seen.readRsp && this.seen.writeRsp && this.seen.paired && this.seen.hvx && this.seen.disc2 && this.seen.full;
+    this.done = this.seen.gatts && this.seen.connected && this.seen.readRsp && this.seen.writeRsp && this.seen.paired && this.seen.peerPair && this.seen.hvx && this.seen.disc2 && this.seen.full;
     void cpu;
   }
 }

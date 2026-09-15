@@ -3,8 +3,9 @@
 One process, three roles on a single Bumble LocalLink:
   - C_emu: the emulator-side virtual controller (TCP-attached; the demo
     pump's RADIO registers are the firmware face of this controller)
-  - C_peer + peer Device: GATT server (battery + Nordic UART) +
-    advertiser (the peer)
+  - C_peer + peer Device + C_peer_hr + peer_hr Device: TWO GATT servers
+    (battery + Nordic UART each; values 87 vs 64, names PeerBatt vs
+    PeerHR) + advertisers (the peers; multi-peer air)
   - C_central + central Device: GATT *client* on the emulator side —
     resolves every staged SoftDevice job across real link-layer air,
     never locally.
@@ -28,23 +29,27 @@ echoes conn/handle/offset back so the pump completes the RIGHT job
   SoftDevice face (SVC jobs staged by src/sd_ble.rs, tags match the
   ble_take_job() export). Every job carries its conn handle; every
   reply echoes it back so the pump completes the RIGHT link
-  (multi-connection firmware). One ATT burst runs at a time: a
-  per-connection lock serializes link ops, so back-to-back jobs queue
-  instead of colliding (observed timeouts before this).
-  {"t":"ble_read","conn":N,"handle":H,"offset":O}
-      -> resolve H against the live peer table (battery/NUS) or walk
-         chars/descs over air; reply
+  (multi-connection firmware). One ATT burst runs at a time per peer
+  address (per-peer lock), and scanner use is globally serialized
+  (scan lock): back-to-back WS jobs queue instead of colliding, and a
+  scan-then-connect handoff never interleaves a second scan (observed
+  timeouts under load before this). Jobs carry an optional
+  "peer":[6 LE bytes] selecting the air peer (default peer when
+  absent; ble_connect's addr selects the same way).
+  {"t":"ble_read","conn":N,"handle":H,"offset":O[,"peer":[6]]}
+      -> resolve H against the addressed peer's table (battery/NUS)
+         or walk chars/descs over air; reply
          {"t":"gatt","conn":N,"handle":H,"offset":O,"value":[bytes],
           "overAir":bool} (offset slices = ATT long-read; unknown
          handle falls back to the battery byte, overAir:false).
-  {"t":"ble_write","conn":N,"handle":H,"op":1|2,"data":[...]}
+  {"t":"ble_write","conn":N,"handle":H,"op":1|2,"data":[...][,"peer":[6]]}
       -> write with response over air; reply
          {"t":"write_rsp","conn":N,"handle":H,"op":OP,"offset":0,
           "len":M,"data":[...],"overAir":true} or
          {"t":"cancel","conn":N,"handle":H,"overAir":false} on link
          failure (firmware retries; never a ghost WRITE_RSP).
-  {"t":"ble_disc","conn":N,"kind":0|1|2|3|4,"start":S,"end":E}
-      -> read-only full walk; reply
+  {"t":"ble_disc","conn":N,"kind":0|1|2|3|4,"start":S,"end":E[,"peer":[6]]}
+      -> read-only full walk of the addressed peer; reply
          {"t":"prim_disc_rsp","conn":N,
           "services":[{uuid16,start,end}],"overAir":true} (kind 0),
          {"t":"rel_disc_rsp","conn":N,
@@ -56,50 +61,61 @@ echoes conn/handle/offset back so the pump completes the RIGHT job
           "overAir":true} (kind 3), or
          {"t":"attr_info_rsp","conn":N,"attrs":[{handle,uuid16}],
           "overAir":true} (kind 4).
-  {"t":"ble_uuid_read","conn":N,"uuid16":U|S,"start":S,"end":E}
+  {"t":"ble_uuid_read","conn":N,"uuid16":U|S,"start":S,"end":E[,"peer":[6]]}
       -> match every table row with the UUID in range, read each value
          over air; reply {"t":"uuid_read_rsp","conn":N,
          "pairs":[{handle,value:[bytes]}],"overAir":true}.
-  {"t":"ble_vals_read","conn":N,"handles":[H..]}
+  {"t":"ble_vals_read","conn":N,"handles":[H..][,"peer":[6]]}
       -> read each handle over air, concatenate; reply
          {"t":"vals_read_rsp","conn":N,"data":[bytes],"overAir":true}.
-  {"t":"ble_hvx","conn":N,"handle":H,"type":1|2,"data":[...]}
-      -> subscribe centrally, emit from the peer, reply
+  {"t":"ble_hvx","conn":N,"handle":H,"type":1|2,"data":[...][,"peer":[6]]}
+      -> subscribe centrally, emit from the addressed peer, reply
          {"t":"hvx","conn":N,"handle":H,"type":T,"data":[notified],
           "overAir":true} (the notified bytes are the air proof).
-  {"t":"ble_scan"} -> one live sighting; reply
-      {"t":"adv_report","peer":[6],"rssi":N,"scan_rsp":0|1,
-       "data":[<=31B],"overAir":true}.
-  {"t":"ble_connect","addr":[6]} -> ATT read on the new link as the
-      connection proof; reply {"t":"connected","peer":[6],
-      "overAir":bool}; the driver posts CONNECTED.
-  {"t":"ble_rssi","conn":N} -> LocalLink has no HCI_READ_RSSI
-      (probed: UNKNOWN_HCI_COMMAND on the virtual controller), so the
-      bridge reports the live advertising-sighting RSSI, tagged
-      {"t":"rssi","conn":N,"rssi":N,"overAir":bool,"src":"adv"}.
-  {"t":"ble_disconnect","conn":N,"reason":R} -> LocalLink links live
-      inside connect_as_gatt contexts (already closed), so the air side
-      is trivially down; reply {"t":"disconnected","conn":N,
-      "reason":R,"overAir":true} with firmware's HCI reason.
-  {"t":"ble_pair","conn":N} -> confirm the link is live with an ATT
-      read on it, then reply {"t":"paired","conn":N,"bonded":true,
-      "overAir":bool}; the driver posts AUTH_STATUS + CONN_SEC_UPDATE.
-  {"t":"ble_l2cap","conn":N,"cid":C,"data":[...]} -> echo the frame on
-      the registered CID (bridge loopback legibility, like the RADIO
-      air echo); reply {"t":"l2cap_rx","conn":N,"cid":C,
-      "data":[...],"overAir":true}.
-  RSSI note: LocalLink has no HCI_READ_RSSI (probed:
-  UNKNOWN_HCI_COMMAND), so ble_rssi reports the live advertising
+   {"t":"ble_scan"} -> live sightings (one ADV_REPORT per advertising
+       peer: two with both peers up); reply
+       {"t":"adv_report","peer":[6],"rssi":N,"scan_rsp":0|1,
+        "data":[<=31B],"overAir":true} per sighting.
+   {"t":"ble_connect","addr":[6]} -> ATT read on the addressed peer as
+       the connection proof (addr selects the peer; default peer when
+       absent); reply {"t":"connected","peer":[6],
+       "overAir":bool}; the driver posts CONNECTED.
+   {"t":"ble_rssi","conn":N[,"peer":[6]]} -> HCI_READ_RSSI on the live
+       link first (the SoftDevice samples the CONNECTION); LocalLink's
+       virtual controller answers UNKNOWN_HCI_COMMAND (probed), so the
+       bridge falls back to the live advertising-sighting RSSI, tagged
+       {"t":"rssi","conn":N,"rssi":N,"overAir":bool,"src":"conn"|"adv"}.
+   {"t":"ble_disconnect","conn":N,"reason":R} -> LocalLink links live
+       inside connect_as_gatt contexts (already closed), so the air side
+       is trivially down; reply {"t":"disconnected","conn":N,
+       "reason":R,"overAir":true} with firmware's HCI reason.
+   {"t":"ble_pair","conn":N[,"peer":[6]]} -> confirm the link is live
+       with an ATT read on it (addressed peer when given), then reply
+       {"t":"paired","conn":N,"bonded":true,"overAir":bool}; the driver
+       posts AUTH_STATUS + CONN_SEC_UPDATE.
+   {"t":"ble_l2cap","conn":N,"cid":C,"data":[...]} -> echo the frame on
+       the registered CID (bridge loopback legibility, like the RADIO
+       air echo); reply {"t":"l2cap_rx","conn":N,"cid":C,
+       "data":[...],"overAir":true}.
+   Air serialization: one ATT burst runs at a time per peer address
+   (per-peer lock), and scanner use is globally serialized (scan
+   lock): back-to-back WS jobs queue instead of colliding, and a
+   scan-then-connect handoff never interleaves a second scan
+   (observed timeouts under load before this).
+  RSSI note: HCI_READ_RSSI is probed first on the live link (the
+  SoftDevice-faithful path); LocalLink's virtual controller answers
+  UNKNOWN_HCI_COMMAND, so ble_rssi falls back to the live advertising
   sighting, and the central caches the last per-peer RSSI seen during
-  scan/connect; replies carry "src":"adv" so the page never mistakes
-  it for a conn reading.
+  scan/connect; replies carry "src" ("conn" vs "adv") so the page never
+  mistakes a fallback for a conn reading.
 
 Provenance: air spike (raw AdvInd PDU -> scanner advertisement event),
 LL spike (emulator-side central GATT battery read = 87 across the
 link), both green against Bumble 0.0.231 (/tmp/opencode/ble_*_spike.py).
-Peer table (handles logged at startup): battery service 0x180F /
-level 0x2A19 (READ+NOTIFY), Nordic UART 128-bit (RX write/WWR,
-TX notify).
+Peers (handles logged at startup): default battery service 0x180F /
+level 0x2A19 (READ+NOTIFY, value 87, name PeerBatt) + Nordic UART
+128-bit (RX write/WWR, TX notify); second peer same table with value 64
+(name PeerHR) at a distinct address.
 
 Run:  python3 tools/ble_air_bridge.py [--port 8765]
 Requires: pip install bumble websockets
@@ -136,6 +152,13 @@ BATTERY_VALUE = 87
 NUS_SVC = '6E400001-B5A3-F393-E0A9-E50E24DCCA9E'
 NUS_RX = '6E400002-B5A3-F393-E0A9-E50E24DCCA9E'
 NUS_TX = '6E400003-B5A3-F393-E0A9-E50E24DCCA9E'
+# Second air peer (multi-peer air): a Heart-Rate-style sensor with a
+# distinct address + name so firmware exercising two links sees two
+# sightings, two tables, two RSSI sources. Battery value differs (64)
+# so cross-link reads are distinguishable on the wire.
+HR_SVC = '0000180D-0000-1000-8000-00805F9B34FB'
+HR_MEAS = '00002A37-0000-1000-8000-00805F9B34FB'
+HR_VALUE = 64
 
 
 async def make_air(link: LocalLink) -> tuple:
@@ -153,8 +176,16 @@ async def make_air(link: LocalLink) -> tuple:
     return port, ctrl
 
 
-async def make_peer(link: LocalLink) -> Device:
-    """In-process peer Device on the same link: battery GATT + advertiser."""
+async def make_peer(link: LocalLink, name: str = 'ble_peer',
+                     batt_value: int = BATTERY_VALUE,
+                     adv_name: bytes = b'PeerBatt') -> Device:
+    """In-process peer Device on the same link: battery GATT + advertiser.
+
+    `name`/`batt_value`/`adv_name` distinguish the multi-peer air: the
+    default peer is the battery+NUS table; the second peer passes a
+    heart-rate-flavoured table (see make_peer_hr below) — same attach
+    shape, distinct address + name.
+    """
     from bumble.device import DeviceConfiguration
     from bumble.host import Host
     # Same shape as the proven link/GATT spikes: the peer is a Device
@@ -172,7 +203,7 @@ async def make_peer(link: LocalLink) -> Device:
     Controller('C_peer', host_source=server_transport.source,
                host_sink=server_transport.sink, link=link)
     client = await open_transport(f'tcp-client:127.0.0.1:{port}')
-    peer = Device(name='ble_peer', config=DeviceConfiguration(),
+    peer = Device(name=name, config=DeviceConfiguration(),
                   host=Host(controller_source=client.source,
                             controller_sink=client.sink))
     # Host gates all packets until its internal RESET handshake completes;
@@ -184,7 +215,7 @@ async def make_peer(link: LocalLink) -> Device:
         BATTERY_LVL,
         gatt_server.Characteristic.Properties.READ | gatt_server.Characteristic.Properties.NOTIFY,
         gatt_server.Characteristic.Permissions.READABLE,
-        bytes([BATTERY_VALUE]),
+        bytes([batt_value]),
     )
     peer.gatt_server.add_service(gatt_server.Service(BATTERY_SVC, [batt]))
     # Nordic UART Service: RX takes writes (with + without response),
@@ -220,7 +251,7 @@ async def make_peer(link: LocalLink) -> Device:
             return False
 
     peer.advertising_data = bytes([0x02, 0x01, 0x06, 0x03, 0x03, 0x0F, 0x18])
-    peer.scan_response_data = bytes([0x09, 0x09]) + b'PeerBatt'
+    peer.scan_response_data = bytes([0x09, 0x09]) + adv_name
     # auto_restart: the peer keeps advertising across central
     # disconnects, so EVERY link op (not just the first) finds air.
     # Without it the peer goes quiet after link #1 closes and later
@@ -229,14 +260,42 @@ async def make_peer(link: LocalLink) -> Device:
     return peer, nus_rx_store, notify_nus, batt, nus_rx, nus_tx
 
 
-# Last RSSI sighting per peer address (LocalLink has no HCI_READ_RSSI
-# — probed UNKNOWN_HCI_COMMAND — so ble_rssi answers from real
-# advertising sightings, cached here on every scan/connect/read).
+async def make_peer_hr(link: LocalLink) -> Device:
+    """Second air peer: heart-rate-flavoured battery table (value 64).
+
+    Same attach shape as make_peer (own controller + advertiser), so it
+    gets a DISTINCT random address on the same LocalLink — the
+    multi-peer target for two-link firmware. The GATT table reuses the
+    battery service/level UUIDs (0x180F/0x2A19) with a different value
+    so per-link reads are distinguishable; the scan name differs too.
+    """
+    return await make_peer(link, name='ble_peer_hr', batt_value=HR_VALUE,
+                           adv_name=b'PeerHR')
+
+
+# Last RSSI sighting per peer address (HCI_READ_RSSI is probed first
+# on the live link; LocalLink answers UNKNOWN_HCI_COMMAND, so ble_rssi
+# falls back to these real advertising sightings, cached here on every
+# scan/connect/read).
 RSSI_CACHE: dict = {}
 
 # One ATT burst at a time per peer: serializes link ops so back-to-back
-# WS jobs queue instead of colliding (observed timeouts).
+# WS jobs queue instead of colliding (observed timeouts). Two layers:
+# LINK_LOCKS serializes ATT bursts per peer address (link ops), while
+# the SCAN_LOCK serializes scanner use: scans share the central's
+# single scanner, and an ATT burst's connect_as_gatt must never run
+# while a scan owns the scanner (or both time out). Every air op takes
+# exactly one of these; scan-then-connect sequences take the scan lock
+# across both steps so a second job's scan cannot interleave.
 LINK_LOCKS: dict = {}
+SCAN_LOCK: asyncio.Lock | None = None
+
+
+def scan_lock() -> asyncio.Lock:
+    global SCAN_LOCK
+    if SCAN_LOCK is None:
+        SCAN_LOCK = asyncio.Lock()
+    return SCAN_LOCK
 
 
 def link_lock(addr) -> asyncio.Lock:
@@ -280,7 +339,11 @@ async def make_central(link: LocalLink) -> Device:
 
 
 async def gatt_read_battery_over_air(central: Device, timeout: float = 15.0) -> int | None:
-    """Scan -> connect -> discover -> read battery, all across the link."""
+    """Scan -> connect -> discover -> read battery, all across the link.
+
+    Holds the scan lock across scan+connect so a second job's scan
+    cannot interleave the handoff (serialized ATT queue).
+    """
     found: asyncio.Queue = asyncio.Queue()
 
     @central.on('advertisement')
@@ -288,16 +351,17 @@ async def gatt_read_battery_over_air(central: Device, timeout: float = 15.0) -> 
         remember_adv(advertisement)
         found.put_nowait(advertisement)
 
-    await central.start_scanning()
-    try:
+    async with scan_lock():
+        await central.start_scanning()
         try:
-            adv = await asyncio.wait_for(found.get(), timeout=timeout)
-        finally:
-            await central.stop_scanning()
-        return await gatt_read_battery_on_link(central, adv.address)
-    except Exception as exc:  # link down / timeout: air is best-effort
-        logging.debug('over-air gatt read failed: %s', exc)
-        return None
+            try:
+                adv = await asyncio.wait_for(found.get(), timeout=timeout)
+            finally:
+                await central.stop_scanning()
+            return await gatt_read_battery_on_link(central, adv.address)
+        except Exception as exc:  # link down / timeout: air is best-effort
+            logging.debug('over-air gatt read failed: %s', exc)
+            return None
 
 
 async def gatt_read_battery_on_link(central: Device, address) -> int | None:
@@ -319,26 +383,31 @@ async def gatt_read_battery_on_link(central: Device, address) -> int | None:
 
 
 async def scan_one_adv(central: Device, timeout: float = 10.0):
-    """One advertising sighting: address + rssi + raw bytes (ADV_REPORT)."""
+    """One advertising sighting: address + rssi + raw bytes (ADV_REPORT).
+
+    Serialized on the scan lock: the central has one scanner, and an
+    ATT burst must never interleave a scan (both sides time out).
+    """
     found: asyncio.Queue = asyncio.Queue()
 
     @central.on('advertisement')
     def _on_adv(advertisement):
         found.put_nowait(advertisement)
 
-    await central.start_scanning()
-    try:
-        adv = await asyncio.wait_for(found.get(), timeout=timeout)
-        remember_adv(adv)
-        return adv
-    except Exception as exc:
-        logging.debug('scan found nothing: %s', exc)
-        return None
-    finally:
+    async with scan_lock():
+        await central.start_scanning()
         try:
-            await central.stop_scanning()
-        except Exception:
-            pass
+            adv = await asyncio.wait_for(found.get(), timeout=timeout)
+            remember_adv(adv)
+            return adv
+        except Exception as exc:
+            logging.debug('scan found nothing: %s', exc)
+            return None
+        finally:
+            try:
+                await central.stop_scanning()
+            except Exception:
+                pass
 
 
 async def gatt_discover_all(central: Device, address, timeout: float = 20.0):
@@ -551,12 +620,35 @@ async def handle_tx(websocket, peer: Device, central: Device,
     ))
 
 
-async def handle_socket(websocket, peer: Device, central: Device,
-                        emu_ctrl: Controller, link_clients: set,
-                        nus_rx_store: dict, notify_nus,
-                        batt, nus_rx, nus_tx) -> None:
-    await websocket.send(json.dumps({'t': 'hello', 'addr': str(peer.random_address)}))
+async def handle_socket(websocket, peers: dict, central: Device,
+                        emu_ctrl: Controller, link_clients: set) -> None:
+    """One browser socket: route every staged SoftDevice job to air.
+
+    `peers` maps address-string -> per-peer bundle (peer Device, GATT
+    handles, notify fn, ...); the default peer is peers['default'].
+    Jobs carry an optional `peer` address list (6 LE bytes, like
+    ble_connect's addr): when it matches a known peer, THAT peer's
+    table answers over air; otherwise the default peer answers. Every
+    reply echoes conn/handle back so the pump completes the RIGHT job
+    (take/complete discipline, no cross-talk). One ATT burst runs at a
+    time per peer: the per-connection lock serializes link ops, so
+    back-to-back jobs queue instead of colliding (observed timeouts).
+    """
+    peer = peers['default']['peer']
+    await websocket.send(json.dumps({'t': 'hello', 'addr': str(peer.random_address),
+                                     'peers': [str(b['peer'].random_address) for b in peers.values()]}))
     link_clients.add(websocket)
+
+    def pick_peer(msg) -> dict:
+        want = msg.get('peer')
+        if isinstance(want, list) and len(want) == 6:
+            for b in peers.values():
+                try:
+                    if list(bytes(b['peer'].random_address)) == list(want):
+                        return b
+                except TypeError:
+                    continue
+        return peers['default']
     try:
         async for raw in websocket:
             try:
@@ -577,8 +669,11 @@ async def handle_socket(websocket, peer: Device, central: Device,
                 conn = msg.get('conn', 1)
                 handle = msg.get('handle', 0x13)
                 offset = msg.get('offset', 0)
+                bundle = pick_peer(msg)
                 data, over_air = await resolve_read(
-                    central, handle, offset, batt, nus_rx, nus_tx)
+                    central, handle, offset,
+                    bundle['peer'].random_address, bundle['batt'],
+                    bundle['nus_rx'], bundle['nus_tx'])
                 if data is None:
                     data = bytes([BATTERY_VALUE])
                 await websocket.send(json.dumps({
@@ -594,11 +689,12 @@ async def handle_socket(websocket, peer: Device, central: Device,
                 handle = msg.get('handle', 0)
                 op = msg.get('op', 1)
                 data = bytes(msg.get('data', []))
+                bundle = pick_peer(msg)
                 ok = await gatt_write_over_air(
-                    central, peer.random_address, handle, data)
+                    central, bundle['peer'].random_address, handle, data)
                 if ok is True:
-                    if handle == getattr(batt, 'handle', -1):
-                        batt.value = bytes(data[:1]) if data else batt.value
+                    if handle == getattr(bundle['batt'], 'handle', -1):
+                        bundle['batt'].value = bytes(data[:1]) if data else bundle['batt'].value
                     await websocket.send(json.dumps({
                         't': 'write_rsp', 'conn': conn, 'handle': handle,
                         'op': op, 'offset': 0, 'len': len(data),
@@ -622,8 +718,9 @@ async def handle_socket(websocket, peer: Device, central: Device,
                 kind = msg.get('kind', 0)
                 start = msg.get('start', 1)
                 end = msg.get('end', 0xFFFF)
+                bundle = pick_peer(msg)
                 svcs, err = await gatt_discover_all(
-                    central, peer.random_address)
+                    central, bundle['peer'].random_address)
                 if err is None:
                     svcs = [s for s in svcs if s['end'] >= start
                             and s['start'] <= end]
@@ -637,9 +734,14 @@ async def handle_socket(websocket, peer: Device, central: Device,
                     elif kind == 2:
                         chars = [c for s in svcs for c in s['chars']
                                  if start <= c['value'] <= end]
+                        try:
+                            peer_list = list(bytes(bundle['peer'].random_address))
+                        except TypeError:
+                            peer_list = []
                         await websocket.send(json.dumps({
                             't': 'char_disc_rsp', 'conn': conn,
-                            'chars': chars, 'overAir': True}))
+                            'chars': chars, 'peer': peer_list,
+                            'overAir': True}))
                     elif kind == 3:
                         descs = [d for s in svcs for c in s['chars']
                                  for d in c['descs']
@@ -664,9 +766,14 @@ async def handle_socket(websocket, peer: Device, central: Device,
                     else:
                         slim = [{'uuid16': s['uuid16'], 'start': s['start'],
                                  'end': s['end']} for s in svcs]
+                        try:
+                            peer_list = list(bytes(bundle['peer'].random_address))
+                        except TypeError:
+                            peer_list = []
                         await websocket.send(json.dumps({
                             't': 'prim_disc_rsp', 'conn': conn,
-                            'services': slim, 'overAir': True}))
+                            'services': slim, 'peer': peer_list,
+                            'overAir': True}))
                 else:
                     await websocket.send(json.dumps({
                         't': 'cancel', 'conn': conn, 'handle': 0,
@@ -678,15 +785,16 @@ async def handle_socket(websocket, peer: Device, central: Device,
                 want = msg.get('uuid16', 0xFFFF)
                 start = msg.get('start', 1)
                 end = msg.get('end', 0xFFFF)
+                bundle = pick_peer(msg)
                 svcs, err = await gatt_discover_all(
-                    central, peer.random_address)
+                    central, bundle['peer'].random_address)
                 pairs = []
                 if err is None:
                     for s in svcs:
                         for c in s['chars']:
                             if c['uuid16'] == want and start <= c['value'] <= end:
                                 v = await read_value_on_link(
-                                    central, peer.random_address, c['value'])
+                                    central, bundle['peer'].random_address, c['value'])
                                 if v is not None:
                                     pairs.append({'handle': c['value'],
                                                   'value': list(v)})
@@ -699,9 +807,10 @@ async def handle_socket(websocket, peer: Device, central: Device,
                 conn = msg.get('conn', 1)
                 data: list = []
                 ok_all = True
+                bundle = pick_peer(msg)
                 for h in msg.get('handles', []):
                     v = await read_value_on_link(
-                        central, peer.random_address, int(h))
+                        central, bundle['peer'].random_address, int(h))
                     if v is None:
                         ok_all = False
                         break
@@ -726,11 +835,12 @@ async def handle_socket(websocket, peer: Device, central: Device,
                 handle = msg.get('handle', 0)
                 hvx_type = msg.get('type', 1)
                 data = bytes(msg.get('data', []))
+                bundle = pick_peer(msg)
                 if not handle:
-                    handle = getattr(nus_tx, 'handle', -1) + 1
+                    handle = getattr(bundle['nus_tx'], 'handle', -1) + 1
                 got = await gatt_subscribe_and_notify(
-                    central, peer.random_address, handle,
-                    lambda: notify_nus(data))
+                    central, bundle['peer'].random_address, handle,
+                    lambda b=bundle, d=data: b['notify_nus'](d))
                 if got is None:
                     await websocket.send(json.dumps({
                         't': 'cancel', 'conn': conn, 'handle': handle,
@@ -742,31 +852,49 @@ async def handle_socket(websocket, peer: Device, central: Device,
                         'overAir': True}))
                 continue
             if msg.get('t') == 'ble_scan':
-                # SoftDevice SCAN_START job: one live sighting becomes
-                # the ADV_REPORT firmware drains via sd_ble_evt_get.
-                adv = await scan_one_adv(central)
-                if adv is None:
+                # SoftDevice SCAN_START job: live sightings become the
+                # ADV_REPORTs firmware drains via sd_ble_evt_get. With
+                # two peers advertising, report up to one sighting PER
+                # peer (multi-peer air); single-peer setups report one.
+                seen: dict = {}
+                for _ in range(2 * len(peers)):
+                    adv = await scan_one_adv(central, timeout=4.0)
+                    if adv is None:
+                        break
+                    try:
+                        key = str(adv.address)
+                    except TypeError:
+                        key = 'default'
+                    if key not in seen:
+                        seen[key] = adv
+                    if len(seen) >= len(peers):
+                        break
+                if not seen:
                     continue
-                try:
-                    peer_bytes = list(bytes(adv.address))
-                except TypeError:
-                    peer_bytes = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]
-                raw = bytes(adv.data_bytes) if hasattr(adv, 'data_bytes') else b''
-                await websocket.send(json.dumps({
-                    't': 'adv_report', 'peer': peer_bytes,
-                    'rssi': int(getattr(adv, 'rssi', -50)),
-                    'scan_rsp': 1 if getattr(adv, 'is_scan_response', False) else 0,
-                    'data': list(raw[:31]), 'overAir': True}))
+                for adv in seen.values():
+                    try:
+                        peer_bytes = list(bytes(adv.address))
+                    except TypeError:
+                        peer_bytes = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]
+                    raw = bytes(adv.data_bytes) if hasattr(adv, 'data_bytes') else b''
+                    await websocket.send(json.dumps({
+                        't': 'adv_report', 'peer': peer_bytes,
+                        'rssi': int(getattr(adv, 'rssi', -50)),
+                        'scan_rsp': 1 if getattr(adv, 'is_scan_response', False) else 0,
+                        'data': list(raw[:31]), 'overAir': True}))
                 continue
             if msg.get('t') == 'ble_connect':
                 # SoftDevice GAP-connect job: connect over air, report the
                 # peer address; the driver marks connected + posts
                 # CONNECTED. Connection proof = a real ATT read on the
-                # new link (central role, like firmware's central).
+                # new link (central role, like firmware's central). An
+                # explicit `addr` (6 LE bytes, from the GapConnect job)
+                # selects the peer; otherwise the default peer answers.
+                bundle = pick_peer({'peer': msg.get('addr')})
                 value = await gatt_read_battery_on_link(
-                    central, peer.random_address)
+                    central, bundle['peer'].random_address)
                 try:
-                    peer_bytes = list(bytes(peer.random_address))
+                    peer_bytes = list(bytes(bundle['peer'].random_address))
                 except TypeError:
                     peer_bytes = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]
                 await websocket.send(json.dumps(
@@ -774,26 +902,37 @@ async def handle_socket(websocket, peer: Device, central: Device,
                      'overAir': value is not None}))
                 continue
             if msg.get('t') == 'ble_rssi':
-                # SoftDevice RSSI_GET job: LocalLink has no RSSI command
-                # (HCI_READ_RSSI unsupported on the virtual controller —
-                # probed: UNKNOWN_HCI_COMMAND). Answer from the cached
-                # sighting for THIS peer (updated by every scan/connect/
-                # read), refreshing opportunistically with one quick
-                # scan; tagged "adv" so the page never mistakes it for a
-                # conn reading.
+                # SoftDevice RSSI_GET job: prefers HCI_READ_RSSI on the
+                # live link (the SoftDevice samples the CONNECTION's
+                # RSSI, not an advertisement), probed first on every
+                # call; LocalLink's virtual controller answers
+                # UNKNOWN_HCI_COMMAND (verified against this Bumble
+                # revision), so the bridge falls back to the cached
+                # advertising sighting for THIS peer (updated by every
+                # scan/connect/read), refreshing opportunistically with
+                # one quick scan. Replies carry "src" ("conn" vs "adv")
+                # so the page never mistakes a fallback for a conn
+                # reading.
                 conn = msg.get('conn', 1)
-                adv = await scan_one_adv(central, timeout=3.0)
-                cached = RSSI_CACHE.get(str(peer.random_address))
-                if adv is not None:
-                    rssi = int(getattr(adv, 'rssi', -50))
-                elif cached is not None:
-                    rssi = cached
+                bundle = pick_peer(msg)
+                rssi, src = await read_conn_rssi(
+                    central, bundle['peer'].random_address)
+                if src == 'conn':
+                    over_air = True
                 else:
-                    rssi = -50
+                    adv = await scan_one_adv(central, timeout=3.0)
+                    cached = RSSI_CACHE.get(str(bundle['peer'].random_address))
+                    if adv is not None:
+                        rssi = int(getattr(adv, 'rssi', -50))
+                        src = 'adv'
+                    elif cached is not None:
+                        rssi = cached
+                    else:
+                        rssi = -50
+                    over_air = adv is not None or cached is not None
                 await websocket.send(json.dumps({
                     't': 'rssi', 'conn': conn, 'rssi': rssi,
-                    'overAir': adv is not None or cached is not None,
-                    'src': 'adv'}))
+                    'overAir': over_air, 'src': src}))
                 continue
             if msg.get('t') == 'ble_pair':
                 # Pairing confirm: prove the link is live with an ATT
@@ -802,8 +941,9 @@ async def handle_socket(websocket, peer: Device, central: Device,
                 # pair AUTH_STATUS + CONN_SEC_UPDATE is real, the keys
                 # are not).
                 conn = msg.get('conn', 1)
+                bundle = pick_peer(msg)
                 value = await gatt_read_battery_on_link(
-                    central, peer.random_address)
+                    central, bundle['peer'].random_address)
                 await websocket.send(json.dumps({
                     't': 'paired', 'conn': conn, 'bonded': True,
                     'overAir': value is not None}))
@@ -834,25 +974,28 @@ async def handle_socket(websocket, peer: Device, central: Device,
         link_clients.discard(websocket)
 
 
-async def resolve_read(central, handle, offset, batt, nus_rx, nus_tx):
+async def resolve_read(central, handle, offset, address, batt, nus_rx, nus_tx):
     """Resolve a GATTC read job to (data, over_air).
 
     Known peer handles answer from the live table (battery value,
-    NUS TX buffer); unknown handles get a generic over-air read by
-    walking the peer's chars/descs. Offset slices the value (ATT
-    long-read semantics); out-of-range offset = empty (ATT error
-    shape, still an air proof).
+    NUS TX buffer); unknown handles get a generic over-air read on the
+    ADDRESSED peer by walking its chars/descs. Offset slices the value
+    (ATT long-read semantics); out-of-range offset = empty (ATT error
+    shape, still an air proof). The address pins the read to its peer:
+    both peers share handle numbers (decl 16 / value 17), so an
+    unaddressed fallback walk could answer from the WRONG peer.
     """
     known = {}
-    for char in (batt, nus_tx):
+    for char in (batt, nus_rx, nus_tx):
         h = getattr(char, 'handle', None)
         if h is not None:
             v = bytes(char.value) if hasattr(char, 'value') else b''
             known[h] = v
+            known[h + 1] = v  # VALUE handle = decl+1 (probed mapping)
     if handle in known:
         return known[handle][offset:], True
-    # Generic path: walk the live peer for this handle.
-    found = await read_handle_over_air(central, handle)
+    # Generic path: walk the ADDRESSED peer for this handle.
+    found = await read_value_on_link(central, address, handle)
     if found is None:
         return None, False
     return found[offset:], True
@@ -884,10 +1027,28 @@ async def read_value_on_link(central, address, handle, timeout: float = 20.0):
 
 async def read_handle_over_air(central, handle, timeout: float = 20.0):
     """Read any handle (char value or desc) by walking the peer table
-    (decl+1 value mapping, see gatt_write_over_air)."""
-    adv = await scan_one_adv(central, timeout=10.0)
-    if adv is None:
-        return None
+    (decl+1 value mapping, see gatt_write_over_air). Scan handoff holds
+    the scan lock so no second scan interleaves (serialized ATT queue).
+    """
+    async with scan_lock():
+        found: asyncio.Queue = asyncio.Queue()
+
+        @central.on('advertisement')
+        def _on_adv(advertisement):
+            remember_adv(advertisement)
+            found.put_nowait(advertisement)
+
+        await central.start_scanning()
+        try:
+            adv = await asyncio.wait_for(found.get(), timeout=10.0)
+        except Exception as exc:
+            logging.debug('read-handle found nothing: %s', exc)
+            return None
+        finally:
+            try:
+                await central.stop_scanning()
+            except Exception:
+                pass
     try:
         async with link_lock(adv.address), central.connect_as_gatt(adv.address) as peer:
             await asyncio.wait_for(peer.discover_services(), timeout=timeout)
@@ -906,6 +1067,63 @@ async def read_handle_over_air(central, handle, timeout: float = 20.0):
     return None
 
 
+async def read_conn_rssi(central, address, timeout: float = 8.0):
+    """HCI_READ_RSSI on the live link: (rssi, 'conn') on success.
+
+    Opens the link (like every other ATT op here), issues the
+    controller HCI_READ_RSSI command, and closes the link. Returns
+    (None, 'none') when the controller cannot do it — LocalLink's
+    virtual controller answers UNKNOWN_HCI_COMMAND (probed), in which
+    case the ble_rssi handler falls back to the advertising sighting
+    (src 'adv'). (rssi, 'conn') is the SoftDevice-faithful path:
+    sd_ble_gap_rssi_get samples the CONNECTION, not an advertisement.
+    """
+    from bumble import hci
+    try:
+        async with link_lock(address), central.connect_as_gatt(address):
+            conn = None
+            try:
+                conns = getattr(central.host, 'connections', None) or {}
+                items = conns.items() if hasattr(conns, 'items') else []
+                for _h, c in items:
+                    peer_addr = getattr(c, 'peer_address', None)
+                    if peer_addr is not None and str(peer_addr) == str(address):
+                        conn = c
+                        break
+                if conn is None and items:
+                    conn = list(items)[-1][1]
+            except Exception:
+                conn = None
+            if conn is None or getattr(conn, 'handle', None) is None:
+                return None, 'none'
+            try:
+                rsp = await asyncio.wait_for(
+                    central.send_sync_command(
+                        hci.HCI_Read_RSSI_Command(handle=int(conn.handle))),
+                    timeout=timeout,
+                )
+            except Exception as exc:
+                # LocalLink's virtual controller answers
+                # UNKNOWN_HCI_COMMAND (probed) — the expected path, not
+                # an error: the caller falls back to the adv sighting.
+                logging.debug('conn rssi command failed (fallback to adv): %s', exc)
+                return None, 'none'
+            rssi = getattr(rsp, 'rssi', None)
+            if rssi is None:
+                return None, 'none'
+            try:
+                rssi = int(rssi)
+            except (TypeError, ValueError):
+                return None, 'none'
+            if rssi > 127:
+                rssi -= 256
+            return rssi, 'conn'
+    except Exception as exc:
+        logging.debug('conn rssi failed: %s', exc)
+        return None, 'none'
+    return None, 'none'
+
+
 async def amain(port: int) -> None:
     link = LocalLink()
     emu_port, emu_ctrl = await make_air(link)
@@ -914,13 +1132,24 @@ async def amain(port: int) -> None:
     peer, nus_rx_store, notify_nus, batt, nus_rx, nus_tx = made
     logging.info('peer advertising as %s (batt h=%s nus_rx h=%s nus_tx h=%s)',
                  peer.random_address, batt.handle, nus_rx.handle, nus_tx.handle)
+    made_hr = await make_peer_hr(link)
+    peer_hr, nus_rx_store_hr, notify_nus_hr, batt_hr, nus_rx_hr, nus_tx_hr = made_hr
+    logging.info('peer-hr advertising as %s (batt h=%s)',
+                 peer_hr.random_address, batt_hr.handle)
+    peers = {
+        'default': {'peer': peer, 'nus_rx_store': nus_rx_store,
+                    'notify_nus': notify_nus, 'batt': batt,
+                    'nus_rx': nus_rx, 'nus_tx': nus_tx},
+        'hr': {'peer': peer_hr, 'nus_rx_store': nus_rx_store_hr,
+               'notify_nus': notify_nus_hr, 'batt': batt_hr,
+               'nus_rx': nus_rx_hr, 'nus_tx': nus_tx_hr},
+    }
     central = await make_central(link)
     logging.info('emu-side central ready')
     clients: set = set()
 
     async def serve(ws) -> None:
-        await handle_socket(ws, peer, central, emu_ctrl, clients,
-                            nus_rx_store, notify_nus, batt, nus_rx, nus_tx)
+        await handle_socket(ws, peers, central, emu_ctrl, clients)
 
     async with websockets.serve(serve, '127.0.0.1', port):
         logging.info('ble_air_bridge on ws://127.0.0.1:%d', port)
