@@ -2599,6 +2599,18 @@ mod tests {
     use crate::cpu::mem::{FlatMemory, Memory};
     use crate::system::test_dummy_system;
 
+    /// sd_ble tests share two process-global channels with every other
+    /// test thread: the SD_BLE_STATE/TAKE_DATA thread-locals are
+    /// per-thread (safe), but FlatMemory::watch consults the INSTALLED
+    /// process-global SYS + MWU_ARMED, and a parallel cpu/mwu test can
+    /// swap SYS mid-test (the mod.rs:457 / mwu_nrf.rs:237
+    /// `RefCell already borrowed` flake). Hold BOOT_LOCK across the
+    /// whole body (same discipline as cpu/tests + mwu tests) so no SYS
+    /// swap can interleave.
+    fn lock_boot() -> std::sync::MutexGuard<'static, ()> {
+        crate::system::lock_boot()
+    }
+
     fn regs(r0: u32, r1: u32, r2: u32, r3: u32) -> [u32; 13] {
         let mut r = [0u32; 13];
         r[0] = r0;
@@ -2666,6 +2678,7 @@ mod tests {
 
     #[test]
     fn enable_reports_ram_base_and_evt_get_two_arg_contract() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
@@ -2717,6 +2730,7 @@ mod tests {
 
     #[test]
     fn gatts_table_service_char_value_roundtrip() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
@@ -2753,6 +2767,7 @@ mod tests {
 
     #[test]
     fn gattc_read_write_discovery_hvx_stage_take_complete() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
@@ -2844,6 +2859,7 @@ mod tests {
 
     #[test]
     fn gap_disconnect_rssi_scan_hvx_lifecycle() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
@@ -2944,6 +2960,7 @@ mod tests {
 
     #[test]
     fn gap_connect_stages_and_posts_connected() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
@@ -2971,6 +2988,7 @@ mod tests {
 
     #[test]
     fn gattc_rel_attrinfo_uuid_vals_stage_take_complete() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
@@ -3032,6 +3050,7 @@ mod tests {
 
     #[test]
     fn l2cap_register_tx_unregister_roundtrip() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
@@ -3103,6 +3122,7 @@ mod tests {
 
     #[test]
     fn pairing_request_reply_complete_lifecycle() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
@@ -3159,6 +3179,7 @@ mod tests {
 
     #[test]
     fn pairing_peer_request_accept_passkey_oob_encrypt_flow() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
@@ -3305,6 +3326,7 @@ mod tests {
 
     #[test]
     fn multi_conn_handles_isolated_state() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();

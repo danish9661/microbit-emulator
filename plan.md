@@ -2710,3 +2710,37 @@ the gate below, so none was run):
 C-workstream closed: LEFT-4 (P106) + LEFT-3 (this note) both parked
 with evidence. No code touched in either (reverted probes only;
 suite file-free throughout).
+
+## 90. P108 parallel-flake harness fix, part 2: sd_ble BOOT_LOCK join closes the SYS-swap race (2026-09-16)
+
+P105 closed the deterministic order-dependence (MPU exit disarm;
+filtered 10/10 both modes) but the full suite still flaked ~2/15 in
+parallel with `RefCell already borrowed` at `mwu_nrf.rs:237` /
+`mod.rs:457` (+ rarer `mod.rs:131` + `mod.rs:495` shapes and one
+unrelated-looking `usbdev` UART-marker miss — all the same family).
+
+Root cause (proven, NOT the thread-local theory): the INSTALLED
+process-global `SYS AtomicPtr` (`lib.rs:set_sys`, swapped by every
+`boot()`/`init_for_test` with no join) vs sd_ble unit tests that
+never held `BOOT_LOCK`. A parallel cpu/mwu test swaps INSTALLED SYS
+mid-test while an sd_ble test's `FlatMemory::write8 → watch →
+mwu_note` holds the MWU slot borrowed → `borrow_mut` panics on the
+aliased slot. Evidence: backtraces through `mem.rs:watch:265` →
+`mwu_note:237` from sd_ble test frames (`gap_connect...:2954`,
+`region_watch...:267`); filtered `sd_ble mwu` parallel failed ~18/20
+pre-fix (single-threaded always green). The `SD_BLE_STATE` /
+`TAKE_DATA` thread-locals were NEVER the fault (per-thread, safe);
+likewise QSPI `QSPI_FLASH OnceLock` is a `Mutex<HashMap>` (safe).
+The panic sites wander (MWU slot vs MPU slot vs NVIC) only because
+whichever slot the victim holds is the one the swap re-enters.
+
+Fix (requested direction, minimal): `BOOT_LOCK` join in all 10
+sd_ble tests (`let _g = lock_boot();` first line, same discipline as
+cpu/tests + mwu tests) + doc comment on the helper. No model change,
+no new locks (deadlock audit: BOOT_LOCK is leaf-only — holders never
+block on UART/I2C locks; `try_lock_uart` in `boot()` stays
+non-blocking), no thread-locals, no `src/cpu/` edits.
+
+Acceptance: filtered `sd_ble mwu` parallel 20/20 green (was ~2/20);
+full suite parallel 25/25 green (was ~13/15); single-threaded
+204/204 unchanged. One commit for the harness fix alone.

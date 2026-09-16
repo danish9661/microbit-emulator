@@ -72,36 +72,41 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   TWIM shifted-ADDR match, SCB AIRCR SYSRESETREQ,
   COMP/QDEC/NFCT/MWU/RADIO/SAADC/CCM depth, EGU slots, sd_ble
   peer-request pairing legs).
-- Parallel-test flake (open, pre-existing, now characterized):
-  stock multi-threaded `cargo test` intermittently fails sd_ble/MWU/MPU
-  tests with `RefCell already borrowed` at `peripherals/mod.rs:131`
-  (~1/4 runs; single-threaded `-- --test-threads=1` is always
-  204/204). Two mechanisms, separated by evidence (P105):
-  (a) DETERMINISTIC order-dependence (fixed this tree, uncommitted):
-  the MPU ENABLE + programmed regions live in the INSTALLED model and
-  outlive the test — the next test in the same process inherits a live
-  gate into a foreign/fresh map (`$BIN --test-threads=1
-  unaligned_device region_watch` failed 10/10 pre-fix: the MWU test's
-  watched write faulted through the stale MPU gate and never reached
-  `mwu_note`, so WA stayed 0). Fix: exit disarm (`mem.write32
-  (0xE000ED94, 0)` at the end of `ldrt_probes_as_unprivileged` +
+- Parallel-test flake (CLOSED P108; open pre-existing before that):
+  stock multi-threaded `cargo test` intermittently failed sd_ble/MWU
+  tests with `RefCell already borrowed` at `peripherals/mod.rs:457` /
+  `mwu_nrf.rs:237` (~1/4 runs pre-P105; ~2/15 post-P105;
+  single-threaded `-- --test-threads=1` always 204/204). Two
+  mechanisms, separated by evidence (P105+P108):
+  (a) DETERMINISTIC order-dependence (fixed P105): the MPU ENABLE +
+  programmed regions live in the INSTALLED model and outlive the test
+  — the next test in the same process inherits a live gate into a
+  foreign/fresh map (`$BIN --test-threads=1 unaligned_device
+  region_watch` failed 10/10 pre-fix: the MWU test's watched write
+  faulted through the stale MPU gate and never reached `mwu_note`, so
+  WA stayed 0). Fix: exit disarm (`mem.write32 (0xE000ED94, 0)` at
+  the end of `ldrt_probes_as_unprivileged` +
   `unaligned_device_faults_without_trap`) — entry clears in
   `boot()`/`Cpu::new` run BEFORE the test programs the model, so only
   an exit close works. Filtered `$BIN mpu mwu unalign` is now 10/10
   both thread modes.
-  (b) NONDETERMINISTIC cross-thread borrow (still open, rarer):
-  `SYS AtomicPtr` + `Rc<RefCell>` peripherals are shared across OS
-  threads with no join — a foreign thread's installed SYS re-enters
-  through `mem.watch`/`mwu_note` while the owner holds the slot
-  (backtraces at `mod.rs:471/495` + `mwu_nrf.rs:237`, plus the QSPI
-  `QSPI_FLASH OnceLock` registry shared across threads). Full-suite
-  parallel is ~13/15 green post-fix (was ~3/4); single-threaded stays
-  the gate — use `-- --test-threads=1` for a clean signal. (The old
-  note about `unaligned_device_faults_without_trap` 1/10 was mechanism
-  (a).) Fix direction for (b): join the same boot lock or run CI
-  single-threaded; not done here.
+  (b) NONDETERMINISTIC cross-thread SYS-swap (fixed P108): the
+  process-global installed `SYS AtomicPtr` is swapped by every
+  `boot()`/`init_for_test` with no join, while sd_ble unit tests on
+  `test_dummy_system()` never held `BOOT_LOCK` — a parallel cpu/mwu
+  test swapped the INSTALLED SYS mid-test while an sd_ble test's
+  `FlatMemory::write8 → watch → mwu_note` held the MWU slot
+  (backtraces at `mwu_nrf.rs:237` + `mod.rs:457`; thread-locals
+  `SD_BLE_STATE`/`TAKE_DATA` were never the fault — per-thread and
+  safe). Parallel filtered `sd_ble mwu` failed ~18/20 pre-fix, 20/20
+  green post-fix. Fix: `BOOT_LOCK` join in all 10 sd_ble tests (same
+  discipline as cpu/tests + mwu tests; no model change, no new locks,
+  no thread-locals). Full suite parallel 25/25 green post-fix. Gate
+  stays single-threaded (`-- --test-threads=1`) by convention.
+  (The old note about `unaligned_device_faults_without_trap` 1/10 was
+  mechanism (a).)
 - Thinnest: RTC/PWM/TEMP/RNG/EGU (1 handshake each).
-- P104 BLE pairing-fw proof (this tree, uncommitted): `blinky/ble_fw/
+- P104 BLE pairing-fw proof (committed P104): `blinky/ble_fw/
   ble_pairing_fw.c` (CODAL-BLE-shaped JustWorks flow: ENABLE → GATTS
   battery service+char → CONNECT → CONNECTED drain → PRIM/CHAR/READ/
   WRITE → AUTHENTICATE → AUTH_STATUS + SEC_UPDATE drain → CONN_SEC_GET
@@ -439,7 +444,7 @@ protection, publish to npm.
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 204 green deterministic (crate dir; parallel default flakes ~1/4 — see §3)
+cargo test -- --test-threads=1    # 204 green (crate dir; parallel also 25/25 post-P108 — see §3)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY-idiom face, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)
