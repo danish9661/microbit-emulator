@@ -138,6 +138,34 @@
   import { LSM303 } from './parts/lsm303.js';
   import { SSD1306 } from './parts/ssd1306.js';
   import { BleAir } from './parts/ble_air.js';
+  import { aesBlock, ctrCrypt, cbcMic } from './parts/crypto.js';
+  // QSPI bench image: 64KB external flash (like MockQspi's backend).
+  // Registered with the model on every initBoard (reset_state clears
+  // the registry); the pump below moves bytes between guest RAM and
+  // this image with AND-only program + 0xFF erase semantics.
+  let qspiImg = new Uint8Array(65536).fill(0xFF);
+  function qspiProg(dst, bytes) {
+    wasm.qspi_register_flash('QSPI', [...qspiImg]);
+    for (let i = 0; i < bytes.length; i++) {
+      const idx = (dst + i) >>> 0;
+      if (idx < qspiImg.length) qspiImg[idx] &= bytes[i];
+    }
+  }
+  function qspiRead(src, len) {
+    const out = [];
+    for (let i = 0; i < len; i++) {
+      const idx = (src + i) >>> 0;
+      out.push(idx < qspiImg.length ? qspiImg[idx] : 0xFF);
+    }
+    return out;
+  }
+  function qspiErase(ptr, lenCode) {
+    const len = lenCode === 1 ? 64 * 1024 : 4 * 1024;
+    for (let i = 0; i < len; i++) {
+      const idx = (ptr + i) >>> 0;
+      if (idx < qspiImg.length) qspiImg[idx] = 0xFF;
+    }
+  }
   const grid = document.getElementById('matrix');
   const leds = [];
   for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) {
@@ -282,6 +310,8 @@
   });
   function initBoard() {
     wasm.reset_state();
+    qspiImg = new Uint8Array(65536).fill(0xFF);
+    wasm.qspi_register_flash('QSPI', [...qspiImg]);
     for (const p of parts) p.register();
     wasm.init();
   }
@@ -550,6 +580,64 @@
       wasm.i2s_complete_tx(bytes);
     }
     if (wasm.i2s_take_capture().length) { /* drained; see TODO above */ }
+    // Crypto engines: driver-side crypto (same contract as the depth
+    // probes + handshake mocks). ECB encrypts KEY@+0/CLEAR@+16 in place
+    // (FIPS-197, like MockEcb); AAR resolves present/absent; CCM runs
+    // CTR+MIC-4 per the CNF contract (like MockCcm). Pumps only fire
+    // when firmware stages a job, so idle firmware costs one take each.
+    t = wasm.ecb_take_job();
+    if (t.length) {
+      const dataptr = t[0] >>> 0;
+      const key = [...cpu.mem_read(dataptr, 16)];
+      const clear = [...cpu.mem_read(dataptr + 16, 16)];
+      cpu.mem_write(dataptr + 32, aesBlock(key, clear));
+      wasm.ecb_complete();
+    }
+    t = wasm.aar_take_job();
+    if (t.length) {
+      // No IRK table on the bench: resolve present (silicon would
+      // compare the address against programmed IRKs).
+      wasm.aar_complete(true);
+    }
+    t = wasm.ccm_take_job();
+    if (t.length) {
+      const cnf = t[0] >>> 0, inp = t[1] >>> 0, outp = t[2] >>> 0;
+      const len = t[4] >>> 0, dec = t[5] !== 0;
+      const key = [...cpu.mem_read(cnf, 16)];
+      const nonce = [...cpu.mem_read(cnf + 16, 13)];
+      const data = [...cpu.mem_read(inp, dec ? len + 4 : len)];
+      if (!dec) {
+        const ct = ctrCrypt(key, nonce, data);
+        const mic = cbcMic(key, nonce, data);
+        cpu.mem_write(outp, [...ct, ...mic]);
+        wasm.ccm_complete(true);
+      } else {
+        const ct = data.slice(0, len), mic = data.slice(len, len + 4);
+        const pt = ctrCrypt(key, nonce, ct);
+        const ok = mic.every((b, i) => b === cbcMic(key, nonce, pt)[i]);
+        cpu.mem_write(outp, pt);
+        wasm.ccm_complete(ok);
+      }
+    }
+    // QSPI external flash: the bench owns a 64KB image (like the mock
+    // backend). Driver moves bytes between guest RAM and the image, then
+    // completes; AND-only program + 0xFF erase match the model.
+    t = wasm.qspi_take_write();
+    if (t.length) {
+      const bytes = [...cpu.mem_read(t[0], t[2])];
+      qspiProg(t[1], bytes);
+      wasm.qspi_complete_write(t[1], bytes);
+    }
+    t = wasm.qspi_take_read();
+    if (t.length) {
+      cpu.mem_write(t[1], qspiRead(t[0], t[2]));
+      wasm.qspi_complete_read();
+    }
+    t = wasm.qspi_take_erase();
+    if (t.length) {
+      qspiErase(t[0], t[1]);
+      wasm.qspi_complete_erase(t[0], t[1]);
+    }
     // USB device: complete staged endpoints so enumeration proceeds.
     t = wasm.usbd_take_epin();
     if (t.length) {
