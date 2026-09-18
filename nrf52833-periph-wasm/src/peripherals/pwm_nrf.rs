@@ -92,4 +92,28 @@ mod tests {
         assert_eq!(p.read(&sys, 0x108), 1);
         assert_eq!(p.read(&sys, 0x110), 1);
     }
+    #[test]
+    fn stop_fires_irq_gated_and_second_instance() {
+        // STOP path: EVENTS_STOPPED + IRQ only when INTEN bit 1 set;
+        // clear by write-0. Exercises PWM1 (IRQ 33) — the first test
+        // only covers PWM0 events without the NVIC path.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E104, 4, 1 << (33 - 32)); // NVIC ISER1: PWM1
+        let mut p = PwmNrf::new("PWM1").unwrap();
+        p.write(&sys, 0x500, 1);
+        // No INTEN yet: STOP sets the event but must not pend the IRQ.
+        p.write(&sys, 0x004, 1);
+        assert_eq!(p.read(&sys, 0x104), 1, "STOPPED event");
+        assert!(!sys.p.nvic.borrow().has_pending(), "no IRQ without INTEN");
+        p.write(&sys, 0x104, 0);
+        assert_eq!(p.read(&sys, 0x104), 0, "clear by write-0");
+        // With INTEN STOPPED (bit 1): STOP pends IRQ 33.
+        p.write(&sys, 0x304, 1 << 1);
+        p.write(&sys, 0x004, 1);
+        assert!(sys.p.nvic.borrow().has_pending(), "STOPPED IRQ 33 pends");
+        // SEQSTART1 on the same instance chains its own pair.
+        p.write(&sys, 0x00C, 1);
+        assert_eq!(p.read(&sys, 0x10C), 1, "SEQSTARTED1");
+        assert_eq!(p.read(&sys, 0x114), 1, "SEQEND1");
+    }
 }

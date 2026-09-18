@@ -47,7 +47,12 @@ impl RtcNrf {
         self.frac = total % div;
         for _ in 0..steps.min(100_000) {
             self.counter = (self.counter + 1) & 0xFF_FFFF;
-            if self.counter == 0 { self.ev_ovrflw = true; }
+            if self.counter == 0 {
+                self.ev_ovrflw = true;
+                if self.intenset & (1 << 1) != 0 {
+                    sys.p.nvic.borrow_mut().set_intr_pending(self.irq);
+                }
+            }
             self.ev_tick = true;
             for i in 0..4 {
                 if self.counter == (self.cc[i] & 0xFF_FFFF) {
@@ -112,5 +117,41 @@ mod tests {
         r.tick(&sys);
         assert_eq!(r.read(&sys, 0x100), 1, "TICK set");
         assert!(r.read(&sys, 0x504) >= 1, "counter advanced");
+    }
+    #[test]
+    fn compare_match_fires_irq_and_ovrflw_wraps() {
+        // COMPARE path: CC0=2, INTEN COMPARE0 (bit 16), ISER IRQ 11.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 11);
+        let mut r = RtcNrf::new("RTC0").unwrap();
+        r.write(&sys, 0x508, 0); // prescaler 0: 1953 instr per LF tick
+        r.write(&sys, 0x540, 2); // CC0
+        r.write(&sys, 0x304, 1 << 16); // INTENSET COMPARE0
+        r.write(&sys, 0x000, 1); // START
+        crate::system::INSTRUCTION_COUNT.fetch_add(4000, std::sync::atomic::Ordering::Relaxed);
+        r.tick(&sys);
+        assert_eq!(r.read(&sys, 0x504), 2, "counter reached CC0");
+        assert_eq!(r.read(&sys, 0x140), 1, "COMPARE0 event");
+        assert_eq!(r.read(&sys, 0x144), 0, "COMPARE1 untouched");
+        assert!(sys.p.nvic.borrow().has_pending(), "COMPARE0 IRQ 11 pends");
+        r.write(&sys, 0x140, 0);
+        assert_eq!(r.read(&sys, 0x140), 0, "clear by write-0");
+        // OVRFLW path: 24-bit wrap sets event + IRQ (bit 1). Park the
+        // counter at the top (same-module access) — a natural run-up
+        // would need 2^24 LF ticks of global INSTRUCTION_COUNT.
+        let sys2 = test_dummy_system();
+        sys2.p.write(&sys2, 0xE000E100, 4, 1 << 17);
+        let mut r2box = RtcNrf::new("RTC1").unwrap();
+        let r2 = r2box.as_any_mut().downcast_mut::<RtcNrf>().unwrap();
+        r2.write(&sys2, 0x508, 0);
+        r2.write(&sys2, 0x304, 1 << 1); // INTENSET OVRFLW
+        r2.counter = 0xFF_FFFF;
+        r2.running = true;
+        r2.last_tick = crate::system::instruction_count();
+        crate::system::INSTRUCTION_COUNT.fetch_add(1953, std::sync::atomic::Ordering::Relaxed);
+        r2.tick(&sys2);
+        assert_eq!(r2.read(&sys2, 0x504), 0, "counter wrapped");
+        assert_eq!(r2.read(&sys2, 0x104), 1, "OVRFLW event");
+        assert!(sys2.p.nvic.borrow().has_pending(), "OVRFLW IRQ 17 pends");
     }
 }

@@ -82,6 +82,25 @@ mod tests {
         assert_eq!(t.read(&sys, 0x508) as i32, 84);
     }
     #[test]
+    fn datardy_irq_gated_by_inten() {
+        // START sets DATARDY always; IRQ 12 pends only with INTEN bit 0
+        // (NVIC ISER IRQ 12). Clear by write-0; STOP also clears.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 12);
+        let mut t = TempNrf::default();
+        t.write(&sys, 0x000, 1);
+        assert_eq!(t.read(&sys, 0x100), 1, "DATARDY");
+        assert!(!sys.p.nvic.borrow().has_pending(), "no IRQ without INTEN");
+        t.write(&sys, 0x304, 1); // INTENSET DATARDY
+        t.write(&sys, 0x000, 1);
+        assert!(sys.p.nvic.borrow().has_pending(), "DATARDY IRQ 12 pends");
+        t.write(&sys, 0x100, 0);
+        assert_eq!(t.read(&sys, 0x100), 0, "clear by write-0");
+        t.write(&sys, 0x000, 1);
+        t.write(&sys, 0x004, 1); // STOP
+        assert_eq!(t.read(&sys, 0x100), 0, "STOP clears DATARDY");
+    }
+    #[test]
     fn host_driven_temperature() {
         let sys = test_dummy_system();
         sys.p.write(&sys, 0x4000C500, 4, 1); // ENABLE

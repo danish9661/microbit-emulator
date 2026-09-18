@@ -80,4 +80,24 @@ mod tests {
         sys.p.write(&sys, 0x4001910C, 4, 0);
         assert_eq!(sys.p.read(&sys, 0x4001910C, 4), 0, "clear by write-0");
     }
+    #[test]
+    fn channels_are_independent_and_masked() {
+        // TRIGGER[5] sets only TRIGGERED[5]; INTEN gates per-bit (bit 5
+        // set, bit 7 clear => TRIGGER[7] sets its event but no IRQ).
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 22); // NVIC ISER: EGU2
+        let mut e = EguNrf::new("EGU2").unwrap();
+        e.write(&sys, 0x304, 1 << 5);
+        e.write(&sys, 0x014, 1); // TASKS_TRIGGER[5]
+        assert_eq!(e.read(&sys, 0x114), 1, "TRIGGERED[5]");
+        assert_eq!(e.read(&sys, 0x100), 0, "TRIGGERED[0] untouched");
+        assert_eq!(e.read(&sys, 0x118), 0, "TRIGGERED[6] untouched");
+        assert!(sys.p.nvic.borrow().has_pending(), "EGU2 IRQ 22 pends");
+        e.write(&sys, 0x01C, 1); // TASKS_TRIGGER[7], INTEN bit clear
+        assert_eq!(e.read(&sys, 0x11C), 1, "TRIGGERED[7] still latches");
+        e.write(&sys, 0x114, 0);
+        assert_eq!(e.read(&sys, 0x114), 0, "clear by write-0");
+        e.write(&sys, 0x308, 1 << 5); // INTENCLR
+        assert_eq!(e.read(&sys, 0x304), 0, "INTEN cleared");
+    }
 }

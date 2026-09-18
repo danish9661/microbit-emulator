@@ -87,4 +87,29 @@ mod tests {
         assert_eq!(r.read(&sys, 0x100), 1);
         assert_ne!(r.read(&sys, 0x508), 0);
     }
+    #[test]
+    fn shorts_valrdy_stops_and_value_rearms() {
+        // SHORTS VALRDY->STOP (bit 0): START self-stops on first value;
+        // without SHORTS the VALUE read re-arms the next VALRDY. IRQ 13
+        // fires only with INTEN bit 0 (NVIC ISER IRQ 13).
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 13);
+        let mut r = RngNrf::default();
+        r.write(&sys, 0x304, 1); // INTENSET VALRDY
+        r.write(&sys, 0x200, 1); // SHORTS VALRDY->STOP
+        r.write(&sys, 0x000, 1); // START
+        assert_eq!(r.read(&sys, 0x100), 1, "VALRDY");
+        assert!(sys.p.nvic.borrow().has_pending(), "RNG IRQ 13 pends");
+        let v1 = r.read(&sys, 0x508);
+        assert_ne!(v1, 0, "value nonzero");
+        assert!(!r.running, "SHORTS stopped the RNG");
+        assert_eq!(r.read(&sys, 0x100), 0, "stopped: no re-arm");
+        // Continuous mode: VALUE read re-arms VALRDY immediately.
+        let mut r2 = RngNrf::default();
+        r2.write(&sys, 0x000, 1);
+        let a = r2.read(&sys, 0x508);
+        assert_eq!(r2.read(&sys, 0x100), 1, "re-armed VALRDY");
+        assert!(r2.running, "still running without SHORTS");
+        let _ = a;
+    }
 }

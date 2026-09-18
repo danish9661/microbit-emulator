@@ -170,6 +170,13 @@ impl Twim {
         }
     }
     fn arm_nack(&mut self) {
+        // SPI has no address phase and never NACKs: SPIM-only instances
+        // (SPIM2/3) must never arm the I2C address-phase timeout, or the
+        // staged DMA is cleared before the driver take runs (~6000 instr).
+        if self.name.starts_with("SPI") {
+            self.nack_at = None;
+            return;
+        }
         // Address phase at 100 kHz ~= 90 us ~= ~6000 core instructions.
         if !self.slave_present() {
             self.nack_at = Some(crate::system::instruction_count().wrapping_add(6000));

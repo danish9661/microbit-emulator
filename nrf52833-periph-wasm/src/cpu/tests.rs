@@ -144,6 +144,82 @@ fn nrf_stubs_spim_pdm_qspi_usbd_radio() {
 }
 
 #[test]
+fn nrf_uarte1_instance_dma_roundtrip() {
+    // uarte1_nrf.s (GCC): UARTE1 (0x40028000, IRQ 40) TX DMA + RX DMA,
+    // each completed driver-side in phases (take -> RAM move ->
+    // complete), exactly like the JS driver will. Proves the second
+    // instance stages through the shared take/complete path (the unit
+    // test only drives registers, never firmware bytes).
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/uarte1_nrf.bin"));
+    let sys = crate::sys();
+    // Phase 1: firmware stages UARTE1 TX DMA, spins on ENDTX.
+    cpu.run(sys, &mut mem, 20_000);
+    let (ptr, len) = crate::peripherals::uarte_nrf::take_txdma(sys).expect("uarte1 tx staged");
+    let bytes: Vec<u8> = (0..len).map(|i| mem.read8(ptr.wrapping_add(i))).collect();
+    assert_eq!(bytes, b"U1DATA\n", "uarte1 TX source bytes");
+    crate::peripherals::uarte_nrf::complete_txdma(sys, &bytes);
+    // Phase 2: firmware stages UARTE1 RX DMA, spins on ENDRX.
+    cpu.run(sys, &mut mem, 20_000);
+    let (ptr, len) = crate::peripherals::uarte_nrf::take_rxdma(sys).expect("uarte1 rx staged");
+    assert_eq!(len, 3, "uarte1 RX MAXCNT");
+    for (i, &b) in [b'A', b'B', b'C'].iter().enumerate() {
+        mem.write8(ptr.wrapping_add(i as u32), b);
+    }
+    crate::peripherals::uarte_nrf::complete_rxdma(sys, len);
+    // Phase 3: drain to done loop.
+    cpu.run(sys, &mut mem, 2_000_000);
+    assert!(cpu.fault.is_none(), "uarte1 faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    // TX bytes hit the console (shared UART_OUTPUT, like UARTE0).
+    assert!(out.contains("U1DATA"), "missing UARTE1 TX bytes, got {out:?}");
+    assert!(out.contains("U1TX:OK"), "missing U1TX marker, got {out:?}");
+    assert!(out.contains("U1RX:OK"), "missing U1RX marker, got {out:?}");
+    // 2nd run: fresh boot, no leak (ENDTX re-arms per boot).
+    crate::system::reset_globals();
+}
+
+#[test]
+fn nrf_spim23_dma_roundtrip() {
+    // spim23_nrf.s (GCC): SPIM2 (0x40023000) TX DMA + SPIM3 (0x4002F000)
+    // RX DMA, each completed driver-side in phases (take -> RAM move ->
+    // complete), exactly like the JS driver will. Proves the dedicated
+    // slots stage DMA frames, not just START/STOP (stubs_nrf.s covers
+    // the handshake only; SPI has no address phase, so no slave needed).
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/spim23_nrf.bin"));
+    let sys = crate::sys();
+    // Phase 1: firmware stages SPIM2 TX DMA, spins on ENDTX.
+    cpu.run(sys, &mut mem, 20_000);
+    let (addr, ptr, len) = crate::peripherals::twim_nrf::take_txdma(sys, "SPIM2").expect("spim2 tx staged");
+    let bytes: Vec<u8> = (0..len).map(|i| mem.read8(ptr.wrapping_add(i))).collect();
+    assert_eq!(bytes, vec![0x01, 0x02, 0x03, 0x04], "spim2 TX source bytes");
+    crate::peripherals::twim_nrf::complete_txdma(sys, "SPIM2", &bytes);
+    let _ = addr;
+    // Phase 2: firmware stages SPIM3 RX DMA, spins on ENDRX.
+    cpu.run(sys, &mut mem, 20_000);
+    let (addr, ptr, len) = crate::peripherals::twim_nrf::take_rxdma(sys, "SPIM3").expect("spim3 rx staged");
+    assert_eq!(len, 4, "spim3 RX MAXCNT");
+    for (i, &b) in [0xAAu8, 0xBB, 0xCC, 0xDD].iter().enumerate() {
+        mem.write8(ptr.wrapping_add(i as u32), b);
+    }
+    crate::peripherals::twim_nrf::complete_rxdma(sys, "SPIM3", len);
+    let _ = addr;
+    // Phase 3: drain to done loop.
+    cpu.run(sys, &mut mem, 2_000_000);
+    assert!(cpu.fault.is_none(), "spim23 faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("S2TX:OK"), "missing S2TX marker, got {out:?}");
+    assert!(out.contains("S3RX:OK"), "missing S3RX marker, got {out:?}");
+    // 2nd run: fresh boot, no leak (ENDTX re-arms per boot).
+    crate::system::reset_globals();
+}
+
+#[test]
 fn nrf_dma_driver_roundtrip() {
     // P6a firmware (dma_nrf.s, GCC): UARTE TX DMA + TWIM RX DMA + SAADC
     // RESULT DMA, each completed driver-side in phases (take -> RAM move ->
