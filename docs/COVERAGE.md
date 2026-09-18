@@ -8,7 +8,7 @@ DAPLink/interface MCU (KL27) is NOT emulated (JS loader + UART only).
 Status key: **F** = functional (timed, IRQs, driver take/complete,
 firmware proof) · **H** = handshake (TASKS/EVENTS/INTEN minimum, no
 timed behavior or no consumer) · **–** = missing / deliberately
-omitted. Counts: `cargo test` **204 green**,
+omitted. Counts: `cargo test` **211 green**,
 `node demo/parts/smoke.mjs` green, `node demo/parts/handshake.mjs`
 18/18, `node demo/parts/ble_live_e2e.mjs` 42/42 over air, browser
 16/16 (`python3 tools/browser_verify_16.py`).
@@ -26,26 +26,26 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | `0x40000000` | CLOCK+POWER | `clock_nrf.rs` | F | HF/LF STARTED+STAT, USBDETECTED/USBPWRRDY, RESETREAS+SREQ latch, GPREGRET, RAMSTATUS, LFCLKSRC; POWER_CLOCK IRQ0. AIRCR SYSRESETREQ fixed P53 (`aircr_sysresetreq_fires_and_self_clears`). |
 | `0x40001000` | RADIO | `radio_nrf.rs` | F | PCNF-length TX take / RX completion+inject, CRCERROR inject, RSSI, SHORTS; `air_nrf` loopback proof. 802.15.4 helpers (P59): ED (EDSTART→EDEND+EDSAMPLE/EDCNT, EDSTOP→EDSTOPPED, `radio_set_ed_dbm`), CCA (CCASTART→CCAIDLE/CCABUSY vs CCACTRL, CCASTOP→CCASTOPPED), DEVMATCH/DEVMISS (+RXMATCH/RXCRC/PDUSTAT) via DAB/DAP, MHRMATCH via CONF/MAS, FRAMESTART+BCMATCH, TIFS/BCC/SFD/MODECNF0/POWER stored, full SHORTS/INTEN SVD bit maps (`ed_cca_mhr_devmatch_framestart`). Demo air = two-instance bridge (`window.__airPeer` foreign bytes, loopback default) — BLE/BT without WebBluetooth. |
 | `0x40002000` | UART0+UARTE0 | `uarte_nrf.rs` | F | 1-byte TX DMA + RXDMA ring; OVERRUN/ERROR/TXSTOPPED (`0x158`/INTEN22, P20 fix); STOPTX never raises ENDTX. STARTTX snapshot (P52, `tx_snapshot_freezes_starttx_bytes`); holes 19/39/59/79 + tail-shift persist (P53i: 0/106 driver mismatches → pre-STARTTX, firmware-side). |
-| `0x40028000` | UARTE1 | `uarte_nrf.rs` | F | TX/RX fully routed (was UARTE0-locked); `uarte1_txdma_roundtrip_targets_instance_1`; no dedicated UARTE1 firmware proof. |
+| `0x40028000` | UARTE1 | `uarte_nrf.rs` | F | TX/RX fully routed (was UARTE0-locked); firmware proof (`uarte1_nrf.s/.bin`, `U1DATA` TX + 3 B RX, `nrf_uarte1_instance_dma_roundtrip`, P110). |
 | `0x40003000` | SPI0/SPIM0/SPIS0/TWI0/TWIM0/TWIS0 | `twim_nrf.rs` | F | Mode-blind shared base; SHORTS, LASTTX/STARTRX/SUSPEND, NACK-after-~6000-instr; TWIS/SPIS engines (`twis_master_write/read`, `spis_exchange`); RXD `0x518` MISO-for-SPI / I2C-queue-for-TWI (`rxd_polling_reads_slave_response_line`). P53: ADDRESS raw, `slave_present` exact-then-`>>1` (`0x72`→`0x39`); `address_matches_shifted_8bit_form`. |
 | `0x40004000` | SPI1/SPIM1/SPIS1/TWI1/TWIM1/TWIS1 | `twim_nrf.rs` | F | Same engine, IRQ4. LSM303 + KL27-UIPM live here in demo (see §2). |
-| `0x40023000` | SPI2/SPIM2/SPIS2 | `twim_nrf.rs` | F | Tap routing done (register RXD MISO + DMA frames); demo pump covers SPIM2/3 DMA; no dedicated SPIM2/3 firmware proof (L5: unit-green, re-verified). |
-| `0x4002F000` | SPIM3 | `twim_nrf.rs` | F | Same as SPIM2 (IRQ47). See L5 remark above. |
+| `0x40023000` | SPI2/SPIM2/SPIS2 | `twim_nrf.rs` | F | Tap routing done (register RXD MISO + DMA frames); firmware DMA proof (`spim23_nrf.s/.bin`, SPIM2 4 B TX, P110); SPI never NACKs (`arm_nack` guard); demo pumpDma covers SPIM2/3. |
+| `0x4002F000` | SPIM3 | `twim_nrf.rs` | F | Same engine (IRQ47); firmware DMA proof (SPIM3 4 B RX, P110). |
 | `0x40005000` | NFCT | `nfct_nrf.rs` | F | Field-detect/select state machine, frame TX/RX take-complete; C+S proof (`nfct_nrf.s/.bin`, `nrf_nfct_field_select_and_frames`). |
 | `0x40006000` | GPIOTE | `gpiote_nrf.rs` | F | 8ch event/task, edge vs pull-up, PORT event, OUT drives GPIO. |
 | `0x40007000` | SAADC | `saadc_nrf.rs` | F | CH config/limits, LIMIT events, RESULTDONE/STOPPED, EASYDMA take/complete + result pump. |
 | `0x40008000`–`0x4000A000` | TIMER0–2 | `timer_nrf.rs` | F | Prescaler/bitmode/SHORTS-CLEAR, CAPTURE snapshots live counter, INTEN 16+i, IRQs 8–10. |
 | `0x4001A000`–`0x4001B000` | TIMER3–4 | `timer_nrf.rs` | F | IRQs 26/27. TIMER4 never STARTs in MakeCode (display never constructed — L4 pre-scroll stall, not a timer gap). |
-| `0x4000B000`/`0x40011000`/`0x40024000` | RTC0–2 | `rtc_nrf.rs` | F | All three, IRQs 11/17/36. Thinnest (1 handshake each). |
-| `0x4000C000` | TEMP | `temp_nrf.rs` | F | Driver-settable (`temp_set_celsius`), DATARDY/INTEN. Thinnest. |
-| `0x4000D000` | RNG | `rng_nrf.rs` | F | Deterministic LCG, VALRDY/SHORTS-to-STOP. Thinnest. |
+| `0x4000B000`/`0x40011000`/`0x40024000` | RTC0–2 | `rtc_nrf.rs` | F | All three, IRQs 11/17/36; COMPARE match + OVRFLW wrap + INTEN/ISER IRQ gating (P110 depth). |
+| `0x4000C000` | TEMP | `temp_nrf.rs` | F | Driver-settable (`temp_set_celsius`), DATARDY + INTEN/ISER IRQ gating + STOP clear (P110 depth). |
+| `0x4000D000` | RNG | `rng_nrf.rs` | F | Deterministic LCG, VALRDY/SHORTS-to-STOP + VALUE re-arm + IRQ gating (P110 depth). |
 | `0x4000E000` | ECB | `misc_nrf.rs` | F | take/complete, FIPS-197 AES-128 proof (`nrf_ecb_aes128_fips_vector`); crypto runs driver-side. |
 | `0x4000F000` | AAR+CCM | `misc_nrf.rs` | F | take/complete, RESOLVED/NOTRESOLVED, CTR+MIC roundtrip; no separate CCM slot (would alias AAR task map); AAR has no wasm export (JS can't drive it). |
 | `0x40010000` | WDT | `wdt_nrf.rs` | F | Expiry + reboot semantics, double-reset proof; RR reload by firmware (no JS export needed). |
 | `0x40012000` | QDEC | `qdec_nrf.rs` | F | Gray-code decode, report/double-read, host-steppable (`qdec_step`), STOPPED/SAMPLE offsets fixed. |
 | `0x40013000` | COMP+LPCOMP | `comp_nrf.rs` | F | Thresholds, crossing events, driver input (`comp_set_input_mv`). |
-| `0x40014000`–`0x40019000` | EGU0–5 (+SWI0–5) | `egu_nrf.rs` | F | All six, trigger/status; handshake test. Thinnest. |
-| `0x4001C000`/`0x40021000`/`0x40022000`/`0x4002D000` | PWM0–3 | `pwm_nrf.rs` | F | All four, IRQs 28/33/34/45; loop/decoders. Thinnest. |
+| `0x40014000`–`0x40019000` | EGU0–5 (+SWI0–5) | `egu_nrf.rs` | F | All six, trigger/status; per-channel independence + INTEN mask + INTENCLR (P110 depth). |
+| `0x4001C000`/`0x40021000`/`0x40022000`/`0x4002D000` | PWM0–3 | `pwm_nrf.rs` | F | All four, IRQs 28/33/34/45; loop/decoders; STOP→STOPPED + INTEN/ISER gating + SEQSTART1 (P110 depth). |
 | `0x4001D000` | PDM | `pdm_nrf.rs` | F | take/complete sample pump. |
 | `0x4001E000` | ACL+NVMC | `nvmc_nrf.rs` (+–) | F/– | NVMC: READY/READYNEXT always-1, WEN/EEN staging, erase take/complete (driver applies 0xFF). ACL/SPU deliberately out of scope (reads 0). |
 | `0x4001F000` | PPI (+CHG, no FORK) | `ppi_nrf.rs` | F | Direct dispatch + group EN/DIS; no FORK register exists. |
@@ -144,8 +144,10 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | blinky | BOOT/BLINK + GPIO | F | Full path flash@0x0 → CLOCK → GPIO → UARTE. Preset base64, byte-verified. |
 | sensors | SENS:OK + BTN:1/0 level-poll + TWIM + GPIOTE | F | BTN_A P0.14 active-low; `input_state` survives reboot (P43). |
 | dma | TWIM DMA loopback | F | Driver-style take → RAM move → complete, like the JS pump. |
-| extras | SAADC/TEMP/RNG/PWM OK | F | One handshake each (thinnest). |
+| extras | SAADC/TEMP/RNG/PWM OK | F | Depth proofs for TEMP/RNG/PWM (P110) alongside SAADC. |
 | stubs | SPIM0/2/3 + PDM/QSPI/USBD/RADIO OK | F | START/STOP→STOPPED on all three SPIM instances (326B, rebuilt from `.s`); preset base64 byte-identical to `blinky/stubs_nrf.bin`. |
+| uarte1 | UARTE1 TX DMA + RX DMA | F | `uarte1_nrf.s/.bin` (P110): `U1DATA` TX + 3 B RX, `U1TX:OK`/`U1RX:OK`; driver take → RAM move → complete (shared path). |
+| spim23 | SPIM2 TX DMA + SPIM3 RX DMA | F | `spim23_nrf.s/.bin` (P110): 4 B TX + 4 B RX, `S2TX:OK`/`S3RX:OK`; SPI-NACK guard (`arm_nack`). |
 | air | USB+RADIO loopback+PPI OK | F | Polls USBRESET first (Run replicates pre-signal). |
 | c_irq | C TIMER0 IRQ + UART | F | C toolchain proof (bit-identical rebuild). |
 | usbep / usbdev | SETUP + EPIN flash-DMA | F | `usbdev_nrf.c` flash-source DMA. |
@@ -171,7 +173,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | Espruino 2v29 | Boots | CoreSight PID fix needed; console is P0.06 bit-bang, nothing TX in early windows. |
 | Bootloader chain (`0x77000`) | Entry + FICR gather + benign post-UICR reset; 2nd reset CODED AIRCR | `0x78514` via tbb `0x78498` (r5=1); `0x783FE` park = post-AIRCR wait. r4==0 is SD-enable SUCCESS (`cbnz r4@0x7B636` skips validation on FAILURE; success → `0x7B5B4`+`0x7B568` → tbb reset #2 BY DESIGN). `0x7B5B4` = IPR22 validator (`236>>a` odd; IPR22=0 always fails — needs SD priorities). `0x784C4` = DFU-progress gate (`[0x20002DF1]`, `[0x2DFC]-[0x2DF4]` vs 59), not the r4 cause. MBR selector (`0x417`) never reads `0x10001200/204` (`0x0–0xB00` sweep) — P42 refuted, direct-app stays. MBR pass-2 needs SD priorities (shelved). |
 
-## 6. LEFT — the 6 STATUS items, each with its next action
+## 6. LEFT — the 9 STATUS items, each with its next action
 
 | # | Item | Status | Next action |
 |---|---|---|---|
@@ -179,8 +181,11 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | 2 | TX drops (holes + tail-shift) | Snapshot ACTIVE but incomplete | Firmware-side slot audit (no trait change); live verify needs (1). P53i holds: 0/106 driver mismatches. |
 | 3 | Bootloader full chain | r4==0/DFU decoded (§5); MBR pass-2 needs SD priorities | None without SD event synthesis (explicitly out of scope). |
 | 4 | MakeCode display content | Zero-touch proven (P57: no member init touches HW in 300M) | Constructor-order trace (which member init reaches `0x30CD0`) + (7,1) producer ID. |
-| 5 | SPIM2/3 tap routing | Done + firmware-proven (START/STOP→STOPPED on both instances via extended `stubs_nrf`; preset base64 byte-identical) | No edge-SPI demo part (no consumer) — stays H by decision. |
+| 5 | SPIM2/3 | Done + DMA-proven (P110 `spim23_nrf`: TX+RX DMA on both instances) | No edge-SPI demo part (no consumer) — stays H by decision. |
 | 6 | Demo wall-time | Environmental (~6 MIPS, banner ~30s at speed) | Re-measure after (1); wasm-opt/pump-quantum only if still slow. |
+| 7 | UARTE1 second-instance proof | Done (P110 `uarte1_nrf`: TX+RX DMA through shared take/complete) | — |
+| 8 | RTC/PWM/RNG/TEMP/EGU depth | Done (P110 second proofs: COMPARE/OVRFLW, STOP/INTEN, DATARDY/INTEN, SHORTS/re-arm, channels/mask) | — |
+| 9 | Bench crypto+QSPI pumps | Done (P109: ECB/AAR/CCM/QSPI live in pumpDma via shared `crypto.js`) | AAR has no wasm export (pump resolves present by design). |
 
 ## 8. BLE: is it fully done? (P58 verdict + P98–P103 build record)
 
@@ -243,14 +248,17 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | `plan.md` | P53 notes | Browser-gap + TX tail-shift + L4 findings. |
 | `demo/parts/lsm303.js` | `normAddr` + UIPM `0x70` stub + DRDY pulse | Shifted-form match; empty UIPM frame; 60/140ms pulse satisfies sensor spin + KL27 threshold. |
 | `demo/parts/smoke.mjs` | KL27 + pulse checks | Slave list `0x19/0x1E/0x70`; both DRDY phases observed. |
-| `demo/pkg/nrf52833_periph_wasm_bg.wasm` | Rebuilt (1.5MB) | Built from this tree; `.gitignore` removed (intentional). |
+| `demo/parts/crypto.js` (P109) | Shared AES-128/CCM (FIPS-197 `aesBlock`, `ctrCrypt`, `cbcMic`) | pumpDma + depth probes share one implementation (moved verbatim out of `mocks.js`). |
+| `demo/index.html` pumpDma (P109) | Live ECB/AAR/CCM/QSPI pumps | ECB encrypts in place, AAR resolves present, CCM CTR+MIC-4 encrypt/decrypt+verify, QSPI 64 KB image (AND-only program, `0xFF` erase). Idle cost: one take each. |
 | `blinky/stubs_nrf.s` + `.bin` | SPIM2/3 START/STOP handshake (270B→326B) | GAS-verified halfwords, rebuilt via `docs/README.md` flags, `nrf_stubs` test green; preset base64 synced byte-identical. |
+| `blinky/uarte1_nrf.s` + `.bin` (P110) | UARTE1 TX+RX DMA firmware proof | GAS-verified, asm recipe (`as` + `ld -T blinky/link_nrf.ld` + `objcopy`), bit-identical; `nrf_uarte1_instance_dma_roundtrip` green. |
+| `blinky/spim23_nrf.s` + `.bin` (P110) | SPIM2 TX + SPIM3 RX DMA firmware proof | Same asm recipe, bit-identical; `nrf_spim23_dma_roundtrip` green (needs the SPI-NACK guard). |
 | `nrf52833-periph-wasm/src/peripherals/scb.rs` | AIRCR mask `0F04` + self-clear + test | `0x05FA0004` now latches reset (was swallowed). |
 | `nrf52833-periph-wasm/src/peripherals/twim_nrf.rs` | Raw ADDRESS + exact-then-`>>1` + tests | `0x72` finds `0x39` tap; readback = written value (silicon). |
 | `docs/COVERAGE.md` | This file | Table audit (uncommitted, per order). |
 
 ```
-cargo test -- --test-threads=1   # 204 green (parallel also 25/25 post-P108; single-threaded stays the gate by convention)
+cargo test -- --test-threads=1   # 211 green (parallel also 25/25 post-P108; single-threaded stays the gate by convention)
 node demo/parts/smoke.mjs        # parts green
 node demo/parts/handshake.mjs    # 18/18 vs the built pkg
 node demo/parts/ble_live_e2e.mjs # 42/42 over air (bridge on :18771)

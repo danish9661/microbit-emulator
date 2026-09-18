@@ -2,26 +2,15 @@
 
 > Living file. Update every working turn: HEAD, `git status -sb`, test count,
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
-> `HANDOVER.md` (may be stale — this file is newest).
+> `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-18, pre-commit P110)
+## 0. Snapshot (2026-09-18, P111 committed, AHEAD of origin — push pending)
 
-- HEAD: `539cf19` "P109 live crypto+QSPI pumps (ECB/AAR/CCM/QSPI in pumpDma, shared crypto.js)"
-- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`, `ahead 1` (P109 committed; verify push state with `git status -sb`).
-- Suite: **211 tests, green single-threaded** (`-- --test-threads=1` → `211 passed`), = 204 committed + 2 Batch 2 + 5 Batch 3. **Parallel: 25/25 green** (P108 fix holds).
-- Staged for P110 commit (all verified):
-  - `M nrf52833-periph-wasm/src/cpu/tests.rs` (+76: `nrf_uarte1_instance_dma_roundtrip`, `nrf_spim23_dma_roundtrip`)
-  - `M nrf52833-periph-wasm/src/peripherals/twim_nrf.rs` (+7: `arm_nack` SPI guard)
-  - `M nrf52833-periph-wasm/src/peripherals/rtc_nrf.rs` (+OVRFLW IRQ bit 1 in model, +`compare_match_fires_irq_and_ovrflw_wraps`)
-  - `M nrf52833-periph-wasm/src/peripherals/pwm_nrf.rs` (+`stop_fires_irq_gated_and_second_instance`, ISER1 pattern for IRQ 33)
-  - `M nrf52833-periph-wasm/src/peripherals/rng_nrf.rs` (+`shorts_valrdy_stops_and_value_rearms`)
-  - `M nrf52833-periph-wasm/src/peripherals/temp_nrf.rs` (+`datardy_irq_gated_by_inten`)
-  - `M nrf52833-periph-wasm/src/peripherals/egu_nrf.rs` (+`channels_are_independent_and_masked`)
-  - `M demo/pkg/nrf52833_periph_wasm_bg.wasm` (rebuilt after Rust changes, committed by policy)
-  - `?? agent.md` (this file, NEW)
-  - `?? blinky/uarte1_nrf.s` + `.bin` (214 B), `?? blinky/spim23_nrf.s` + `.bin` (222 B) — both rebuild bit-identical via xpack GCC 14.2.1.
-  - NOT staged: `?? .openchamber/` (ignore, screenshots only — never commit).
-- Last verified (pre-commit, this tree): cargo 211 single green; parallel 25/25 green; handshake 18/18 OK; parts smoke OK; mpy face OK; live E2E 42/42 OVER AIR OK; browser 16/16 OK zero page errors; pkg rebuilt.
+- HEAD: P111 "doc sync 204->211 (UARTE1/SPIM23 proofs, depth rows, P109 pumps, P91-P92 plan notes)"
+- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`, `ahead 3` (P109+P110+P111 all local; push pending user approval).
+- Suite: **211 tests, green single-threaded** (`-- --test-threads=1` → `211 passed`), = 113 cpu (incl. 17 firmware proofs) + 88 peripherals + 10 sd_ble. **Parallel: 25/25 green**.
+- Working tree: CLEAN except `?? .openchamber/` (ignore — never commit).
+- Last verified: full matrix on P110 tree (211 single, 25/25 parallel, handshake 18/18, smoke+mpy OK, E2E 42/42, browser 16/16, pkg rebuilt+committed). P111 is text-only docs; re-verify = `cargo test` + stale-grep (done below).
 
 ## 1. What we did so far (this recovery session)
 
@@ -43,7 +32,10 @@
 - [x] Batch 3 depth tests 207–211 (done, in tree: RTC COMPARE+OVRFLW, PWM STOP+INTEN+SEQ1, RNG SHORTS+re-arm, TEMP INTEN+STOP, EGU channels+mask — 211 green single + 25/25 parallel)
 - [x] P108 race-fix redo — CLOSED by evidence, no redo needed (see §4)
 - [x] Full verify matrix (done 2026-09-18: 211 single, 25/25 parallel, handshake 18/18, smoke OK, mpy OK, E2E 42/42, browser 16/16, pkg rebuilt)
-- [ ] Commit P110 + push
+- [x] Commit P110 (33d7892)
+- [x] Doc sync P111: STATUS (counts/rows/LEFT#5/P109-pumps/verify), COVERAGE (counts/rows/proofs/LEFT#5+#7–9/verify+worktree), doc.html (pill/key/UARTE1+SPIM2-3/depth/crypto rows/checks/footer), about.html (17 proofs, 211), plan P91+P92
+- [x] Verify P111 (cargo 211 green + stale-grep clean) + commit 3f95560
+- [ ] Push (3 commits ahead of origin — needs user approval; offer it)
 
 ## 3. Batch 3 spec (to rebuild)
 
@@ -72,7 +64,7 @@ session, not a real gap:
   mid-`watch → mwu_note` while the MWU slot is borrowed. All MWU/sd_ble/cpu
   tests already hold BOOT_LOCK; residual is scheduling noise, not a model bug.
 - The stash containing the try_borrow/NACK-clock/tap-lock experiments was
-  dropped AFTER verifying the tree builds + 204 green without it; the only
+  dropped AFTER verifying the tree builds + 204 green (pre-Batch-3 count) without it; the only
   keeper (SPI `arm_nack` guard) was re-applied by hand to `twim_nrf.rs` and
   is covered by `nrf_spim23_dma_roundtrip`.
 - Do NOT bulk-regex `sys.p.nvic.borrow` → helpers: it broke `scb.rs:166`
@@ -94,7 +86,7 @@ session, not a real gap:
 ## 6. Verify matrix (run in order, stop on red)
 
 ```
-cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 206 now, 211 after Batch 3
+cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 211 green
 cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml --lib -- --list 2>/dev/null | grep -c ": test"
 node demo/parts/handshake.mjs          # 18/18 (rebuild via npm run build:handshake --prefix demo after Rust changes)
 npm run test:parts --prefix demo ; npm run test:mpy --prefix demo
@@ -129,3 +121,5 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
 
 - 2026-09-18: created this file; tree = HEAD 539cf19 + Batch 2 (2 tests + SPI guard + 4 blinky files), 206 listed. Next: Batch 3 depth tests.
 - 2026-09-18 (Batch 3 done): +5 tests (RTC COMPARE/OVRFLW incl. OVRFLW-IRQ model fix; PWM STOP/INTEN/SEQ1 on PWM1; RNG SHORTS/re-arm; TEMP INTEN/STOP; EGU per-channel+INTENCLR) → 211 single green, 25/25 parallel green. P108 redo closed as not-needed (evidence). Next: verify matrix + docs + commit/push.
+- 2026-09-18 (P110 committed 33d7892): full matrix green (211/25-25/18-18/E2E-42/browser-16/16), pkg rebuilt+committed.
+- 2026-09-18 (P111 doc-sync committed (see `git log --oneline -1`; amended: +HANDOVER banner, LEFT numbering)): STATUS+COVERAGE+doc.html+about.html 204→211 + P109/P110 rows; plan P91+P92; fixups (eighteen checks, LEFT-9 head, verify line). Pending: push (ahead 3).

@@ -2744,3 +2744,56 @@ non-blocking), no thread-locals, no `src/cpu/` edits.
 Acceptance: filtered `sd_ble mwu` parallel 20/20 green (was ~2/20);
 full suite parallel 25/25 green (was ~13/15); single-threaded
 204/204 unchanged. One commit for the harness fix alone.
+
+## 91. P109 live crypto+QSPI pumps in pumpDma, shared crypto.js (2026-09-17, committed 539cf19)
+
+Demo-only gap closed: the ECB/AAR/CCM/QSPI models were F-grade with
+take/complete exports and native/harness proofs, but the bench pumpDma
+never serviced them — staged firmware jobs sat unstaged in-browser.
+P109 wires them into `demo/index.html:pumpDma()` sharing one
+implementation with the depth probes via NEW `demo/parts/crypto.js`
+(FIPS-197 `aesBlock`, `ctrCrypt`, `cbcMic` — moved verbatim out of
+`mocks.js`'s MockEcb/MockCcm local copies):
+- ECB: take job → driver AES-128 encrypts KEY@+0/CLEAR@+16 in place → complete.
+- AAR: take job → resolve-present → complete (no IRK table on the bench, by design).
+- CCM: take job → CTR+MIC-4 encrypt (or decrypt+verify per the CNF contract) → complete.
+- QSPI: 64 KB bench image (`qspi_register_flash` on every `initBoard`;
+  `reset_state` clears the registry), AND-only program + `0xFF` erase,
+  take read/write/erase → move bytes guest-RAM↔image → complete.
+Idle cost is one take per engine per frame (pumps fire only on staged
+jobs). No Rust changes, no new exports, no model changes; verified via
+the standard matrix (E2E 42/42, browser 16/16 in the P110 run).
+
+## 92. P110 UARTE1 + SPIM2/3 firmware proofs + RTC/PWM/RNG/TEMP/EGU depth (2026-09-18, committed 33d7892)
+
+Two doc-claimed gaps closed plus the "thinnest" row deepened, +7 tests
+(204→211 green single-threaded, 25/25 parallel):
+- Batch 2 firmware proofs (NEW `blinky/uarte1_nrf.s/.bin` 214 B,
+  `blinky/spim23_nrf.s/.bin` 222 B; asm recipe `as` + `ld -T
+  blinky/link_nrf.ld` + `objcopy -O binary`, both rebuilt bit-identical):
+  `nrf_uarte1_instance_dma_roundtrip` (UARTE1 `0x40028000` IRQ 40: TX DMA
+  `U1DATA` + 3 B RX DMA through the shared take/complete path,
+  `U1TX:OK`/`U1RX:OK`) and `nrf_spim23_dma_roundtrip` (SPIM2 `0x40023000`
+  4 B TX + SPIM3 `0x4002F000` 4 B RX, `S2TX:OK`/`S3RX:OK`).
+- Model fix (required by the SPIM2/3 proof): `twim_nrf.rs::arm_nack`
+  SPI guard — SPI has no address phase and never NACKs; without it the
+  staged SPIM2/3 DMA cleared ~6000 instr before the driver take ran.
+- Batch 3 depth (one second proof each, direct-model + NVIC ISER +
+  clear-path convention): RTC COMPARE match + OVRFLW wrap (incl. OVRFLW
+  IRQ bit-1 model fix — SVD `lsb`/`msb` ground truth, was event-only),
+  PWM STOP→STOPPED + INTEN/ISER gating + SEQSTART1 on PWM1 (ISER1
+  `0xE000E104` pattern for IRQ >31), RNG SHORTS VALRDY→STOP + VALUE
+  re-arm, TEMP DATARDY INTEN gating + STOP clear, EGU per-channel
+  independence + INTEN mask + INTENCLR.
+- P108 redo CLOSED without code (evidence): 25/25 parallel green with
+  all additions; the one `mwu_nrf.rs:237` panic in a 6-run loop never
+  reproduced in 25+8 runs (pre-existing rare rate). The stashed
+  try_borrow/NACK-clock experiments were dropped; only the SPI guard
+  kept. Lesson recorded in agent.md: never bulk-regex
+  `sys.p.nvic.borrow` (broke `scb.rs:166` braceless `if`s).
+- Full matrix on the P110 tree: cargo 211 single green, 25/25 parallel,
+  handshake 18/18, smoke + mpy face OK, E2E 42/42 over air, browser
+  16/16 zero page errors, pkg rebuilt (committed `demo/pkg`).
+- Docs synced in P111 (follow-up commit): STATUS/COVERAGE/doc.html/
+  about.html counts 204→211, rows for UARTE1/SPIM2-3/crypto-QSPI/depth,
+  LEFT#5 + new LEFT#7–9, verify blocks, +17 proofs in about.html.

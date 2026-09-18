@@ -1,5 +1,24 @@
-# HANDOVER — micro:bit v2.2 (nRF52833) emulator → next agent (P108+; refreshed 2026-09-16)
+# HANDOVER — micro:bit v2.2 (nRF52833) emulator → next agent (P111+; refreshed 2026-09-18)
 
+> CURRENT SNAPSHOT (trust this banner + `agent.md` over everything below):
+> HEAD `cec1fb1` "P111 doc sync 204->211", branch `master`, `ahead 3`
+> of origin (P109 + P110 + P111 all local — push pending). Suite **211
+> green** single-threaded (113 cpu incl. 17 firmware proofs + 88
+> peripherals + 10 sd_ble), **25/25 parallel green**, handshake 18/18,
+> smoke + mpy face OK, E2E 42/42 over air, browser 16/16 zero page
+> errors, `demo/pkg` rebuilt + committed. Working tree CLEAN except
+> `?? .openchamber/` (never commit).
+> P109: live ECB/AAR/CCM/QSPI pumps in pumpDma via shared
+> `demo/parts/crypto.js`. P110: `blinky/uarte1_nrf.s/.bin` +
+> `blinky/spim23_nrf.s/.bin` firmware proofs (+2 tests), SPI-NACK
+> guard in `twim_nrf.rs::arm_nack`, +5 depth tests
+> (RTC COMPARE/OVRFLW incl. OVRFLW-IRQ fix, PWM STOP/INTEN, RNG
+> SHORTS/re-arm, TEMP INTEN/STOP, EGU channels/mask). P111: docs-only
+> sync (STATUS/COVERAGE/doc.html/about.html 204→211, plan P91+P92).
+> NEXT: push (needs user approval), then continue from STATUS §6 LEFT
+> (items 1–4, 6 open; 5, 7–9 done). `agent.md` is the live handover —
+> update it every turn.
+>
 > SUPERSEDED SNAPSHOT (original §1/§10/§11 kept below for the record —
 > they describe HEAD `535cfcb`/203 tests/all-pending, which is 4+
 > commits stale). Current state: HEAD `2aaf0ba`, 204 tests green in
