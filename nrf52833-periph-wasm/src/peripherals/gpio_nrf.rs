@@ -36,10 +36,27 @@ impl GpioPorts {
             else { self.input_state[port as usize] &= !(1 << pin); }
         }
     }
+    /// NFC-guarded input drive: with antenna pins reserved the level is
+    /// inert (returns false = ignored). Threaded through lib.rs so the
+    /// UICR read happens outside the bank borrow.
+    pub fn set_input_pin_gated(&mut self, port: u8, pin: u8, value: bool, nfc: bool) -> bool {
+        if nfc && GpioPorts::nfc_reserved(port as usize, pin as usize) {
+            return false;
+        }
+        self.set_input_pin(port, pin, value);
+        true
+    }
     pub fn read_input_pin(&self, port: u8, pin: u8) -> bool {
         if (port as usize) < 2 && pin < 32 {
             (self.input_state[port as usize] >> pin) & 1 == 1
         } else { false }
+    }
+    /// NFC antenna reservation: with UICR.NFCPINS PROTECT=1 (reset), P0.09
+    /// and P0.10 are antenna pins — GPIO reads/writes there are inert on
+    /// silicon. The flag is threaded in (the bank has no System handle);
+    /// `Peripherals::read/write` compute it from the UICR slot.
+    pub fn nfc_reserved(port: usize, pin: usize) -> bool {
+        port == 0 && (pin == 9 || pin == 10)
     }
     /// Full 32-bit port level for tap helpers (DC pin sampling): output
     /// latch (JS matrix/DC reads drive outputs).
@@ -128,6 +145,12 @@ impl Peripheral for GpioNrf {
     fn write(&mut self, sys: &System, offset: u32, value: u32) {
         if let Some((port, i)) = Self::cnf_idx(offset) {
             if i < 32 {
+                // NFC antenna pins ignore GPIO configuration while
+                // reserved (UICR.NFCPINS PROTECT=1, reset state).
+                if GpioPorts::nfc_reserved(port, i)
+                    && crate::peripherals::nfct_nrf::nfct_pins_reserved(sys) {
+                    return;
+                }
                 let mut gpio = sys.p.gpio.borrow_mut();
                 gpio.cnf[port][i] = value;
                 // PIN_CNF.DIR (bit 0) is the direction source of truth on

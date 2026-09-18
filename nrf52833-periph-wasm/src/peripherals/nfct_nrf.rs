@@ -95,6 +95,11 @@ impl NfctNrf {
         if !self.enabled {
             return;
         }
+        // Antenna pins routed to GPIO (UICR.NFCPINS PROTECT=0): no RF
+        // front-end, so no field events — silicon-identical gating.
+        if present && !nfcpins_nfc(sys) {
+            return;
+        }
         if present {
             if self.state == State::Sense {
                 self.state = State::Field;
@@ -260,6 +265,25 @@ fn with_nfct<R>(sys: &System, f: impl FnOnce(&mut NfctNrf) -> R) -> Option<R> {
     None
 }
 
+/// UICR.NFCPINS (0x1000120C, bit 0 PROTECT): 1 = pins P0.09/P0.10 are
+/// the NFC antenna (reset value 0xFFFFFFFF, i.e. NFC); 0 = GPIO.
+/// Read live from the UICR slot so `periph_write` seeds apply.
+fn nfcpins_nfc(sys: &System) -> bool {
+    for slot in &sys.p.peripherals {
+        if slot.start == 0x1000_1000 {
+            let v = slot.peripheral.borrow_mut().read(sys, 0x20C);
+            return v & 1 != 0;
+        }
+    }
+    true
+}
+
+/// True when P0.09/P0.10 are currently NFC antenna pins (not GPIO).
+/// Exported so the GPIO bank can refuse NFC-pin traffic the same way.
+pub fn nfct_pins_reserved(sys: &System) -> bool {
+    nfcpins_nfc(sys)
+}
+
 /// Host side of the RF field (a phone tapped / removed). Drives
 /// FIELDDETECTED/FIELDLOST + FIELDPRESENT like the analog front-end.
 pub fn nfct_field_present(sys: &System, present: bool) {
@@ -365,5 +389,32 @@ mod tests {
         // 2nd run: fresh instance, no leak.
         let n2 = NfctNrf::default();
         assert_eq!(n2.state, State::Disabled);
+    }
+    #[test]
+    fn nfcpins_gate_routes_pins_vs_antenna() {
+        // UICR.NFCPINS PROTECT (0x1000120C bit 0): 1 = P0.09/P0.10 are
+        // the NFC antenna (reset 0xFFFFFFFF); 0 = GPIO. The gate is
+        // live: default (erased UICR) reserves the pins + senses field;
+        // clearing PROTECT releases pins to GPIO and kills field events.
+        let sys = test_dummy_system();
+        assert!(nfct_pins_reserved(&sys), "reset = antenna");
+        sys.p.write(&sys, 0x40005500, 4, 1); // ENABLE
+        sys.p.write(&sys, 0x40005008, 4, 1); // SENSE
+        nfct_field_present(&sys, true);
+        assert_eq!(sys.p.read(&sys, 0x40005104, 4), 1, "FIELDDETECTED via antenna");
+        // Release to GPIO: field no longer detected...
+        sys.p.write(&sys, 0x1000120C, 4, 0);
+        assert!(!nfct_pins_reserved(&sys), "PROTECT=0 = GPIO");
+        sys.p.write(&sys, 0x40005104, 4, 0);
+        nfct_field_present(&sys, false);
+        nfct_field_present(&sys, true);
+        assert_eq!(sys.p.read(&sys, 0x40005104, 4), 0, "no field on GPIO pins");
+        // ...and GPIO config on P0.09 works again.
+        sys.p.write(&sys, 0x50000724, 4, 0x1); // PIN_CNF[9] DIR=output
+        assert_eq!(sys.p.read(&sys, 0x50000514, 4) & (1 << 9), 1 << 9, "P0.09 DIR");
+        // Antenna back: config refused.
+        sys.p.write(&sys, 0x1000120C, 4, 1);
+        sys.p.write(&sys, 0x50000724, 4, 0x0);
+        assert_eq!(sys.p.read(&sys, 0x50000514, 4) & (1 << 9), 1 << 9, "DIR sticky under antenna");
     }
 }

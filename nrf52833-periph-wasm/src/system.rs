@@ -432,6 +432,7 @@ pub fn reset_globals() {
     if let Some(m) = I2C_TAP_RX.get() { m.lock().unwrap().clear(); }
     crate::peripherals::qspi_nrf::qspi_clear();
     crate::sd_ble::reset_for_test();
+    crate::sd_evt::reset_sd_evt();
     WATCHDOG_RESET_EVENT.store(false, Relaxed);
     RESETREAS_LATCH.store(0, Relaxed);
     MPU_ENABLED.store(false, Relaxed);

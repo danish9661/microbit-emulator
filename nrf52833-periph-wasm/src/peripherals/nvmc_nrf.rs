@@ -80,8 +80,12 @@ pub fn take_erase(sys: &System) -> Option<u32> {
 }
 
 /// Complete an erase: clears the staged request (driver applied 0xFF).
+/// Posts the SoC flash-success event (sd_evt phase 1) when the SD is
+/// enabled — same take→complete discipline as every DMA pump: post on
+/// completion, never on staging.
 pub fn complete_erase(sys: &System) {
     with_nvmc(sys, |n| n.erase_pending = None);
+    crate::sd_evt::post_flash_op(true);
 }
 
 #[cfg(test)]

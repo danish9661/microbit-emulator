@@ -92,6 +92,22 @@
         <p class="sub">128×64 add-on on TWIM0, address <code>0x3C</code>.</p>
         <canvas id="oled" width="128" height="64"></canvas>
       </section>
+      <section class="panel" aria-labelledby="spidisp-h">
+        <h2 id="spidisp-h">SPI display (ST7789, edge SPI)</h2>
+        <p class="sub">240×240 add-on on SPIM2 (P13 SCK / P14 MISO / P15 MOSI / P16 CS). Firmware draws via CASET/RASET/RAMWR; ID read answers <code>04 85 52</code>.</p>
+        <canvas id="spidisp" width="240" height="240" style="max-width:240px"></canvas>
+        <div class="btn-row">
+          <button id="spidispClear" type="button">Clear</button>
+        </div>
+      </section>
+      <section class="panel" aria-labelledby="audio-h">
+        <h2 id="audio-h">Audio (I2S out)</h2>
+        <p class="sub">Firmware TX stream, 16-bit mono. Press Enable once (browser gesture rule), then stream.</p>
+        <div class="btn-row">
+          <button id="audioToggle" type="button" aria-pressed="false">Enable audio</button>
+          <span class="pin-note" id="audioStatus">audio: off</span>
+        </div>
+      </section>
       <section class="panel" aria-labelledby="ble-h">
         <h2 id="ble-h">BLE air (Bumble bridge)</h2>
         <p class="sub">Optional live peer. Run <code>python3 tools/ble_air_bridge.py</code>, then enable. Off means addressed loopback.</p>
@@ -137,6 +153,7 @@
   import { ROWS, COLS, INTERNAL } from './parts/pins.js';
   import { LSM303 } from './parts/lsm303.js';
   import { SSD1306 } from './parts/ssd1306.js';
+  import { SpiDisplay } from './parts/spidisplay.js';
   import { BleAir } from './parts/ble_air.js';
   import { aesBlock, ctrCrypt, cbcMic } from './parts/crypto.js';
   // QSPI bench image: 64KB external flash (like MockQspi's backend).
@@ -218,6 +235,51 @@
   });
 
   await init();
+  // Audio sink (I2S TX capture -> WebAudio): created on the Enable
+  // gesture (browser autoplay rule), feeds 16-bit mono at 16 kHz.
+  // Firmware silence (all-zero captures) is skipped so idle firmware
+  // costs one drained FIFO, zero scheduled audio.
+  let audioCtx = null, audioOn = false;
+  const audioStatus = document.getElementById('audioStatus');
+  const audioToggle = document.getElementById('audioToggle');
+  function audioPush(u8) {
+    if (!audioOn || !audioCtx || !u8.length) return;
+    let audible = false;
+    for (let i = 0; i < u8.length; i++) { if (u8[i] !== 0) { audible = true; break; } }
+    if (!audible) return;
+    const n = u8.length >> 1;
+    const buf = audioCtx.createBuffer(1, n, 16000);
+    const ch = buf.getChannelData(0);
+    for (let i = 0; i < n; i++) {
+      let v = (u8[2 * i] | (u8[2 * i + 1] << 8));
+      if (v & 0x8000) v -= 0x10000;
+      ch[i] = v / 32768;
+    }
+    const src = audioCtx.createBufferSource();
+    src.buffer = buf;
+    src.connect(audioCtx.destination);
+    src.start();
+  }
+  audioToggle.addEventListener('click', async () => {
+    if (audioOn) {
+      audioOn = false;
+      audioToggle.textContent = 'Enable audio';
+      audioToggle.setAttribute('aria-pressed', 'false');
+      audioStatus.textContent = 'audio: off';
+      if (audioCtx) { try { await audioCtx.close(); } catch (e) {} audioCtx = null; }
+    } else {
+      try {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+        await audioCtx.resume();
+        audioOn = true;
+        audioToggle.textContent = 'Disable audio';
+        audioToggle.setAttribute('aria-pressed', 'true');
+        audioStatus.textContent = 'audio: on (16 kHz mono)';
+      } catch (e) {
+        audioStatus.textContent = 'audio: blocked (' + e.message + ')';
+      }
+    }
+  });
   // BLE panel: live stack state + loopback self-test. The stack line
   // mirrors ble_enabled(), the links line ble_conn_handles(), the queue
   // line ble_queue_len(), the battery line ble_batt_level() — all real
@@ -253,7 +315,12 @@
   const parts = [
     new LSM303(wasm, 'TWIM1'),
     new SSD1306(wasm, 'TWIM0', document.getElementById('oled')),
+    new SpiDisplay(wasm, 'SPIM2', document.getElementById('spidisp')),
   ];
+  document.getElementById('spidispClear')?.addEventListener('click', () => {
+    const p = parts.find((x) => x instanceof SpiDisplay);
+    if (p) p.clear();
+  });
   // Depth probes: live consumers for every handshake model. They share
   // the board's register() BEFORE init() discipline, run on demand
   // (NOT every frame — they program real peripheral state), and report
@@ -568,7 +635,8 @@
       wasm.pdm_complete_sample();
     }
     // I2S audio streaming: RX gets silence, TX bytes go to the capture
-    // FIFO (drained below; TODO: route to WebAudio for real playback).
+    // FIFO, drained into the WebAudio sink below (audible when firmware
+    // streams; silent otherwise — no WebAudio work when idle).
     t = wasm.i2s_take_rx();
     if (t.length) {
       cpu.mem_write(t[0], new Uint8Array(t[1]));
@@ -579,7 +647,7 @@
       const bytes = cpu.mem_read(t[0], t[1]);
       wasm.i2s_complete_tx(bytes);
     }
-    if (wasm.i2s_take_capture().length) { /* drained; see TODO above */ }
+    audioPush(wasm.i2s_take_capture());
     // Crypto engines: driver-side crypto (same contract as the depth
     // probes + handshake mocks). ECB encrypts KEY@+0/CLEAR@+16 in place
     // (FIPS-197, like MockEcb); AAR resolves present/absent; CCM runs
@@ -777,6 +845,11 @@
       } else if (air.t === 'paired') {
         if (air.overAir === false) wasm.ble_fail_pairing(air.conn ?? 1, 0x85);
         else wasm.ble_complete_pairing(air.conn ?? 1, air.bonded !== false);
+      } else if (air.t === 'bond_keys' && Array.isArray(air.peer)) {
+        // Bridge-confirmed air keys for a NULL-keyset handshake: persist
+        // in the bond store so SEC_INFO_REQUEST re-encrypts hit later.
+        wasm.ble_store_bond(air.peer.slice(0, 6), air.ltk ?? [], air.irk ?? [],
+          air.csrk ?? [], air.master_id ?? []);
       } else if (air.t === 'sec_params_request' && Array.isArray(air.peer_params)) {
         wasm.ble_post_sec_params_request(air.conn ?? 1, air.peer_params);
       } else if (air.t === 'sec_info_request' && Array.isArray(air.peer_addr)) {
@@ -791,6 +864,16 @@
         wasm.ble_post_lesc_dhkey_request(air.conn ?? 1, air.oobd_req === true);
       } else if (air.t === 'l2cap_rx' && Array.isArray(air.data)) {
         wasm.ble_complete_l2cap_rx(air.conn ?? 1, air.cid ?? 0x40, air.data);
+      } else if (air.t === 'tx_complete') {
+        // Air packet drained: refill one TX token + TX_COMPLETE event.
+        wasm.ble_complete_tx_flow(air.conn ?? 1);
+      } else if (air.t === 'periph_connected' && Array.isArray(air.peer)) {
+        // A peer answered our advertisement (ADV_START path): dial-in
+        // link with PERIPH role (vs GapConnect's CENTRAL dial-out).
+        const h = wasm.ble_complete_peripheral_connect(air.peer.slice(0, 6));
+        job.lastConn = h;
+      } else if (air.t === 'conn_param_update') {
+        wasm.ble_complete_conn_param_update(air.conn ?? 1);
       } else if (air.t === 'cancel') {
         // Link failure: never a ghost event. Reads fall back to the
         // local battery byte (loopback legibility); writes/disc/hvx

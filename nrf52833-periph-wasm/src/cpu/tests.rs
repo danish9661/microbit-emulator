@@ -220,6 +220,43 @@ fn nrf_spim23_dma_roundtrip() {
 }
 
 #[test]
+fn nrf_sd_evt_flash_success_roundtrip() {
+    // sd_evt_nrf.s (GCC): svc 16 arms the SoC transport, NVMC ERASEPAGE
+    // stages, driver take -> 0xFF apply -> complete posts id 2, firmware
+    // svc 82 polls a word buffer: id=2 len=0, then EMPTY:OK on the
+    // drained queue. Proves the phase-1 wire end to end (design doc §6).
+    // SVC delivery on (deliver_irqs): svc16/82 trap to the SVC handler
+    // (vector 11, installed by the image) and return via EXC_RETURN.
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/sd_evt_nrf.bin"));
+    let sys = crate::sys();
+    cpu.deliver_irqs = true;
+    // Phase 1: firmware runs svc16 + stages the erase, spins on the
+    // mailbox until the driver completes the erase.
+    cpu.run(sys, &mut mem, 20_000);
+    let base = crate::peripherals::nvmc_nrf::take_erase(sys).expect("erase staged");
+    assert_eq!(base, 0x0007_4000, "erase page base");
+    for i in 0..4096u32 {
+        mem.write8(base.wrapping_add(i), 0xFF);
+    }
+    crate::peripherals::nvmc_nrf::complete_erase(sys);
+    assert_eq!(crate::sd_evt::queue_len(), 1, "flash-success queued");
+    mem.write8(0x2000_1000, 1); // mailbox: release the firmware spin
+    // Phase 2: firmware svc82-polls the stack buffer, prints markers.
+    cpu.run(sys, &mut mem, 2_000_000);
+    assert!(cpu.fault.is_none(), "sd_evt faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("EV:OK"), "missing EV marker, got {out:?}");
+    assert!(out.contains("EMPTY:OK"), "missing EMPTY marker, got {out:?}");
+    assert!(out.contains("SDEVT:OK"), "missing SDEVT marker, got {out:?}");
+    assert_eq!(crate::sd_evt::queue_len(), 0, "queue drained by firmware");
+    // 2nd run: fresh boot, no leak (SD disarmed until svc16 again).
+    crate::system::reset_globals();
+}
+
+#[test]
 fn nrf_dma_driver_roundtrip() {
     // P6a firmware (dma_nrf.s, GCC): UARTE TX DMA + TWIM RX DMA + SAADC
     // RESULT DMA, each completed driver-side in phases (take -> RAM move ->

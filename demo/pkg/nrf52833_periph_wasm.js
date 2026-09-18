@@ -355,6 +355,47 @@ export function ble_batt_level() {
 }
 
 /**
+ * Bond store: does the store hold keys for this 6B peer address with
+ * this 10B master_id (silicon re-encrypt gate)? The bridge consults
+ * this before answering SEC_INFO_REPLY: hit = reply with stored keys
+ * + ENCRYPT; miss = all-NULL reply.
+ * @param {Uint8Array} peer
+ * @param {Uint8Array} master_id
+ * @returns {boolean}
+ */
+export function ble_bond_has_keys(peer, master_id) {
+    const ptr0 = passArray8ToWasm0(peer, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(master_id, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.ble_bond_has_keys(ptr0, len0, ptr1, len1);
+    return ret !== 0;
+}
+
+/**
+ * Bond store: read back bonded keys (LTK[16] IRK[16] CSRK[16] MID[10]
+ * = 52 bytes, empty when no bond). Bridge answers SEC_INFO_REPLY
+ * from this instead of failing.
+ * @param {Uint8Array} peer
+ * @returns {Uint8Array}
+ */
+export function ble_bond_read_keys(peer) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArray8ToWasm0(peer, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.ble_bond_read_keys(retptr, ptr0, len0);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v2 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * Complete an attribute-info discovery: handles[i], uuids[i].
  * Posts ATTR_INFO_RSP (16-bit format).
  * @param {number} conn
@@ -388,6 +429,14 @@ export function ble_complete_char_disc(conn, uuids, props, decls, values) {
     const ptr3 = passArray16ToWasm0(values, wasm.__wbindgen_export2);
     const len3 = WASM_VECTOR_LEN;
     wasm.ble_complete_char_disc(conn, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
+}
+
+/**
+ * Conn-param update completion: posts CONN_PARAM_UPDATE on the link.
+ * @param {number} conn
+ */
+export function ble_complete_conn_param_update(conn) {
+    wasm.ble_complete_conn_param_update(conn);
 }
 
 /**
@@ -506,6 +555,19 @@ export function ble_complete_pairing(conn, bonded) {
 }
 
 /**
+ * Peripheral-role accept: a peer answered our advertisement; brings
+ * the link up with PERIPH role and posts CONNECTED. Returns handle.
+ * @param {Uint8Array} peer
+ * @returns {number}
+ */
+export function ble_complete_peripheral_connect(peer) {
+    const ptr0 = passArray8ToWasm0(peer, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ble_complete_peripheral_connect(ptr0, len0);
+    return ret;
+}
+
+/**
  * Complete a primary-service discovery with parallel arrays:
  * uuids[i] (0xFFFF = 128-bit, listed without number), starts[i],
  * ends[i]. Posts PRIM_DISC_RSP.
@@ -552,6 +614,15 @@ export function ble_complete_rel_disc(conn, handles, uuids, starts, ends) {
  */
 export function ble_complete_rssi(conn, rssi) {
     wasm.ble_complete_rssi(conn, rssi);
+}
+
+/**
+ * TX-flow refill: driver moved one packet over air; refills one TX
+ * token on the link and posts TX_COMPLETE with the free count.
+ * @param {number} conn
+ */
+export function ble_complete_tx_flow(conn) {
+    wasm.ble_complete_tx_flow(conn);
 }
 
 /**
@@ -620,6 +691,18 @@ export function ble_conn_sec(conn) {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
+}
+
+/**
+ * Explicit unbond: the next SEC_INFO_REQUEST for the peer MISSES.
+ * @param {Uint8Array} peer
+ * @returns {boolean}
+ */
+export function ble_delete_bond(peer) {
+    const ptr0 = passArray8ToWasm0(peer, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ble_delete_bond(ptr0, len0);
+    return ret !== 0;
 }
 
 /**
@@ -767,6 +850,29 @@ export function ble_queue_len() {
 }
 
 /**
+ * Bond store: driver-side insert (bridge confirmed air keys when
+ * firmware passed NULL keysets).
+ * @param {Uint8Array} peer
+ * @param {Uint8Array} ltk
+ * @param {Uint8Array} irk
+ * @param {Uint8Array} csrk
+ * @param {Uint8Array} master_id
+ */
+export function ble_store_bond(peer, ltk, irk, csrk, master_id) {
+    const ptr0 = passArray8ToWasm0(peer, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(ltk, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(irk, wasm.__wbindgen_export2);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArray8ToWasm0(csrk, wasm.__wbindgen_export2);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passArray8ToWasm0(master_id, wasm.__wbindgen_export2);
+    const len4 = WASM_VECTOR_LEN;
+    wasm.ble_store_bond(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
+}
+
+/**
  * Bytes staged alongside the last take_job (WRITE/HVX payloads only;
  * the SVC copies firmware bytes at call time so the driver read is
  * stable). Drained once per job; empty when the job carries no bytes.
@@ -907,6 +1013,8 @@ export function gpio_read_output(port, pin) {
 /**
  * Drive a raw input level. Buttons are active-low: released = true
  * (idle pull-up default), pressed = false. JS button layer maps to this.
+ * NFC antenna pins (P0.09/P0.10 with UICR.NFCPINS PROTECT=1, the reset
+ * state) ignore levels — silicon routes them to the NFCT front-end.
  * @param {number} port
  * @param {number} pin
  * @param {boolean} value
@@ -1389,6 +1497,16 @@ export function saadc_take_result() {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
+}
+
+/**
+ * SoC event queue length (sd_evt phase 1: flash completions while the
+ * SD is enabled). Debug/pump path; firmware drains via SVC 82.
+ * @returns {number}
+ */
+export function sd_evt_queue_len() {
+    const ret = wasm.sd_evt_queue_len();
+    return ret >>> 0;
 }
 
 /**

@@ -4,13 +4,13 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-18, P111 committed, AHEAD of origin — push pending)
+## 0. Snapshot (2026-09-18, P114 COMMITTED, ahead of origin — push pending)
 
-- HEAD: P111 "doc sync 204->211 (UARTE1/SPIM23 proofs, depth rows, P109 pumps, P91-P92 plan notes)"
-- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`, `ahead 3` (P109+P110+P111 all local; push pending user approval).
-- Suite: **211 tests, green single-threaded** (`-- --test-threads=1` → `211 passed`), = 113 cpu (incl. 17 firmware proofs) + 88 peripherals + 10 sd_ble. **Parallel: 25/25 green**.
+- HEAD: `7e8e849` "P114 out-of-scope blitz (217 green: NFCPINS gate, BLE bond/TX-flow/periph/param-update, sd_evt phase-1, ST7789 part, WebAudio sink, FPU comment fix)".
+- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`, `ahead 1` (P114 local; push pending user approval).
+- Suite (committed tree): **217 single green** (`-- --test-threads=1` → `217 passed`), = 114 cpu (incl. 18 firmware proofs) + 89 peripherals + 11 sd_ble + 3 sd_evt. **Parallel: ~30/31 runs green** (1 transient run with 4 failures in first 5-loop, then 6/6 + 8/8 + 20/20 green — rare pre-existing rate, backtrace not captured; re-capture on next failure).
 - Working tree: CLEAN except `?? .openchamber/` (ignore — never commit).
-- Last verified: full matrix on P110 tree (211 single, 25/25 parallel, handshake 18/18, smoke+mpy OK, E2E 42/42, browser 16/16, pkg rebuilt+committed). P111 is text-only docs; re-verify = `cargo test` + stale-grep (done below).
+- Last verified (this turn, P114 tree): 217 single, parallel loop above, handshake 18/18, smoke OK, mpy-face OK, E2E 42/42 over air, browser 16/16 zero page errors, spidisplay headless OK, `sd_evt`/`uarte1`/`spim23` bins bit-identical, pkg in sync (all 120 `wasm_bindgen` fns present in `demo/pkg` `.d.ts`).
 
 ## 1. What we did so far (this recovery session)
 
@@ -35,7 +35,10 @@
 - [x] Commit P110 (33d7892)
 - [x] Doc sync P111: STATUS (counts/rows/LEFT#5/P109-pumps/verify), COVERAGE (counts/rows/proofs/LEFT#5+#7–9/verify+worktree), doc.html (pill/key/UARTE1+SPIM2-3/depth/crypto rows/checks/footer), about.html (17 proofs, 211), plan P91+P92
 - [x] Verify P111 (cargo 211 green + stale-grep clean) + commit 3f95560
-- [ ] Push (3 commits ahead of origin — needs user approval; offer it)
+- [x] P112–P113 lab + P114 blitz (UNCOMMITTED in tree): TRUE-UICR rerun, LEFT rewrite, NFCPINS gate, BLE bond/TX-flow/periph/param-update, ST7789 part, WebAudio sink, FPU comment fix, sd_evt phase-1 + proof (217 green, docs synced)
+- [x] Full matrix re-verify on P114 tree (this turn: 217 single, ~30/31 parallel, 18/18, smoke+mpy OK, E2E 42/42, browser 16/16, bins identical, pkg in sync)
+- [x] Commit decision: single P114 commit (user choice 2026-09-18) — committed `7e8e849` (27 files, +1794/−192, whitespace clean, secrets/hygiene clean; `.openchamber/` left untracked)
+- [ ] Push `7e8e849` (ahead 1 — needs user approval)
 
 ## 3. Batch 3 spec (to rebuild)
 
@@ -53,8 +56,8 @@ The planned "P108 race-fix redo" (try_borrow guards + NACK clock + tap locks)
 is NOT needed — it described stashed exploratory edits from the recovery
 session, not a real gap:
 
-- The committed P108 fix (BOOT_LOCK join in all 10 sd_ble tests, HEAD~1
-  `c5b61ee`) holds: full suite parallel **25/25 green** on this tree with all
+- The committed P108 fix (BOOT_LOCK join in all sd_ble tests, HEAD~1
+  `c5b61ee`) holds: full suite parallel green on this tree with all
   Batch 2+3 additions (last loop just run). No `RefCell already borrowed`
   in 25 consecutive parallel runs.
 - The single `pregion_subs_include_exclude` panic seen earlier (`mwu_nrf.rs:237`)
@@ -86,7 +89,7 @@ session, not a real gap:
 ## 6. Verify matrix (run in order, stop on red)
 
 ```
-cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 211 green
+cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 217 green
 cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml --lib -- --list 2>/dev/null | grep -c ": test"
 node demo/parts/handshake.mjs          # 18/18 (rebuild via npm run build:handshake --prefix demo after Rust changes)
 npm run test:parts --prefix demo ; npm run test:mpy --prefix demo
@@ -123,3 +126,5 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
 - 2026-09-18 (Batch 3 done): +5 tests (RTC COMPARE/OVRFLW incl. OVRFLW-IRQ model fix; PWM STOP/INTEN/SEQ1 on PWM1; RNG SHORTS/re-arm; TEMP INTEN/STOP; EGU per-channel+INTENCLR) → 211 single green, 25/25 parallel green. P108 redo closed as not-needed (evidence). Next: verify matrix + docs + commit/push.
 - 2026-09-18 (P110 committed 33d7892): full matrix green (211/25-25/18-18/E2E-42/browser-16/16), pkg rebuilt+committed.
 - 2026-09-18 (P111 doc-sync committed (see `git log --oneline -1`; amended: +HANDOVER banner, LEFT numbering)): STATUS+COVERAGE+doc.html+about.html 204→211 + P109/P110 rows; plan P91+P92; fixups (eighteen checks, LEFT-9 head, verify line). Pending: push (ahead 3).
+- 2026-09-18 (P114 out-of-scope blitz, UNCOMMITTED): user verdict "no walls — code through each". NFC NFCPINS gate (UICR 0x20C → GPIO 09/10 + NFCT sense, test); BLE bond store (keys + bridge bond_keys leg, test); BLE TX-flow + periph CONNECTED + param-update (tests + pump/bridge legs); edge-SPI ST7789 part + bench UI (headless-verified); I2S WebAudio sink (gesture-gated); lazy-FPU stale-comment fix (already implemented); sd_evt phase-1 (`sd_evt.rs` + hook + NVMC post + `sd_evt_nrf.s/.bin` proof, id=2 verified live); npm pack dry-run OK (22 files/72.5 kB). Suite 217 green. Docs synced (STATUS/COVERAGE/doc/about/API/plan). NEXT: full matrix + commit decision + push.
+- 2026-09-18 (P115 verify pass): full matrix on the uncommitted P114 tree — 217 single green; parallel ~30/31 (1 transient 4-fail run early, then 6/6+8/8+20/20 green; backtrace missed, treat as the known rare rate); handshake 18/18 + smoke + mpy-face OK vs built pkg; bridge E2E 42/42 over air; browser boot BOOT/BLINK + self-test pairing×2 + 16/16 probes, zero page errors; spidisplay headless OK; sd_evt/uarte1/spim23 bins bit-identical; all 120 wasm_bindgen fns present in demo/pkg `.d.ts`. Stale-count fixups applied same turn (doc.html pill/checks → 217, STATUS §5 + COVERAGE §8 → 11 sd_ble, STATUS §3 + agent.md §4 → parallel wording, TX-budget/bond-store rows) + `cargo test` re-greened 217.

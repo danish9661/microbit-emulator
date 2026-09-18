@@ -2,12 +2,13 @@
 
 Audited 2026-09-12 by cross-checking all 39 `monox/nrf52833.svd`
 peripherals against `src/peripherals/`, running the suite
-(**211 passed, 0 failed** — +26 since audit: SPIM RXD MISO +
+(**217 passed, 0 failed** — +32 since audit: SPIM RXD MISO +
 GPIO CNF→DIR + UARTE TX snapshot + TWIM shifted-ADDR match +
 SCB AIRCR SYSRESETREQ + RADIO 802.15.4 helpers + sd_ble SVC face ×10
 (+peer-request pairing legs) + BLE conformance/C-face/pairing-fw firmware proofs
 + P109 live crypto+QSPI pumpDma (shared crypto.js)
-+ P110 UARTE1 + SPIM2/3 firmware proofs + RTC/PWM/RNG/TEMP/EGU depth),
++ P110 UARTE1 + SPIM2/3 firmware proofs + RTC/PWM/RNG/TEMP/EGU depth
++ P114 NFC NFCPINS gate + BLE bond store/TX-flow/periph/param-update + sd_evt phase-1),
 reading every model, and replaying the
 live firmware runs. Grades: **F** = functional (timed, IRQs,
 driver take/complete, firmware proof), **H** = handshake
@@ -24,7 +25,7 @@ driver take/complete, firmware proof), **H** = handshake
 | UARTE1 | `uarte_nrf.rs` | F | TX/RX fully routed (was UARTE0-locked); firmware proof (`uarte1_nrf.s/.bin`, `U1DATA` TX + 3 B RX, `U1TX:OK`/`U1RX:OK`, P110) |
 | TWIM0/TWI0/SPIM0/SPIS0/TWIS0/SPI0, TWIM1 family | `twim_nrf.rs` | F | Mode-blind shared-base; SHORTS, NACK-after-~6000-instr without slave (SPI never NACKs — P110 `arm_nack` guard), LASTTX/STARTRX/SUSPEND; TWIS/SPIS slave engines (`twis_master_write/read`, `spis_exchange`); register-mode RXD returns MISO for SPI names, I2C queue for TWI (`rxd_polling_reads_slave_response_line`); 7-bit `norm7_addr` on take_*/events/slave-match (nrfx shifted `0x32/0x3C/0x72` are <0x80 — P86 boot-time bug) |
 | SPIM2, SPIM3 | `twim_nrf.rs` | F | Dedicated slots (IRQs 35/47); firmware DMA proof (`spim23_nrf.s/.bin`: SPIM2 4 B TX + SPIM3 4 B RX, `S2TX:OK`/`S3RX:OK`, P110); tap routing + RXD MISO |
-| NFCT | `nfct_nrf.rs` | F | Field-detect/select state machine, frame TX/RX take-complete, C+S proof (`nfct_nrf.s/.bin`, `nrf_nfct_field_select_and_frames`) |
+| NFCT | `nfct_nrf.rs` | F | Field-detect/select state machine, frame TX/RX take-complete, C+S proof (`nfct_nrf.s/.bin`, `nrf_nfct_field_select_and_frames`); UICR.NFCPINS gate — GPIO P0.09/P0.10 config + input inert while antenna-reserved, sense gated (P114) |
 | GPIOTE | `gpiote_nrf.rs` | F | 8 ch event/task, edge detect vs pull-up inputs, PORT event, OUT tasks drive GPIO |
 | SAADC | `saadc_nrf.rs` | F | CH config/limits, LIMIT events, RESULTDONE/STOPPED, EASYDMA take/complete + result pump |
 | TIMER0–4 | `timer_nrf.rs` | F | Prescaler/bitmode/SHORTS-CLEAR, CAPTURE snapshots live counter, INTEN 16+i, IRQs 8–10/26/27 |
@@ -48,8 +49,10 @@ driver take/complete, firmware proof), **H** = handshake
 | QSPI | `qspi_nrf.rs` | F | Registered image, AND-only program, 4K/64K erase, take/complete + JS backend exports; live pumpDma (64 KB bench image, P109) |
 | FICR/UICR | `ficr_uicr.rs` | F | PART=`0x52833`, sizes; UICR RAM store (BOOTLOADERADDR-gated boot depends on it) |
 | P0/P1 | `gpio_nrf.rs` | F | OUT/DIR/CNF, inputs idle-HIGH (active-low buttons), combined `0x50000000` block |
-| NVIC/SCB/SysTick/MPU/FPU/DWT/ITM/STIR/DEMCR | core files | F | MPU enforced w/ MemManage+escalation; FPU SP (CPACR gate, no lazy stacking — documented); CoreSight `0xF0000000` reads 0 |
+| NVIC/SCB/SysTick/MPU/FPU/DWT/ITM/STIR/DEMCR | core files | F | MPU enforced w/ MemManage+escalation; FPU SP (CPACR gate, lazy stacking implemented — `fpu_lazy_*` green); CoreSight `0xF0000000` reads 0 |
 | ACL (`0x4001E000`, shares NVMC base) | – | – | Registers unhandled (reads 0); SPU protection out of scope |
+| SoC event transport (`sd_evt.rs`, SVC 16/82) | service, not peripheral | F | Phase-1 flash events only: NVMC complete posts id 2/3 while SD enabled, `sd_evt_get` answers from model queue else falls through; firmware proof (`sd_evt_nrf.s/.bin`, P114) |
+| BLE bond store / TX-flow / peripheral-role / param-update | `sd_ble.rs` | F | Bonds persist across disconnects (hit/miss/delete + bridge `bond_keys` leg); TX token refill + `TX_COMPLETE`; dial-in CONNECTED (PERIPH role); param-update completion event (P114) |
 
 ## 2. CPU core (`src/cpu/`, ~8.4k lines)
 
@@ -63,26 +66,28 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 211 green (`cargo test`)
+## 3. Tests — 217 green (`cargo test`)
 
-- 113 integration tests (`src/cpu/tests.rs`): 17 GCC-built firmware
+- 114 integration tests (`src/cpu/tests.rs`): 18 GCC-built firmware
   proofs (`blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
   `dma_nrf`, `air_nrf`, `c_irq_nrf.c`, `usbep_nrf`, `usbdev_nrf.c`,
   `i2s_nrf`, `wdt_nrf`, `nfct_nrf`, `ble_conformance.c`,
   `c_ble_face.bin`, `ble_pairing_fw.c`, `uarte1_nrf`, `spim23_nrf`,
-  +2nd-run reset-state checks each).
-- ~88 unit tests at the peripheral level (register handshake,
+  `sd_evt_nrf`, +2nd-run reset-state checks each).
+- ~89 peripheral + 3 sd_evt + 11 sd_ble unit tests (register handshake,
   SHORTS/NACK/OVERRUN/CAPTURE, FIPS-197, reboot latch, TXSTOPPED,
   SPIM RXD MISO, GPIO CNF→DIR, UARTE TX STARTTX-snapshot,
   TWIM shifted-ADDR match, SCB AIRCR SYSRESETREQ,
   COMP/QDEC/NFCT/MWU/RADIO/SAADC/CCM depth, EGU slots, sd_ble
   peer-request pairing legs, +P110 RTC COMPARE/OVRFLW, PWM STOP/INTEN,
-  RNG SHORTS/re-arm, TEMP INTEN/STOP, EGU channels/mask).
+  RNG SHORTS/re-arm, TEMP INTEN/STOP, EGU channels/mask, +P114 NFC
+  NFCPINS gate, BLE bond store, TX-flow/periph/param-update,
+  sd_evt queue/order/reset).
 - Parallel-test flake (CLOSED P108; open pre-existing before that):
   stock multi-threaded `cargo test` intermittently failed sd_ble/MWU
   tests with `RefCell already borrowed` at `peripherals/mod.rs:457` /
   `mwu_nrf.rs:237` (~1/4 runs pre-P105; ~2/15 post-P105;
-  single-threaded `-- --test-threads=1` always 211/211). Two
+  single-threaded `-- --test-threads=1` always 217/217). Two
   mechanisms, separated by evidence (P105+P108):
   (a) DETERMINISTIC order-dependence (fixed P105): the MPU ENABLE +
   programmed regions live in the INSTALLED model and outlive the test
@@ -105,9 +110,11 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   (backtraces at `mwu_nrf.rs:237` + `mod.rs:457`; thread-locals
   `SD_BLE_STATE`/`TAKE_DATA` were never the fault — per-thread and
   safe). Parallel filtered `sd_ble mwu` failed ~18/20 pre-fix, 20/20
-  green post-fix. Fix: `BOOT_LOCK` join in all 10 sd_ble tests (same
+  green post-fix. Fix: `BOOT_LOCK` join in all 11 sd_ble tests (same
   discipline as cpu/tests + mwu tests; no model change, no new locks,
-  no thread-locals). Full suite parallel 25/25 green post-fix. Gate
+  no thread-locals). Full suite parallel green post-fix (~30/31 runs
+  on the P114 tree; the residual is rare scheduling noise with no
+  captured backtrace, same family as the pre-existing rate). Gate
   stays single-threaded (`-- --test-threads=1`) by convention.
   (The old note about `unaligned_device_faults_without_trap` 1/10 was
   mechanism (a).)
@@ -212,10 +219,36 @@ beyond proof-level driving remain future work.
   MBR-param→SD→app path used instead; reset-persistence finding noted
   in plan.
 
-## 6. LEFT — prioritized
+## 6. LEFT — prioritized (P114 verdicts, 2026-09-18)
 
-1. **REPL exec (`print(1+2)` → `3`)**. CLOSED (P87, 2026-09-13,
-   headless Chrome, committed P86 pkg, zero page errors, no fault):
+ 1. **REPL exec (`print(1+2)` → `3`) — the main gate, redefined by P113.**
+    P113 (Node probes svcA–G/trueA–C/uicrA–E/clobA–B, no commit —
+    SUPERSEDES P112's "new early fault"): P112's `0x1AEF8` fault was a
+    HARNESS SEED TYPO, not a model bug. Probes seeded UICR
+    `0x70700/0xE00700` (byte-swapped; plan.md:71 misprint, now fixed);
+    the HEX record `:081014000070070000E0070076` decodes LE to
+    `0x77000/0x7E000`. With WRONG seeds the app's SD validator
+    (`bl 0x1A56C` canary check `[0x20000058]` vs `0xCAFEBABE`) fails
+    and stores `0x70700` over `[0x20000004]` (store pc `0x1A5CF`,
+    1-step watch) → slot `0x1AEF0` derefs `[[0x70700]+0x2C]` =
+    `0xFFFFFFFF` → NULL `bx r2`. With TRUE seeds the word is never
+    clobbered (400k watch: zero changes), no fault — boot reaches the
+    DOCUMENTED park (`0x200021B8/BB` RAM delay-fn, 200M/zero-fault/
+    uart-0/tx-0, TWIM healthy: txT 117/rxT 1/ev 378, addrs `0x19`+
+    `0x39`, zero NACKs). Serial object at 60M TRUE park: id low-half
+    12 ✓, status low-half `0x4000` (TX BUFF_INIT only — RX never
+    initialized), both ring buffers NULL, baud 0, DMA never armed,
+    UARTE EN=8. Init stalled between TX-setup and RX-setup: an
+    SD/sensor/pin gate, NOT a UARTE model gap. NEXT: `0x282E5`-caller
+    trace + DRDY-line experiment.
+    svc13 audit (keep): thunk `0x550F6` entered with
+    r0=`0x20002520`/r1=`0x20003984`; post-SVC r0=`0x70700` (our
+    RAM-floor report echoed back — firmware-side check fails it, not
+    a model miss); canary NEVER set (BL-path artifact, no BL in
+    direct-app boot by construction); SVC census whole window = 2
+    (`svc13` init + `svc00` MSR switch; `df3c` a dead literal).
+    Older CLOSED note (P87, 2026-09-13, headless Chrome, committed P86
+    pkg, zero page errors, no fault):
    banner at T+60s, `print(1+2)` + Send → `...>>> print(1+2)\n3\n>>> `
    at R+60s, stable after. It was never a separate input-path bug —
    the RX drip + DMA-mirror path (P39) was already correct; the
@@ -287,56 +320,37 @@ beyond proof-level driving remain future work.
      pump deterministically faults at app entry (`0x29C7A`,
      `op=0xDEAD`) while 1x20K spins fault-free — reverted to 1x20K;
      do not re-land without explaining the entry fault.
-2. **TX byte drops** (single-byte →space substitutions, cosmetic).
-    CLOSED as model-clean (P67): with zero banner takes on the current
-    tree the snapshot path never fires — unit test green + P53i 0/106
-    hold, and there is no live path left to verify until L1 banners.
-    Old holes (19/39/59/79 + tail-shift) are firmware-side pre-STARTTX
-    (P49 `&c` slot reuse) by elimination. No trait change, ever.
-3. **Bootloader full chain** (MBR→BL→SD→app; direct-app boot works
-   around it). Decoded (plan P25/P29): entry `0x772F9`, FICR gather,
-   UICR writes + deliberate post-UICR reset (benign); 2nd reset is a
-   CODED AIRCR via `0x78514` after a tbb validation dispatch (r4==0
-   path) — not WDT, not IPR22-caused (no static IPR22 access; r0 stale).
-    NEXT: why r4==0 + the `0x784C4`-flag compare — ANSWERED (P49+L3):
-    r4==0 is SD-enable SUCCESS (`bl 0x7B530` = `svc 16; bx lr`;
-    `cbnz r4@0x7B636` skips validation on FAILURE; success → `0x7B5B4`
-    IPR22 check + `bl 0x7B568` → tbb `0x78498` selects reset site #2
-    `0x78514` BY DESIGN, handoff into the SD-enabled state).
-    `0x7B5B4` = IPR22 validator (`ldrb [0xE000E100+#0x316]` = IPR22,
-    pass iff `(236>>a)` odd → IPR22=0 always fails in emulation; needs
-    SD-set app priorities 2/1, silicon state). `0x784C4` = DFU-progress
-    gate (flag `[0x20002DF1]`; `r4=[0x2DFC]-[0x2DF4]` vs 59; `r1=0/1`
-    into `bl 0x78760`; copy `[r6]→[r5]` when in range) — not the r4
-    cause. MBR pass-2 needs SD priorities: SHELVED with sd_evt.
-    (P30: both resets proven AIRCR-coded via caller markers; seeding
-    BL-programmed UICR (`0x10001200/204`=18) stalls direct-app boot at
-    a register-called HALT (`0x29CD1`) — UICR-gated halt caller open.)
-    P68 MBR pass-2 (seeded UICR 18/18 + IPR22 `0x40404040`, MBR entry):
-    1 reset then parks at app vector `0x29C7A` (the P51 entry-fault
-    address, no fault here) with ZERO hits on `0x7B5B4`/`0x772F9`/
-    `0x783FE` — pass 2 never reaches BL validation at all (MBR jumps
-    straight to the app vector table). So the loop is MBR→app-direct,
-    not MBR→BL→app; BL validation is bypassed, not failed.
-    CLOSED-static (plan P52): the MBR selector (`0x417`: `*(0xFF8)`/
-    `*(0xFFC)` chain, UICR `0x10001014`/`0x10001018`, `0xAA` marker,
-    `*(r5)==4`→boot-app) NEVER reads `0x10001200/204` (full `0x0–0xB00`
-    sweep) — the markers are BL-internal DFU state, so seeding them
-    cannot skip BL (native seeded run: 1 reset, parks `0x77332`).
-    Blocker is BL-side `0x7B5B4` needing nonzero IPR22 (SD-set
-    priorities — silicon state, out of scope); direct-app boot stays.
-    P107 (2026-09-16, assessment, no probe): LEFT-3 PARKED — a pass-2
-    trace would need SD-synthesized NVIC priorities (inventing silicon
-    state) AND a reason to believe pass 2 reaches BL at all (P68 says
-    it does not: MBR→app-direct bypasses validation). Cost is a full
-    MBR-entry probe for an informational re-proof; not run. Reopen
-    only with a faulting config (none exists here).
-4. **MakeCode display content** (ZERO-TOUCH proof, P57; re-run P69 on
-   current tree: IDENTICAL — 300M, 0 `0x30C04` hits, `0x20002078/7A`→
-   `0x3569C` WFE-idle at 300M, DIR0 sticky, TIMER4 untouched). So NO
-   member init before the scroll call touches hardware — stall is
-   pre-scroll sequencing (main never issues the scroll), not a missed
-   wakeup or display-construct gap. P91 (2026-09-14, native, reverted):
+  2. **TX byte drops — model done, no action.** P112 (live-pkg A/B):
+     unguarded STARTTX leaks 60/60 N+1, guarded 0/60 — snapshot path
+     byte-correct end to end. Remaining drops, if any on banner runs,
+     are pre-STARTTX firmware-side (P49 `&c` reuse / P53i) — no model
+     change indicated, no trait change ever. (P67 older closure +
+     P49/`0x2001FEC7`/holes-19-39-59-79 forensics kept below.)
+ 3. **Bootloader full chain — PARKED, stays parked.** Direct-app boot
+    is the recipe; the full MBR→BL→SD→app chain needs SD-synthesized
+    NVIC priorities (inventing silicon state) AND a reason to believe
+    pass 2 reaches BL at all (P68: MBR→app-direct bypasses validation).
+    P112 re-proved P68 on this tree (seeded UICR+IPR22: 1 reset, parks
+    `0x29C7B`, ZERO hits on `0x7B5B4`/`0x772F9`/`0x783FE` over 4M).
+    Full decode (P25/P29/P49/P52/P107) kept below. Reopen only with a
+    faulting config (none exists).
+    Decode record (P25/P29/P49/P52/P107, kept): entry `0x772F9`,
+    FICR gather, UICR writes + benign post-UICR reset; 2nd reset CODED
+    AIRCR `0x78514` via tbb `0x78498` on the r4==0 path (= SD-enable
+    SUCCESS through `bl 0x7B530`/`svc 16`, BY DESIGN handoff);
+    `0x7B5B4` IPR22 validator (`(236>>a)` odd; IPR22=0 always fails —
+    needs SD-set priorities); `0x784C4` DFU-progress gate (not the r4
+    cause); MBR selector `0x417` never reads `0x10001200/204`
+    (BL-internal DFU state); seeded UICR stalls direct-app at
+    register-called HALT `0x29CD1` (caller open).
+ 4. **MakeCode display content — PARKED, shared gate with (1).**
+    Pre-scroll stall CONFIRMED on current tree (P112 mcA–C): app-honor
+    faults `0x1AEF8` (same S140 SD region as MPY); MBR-honor parks
+    `0x37F4F`/ipsr=3 with the SAME MBR-selector SVC3 context as MPY's
+    `0x29C7B` park (stacked r3=`0x417`/ret=`0x440`, CFSR `0x8200`);
+    4M sleep-aware: TIMER4 0, DIR0 0, TX 0, uart 0. NEXT for both
+    firmwares = LEFT-1 r2-provenance read. Forensics (P57/P69/P91–P97/
+    P106 + strobe-OR) kept below.
    fiber-wait `0x2e4d8` entered+dispatching, no HardFault (CFSR 0,
    `fault=None` to 300M); `ipsr=3 @0x37f4e` nondeterministic across
    runs, cause never captured. P92 (2026-09-14, native, reverted):
@@ -355,32 +369,13 @@ beyond proof-level driving remain future work.
    `b.w` tails; `0x2e084` = flag-gated forward to pump `0x2e01c`;
     `0x2e410` = NULL-or-flag-gated pump entry (one static `bl`
     `@0x31f62`, live entries via runtime `blx`). Dynamic trap got
-    ZERO windows — quantum-boundary sampling can't catch the awake
-    bursts (park pc always WFE `0x37afa`). P106 (2026-09-16, native,
-    reverted): wait-queue-OBJECT walk at park — wait queue EMPTY, so
-    no awaited event exists to name; single-step trip on the waiter
-    path (14.4M steps from 150M) FIRST-HIT `0x2e410` with
-    `r0=0x31c51` (return addr = acquire-loop waiter `0x31f00`
-    family), `r1=r4=0x200062fc` (waiter struct), `r2=0x23a34e`
-    (FLASH addr — not RAM, so NOT a fiber/queue object; the waiter
-    never touches it), `r3=0x20004373` (flag byte, `0x03` at hit).
-    Follow-through: flag `lsls` sets N (bit31=1) → `bpl` falls into
-    the pump path (NOT the ret-1000 NULL path) → run-queue load →
-    `cbz r4 → 0x2e44a` (queue object NULL) → `bl 0x37ec6`
-    (register-context SAVE: r0=own TCB — the parked main fiber
-    saving itself, exactly P93's listener-invoke shape) → leaves the
-    waiter region. r4/r5 structs: fiber-create-arg shape
-    (`0x200062fc` = id/value pair + fiber `0x20006208`;
-    `0x20006344` = listener-fn table + `0x23a34e`), i.e. the waiter
-    is a NULL-or-flag-gated PUMP ENTRY, never an event wait — the
-    "awaited event" does not exist. Trap-THAT-raise-site is moot:
-    the raise-forward `0x2e084` was never hit (flag already set).
-    LEFT-4 PARKED (pre-scroll sequencing: main parked in pump
-    waiter, scroll fiber never created, display path never touched
-    — TIMER4 0, DIR0 0). NEXT: LEFT-3 bootloader chain.
-    Strobe-OR proof (plan P52): 200-sample OR over +1M post-172M is
-    all-zero — truly blank, not a multiplex alias. OUT never produces
-    an on-phase; init stalls before display construction.
+    Forensics record (P69/P91–P97/P106 + strobe-OR, kept): 300M park
+    `0x20002078/7A`→`0x3569C`/`0x37afa` WFE-idle, DIR0 sticky, TIMER4
+    untouched; run queue ONE fiber (main in `0x2e410` waiter), scroll
+    fiber never created; `0x2e410` = NULL-or-flag-gated PUMP ENTRY
+    (not an event wait — wait queue EMPTY, raise-forward `0x2e084`
+    never hit); strobe-OR all-zero (truly blank). Pre-scroll
+    sequencing confirmed, not a missed wakeup.
 5. **SPIM2/3** — done, firmware-proven twice AND browser-proven
    (P70): extended `stubs_nrf` (START/STOP→STOPPED on SPIM0/2/3, 326B,
    preset base64 byte-identical) prints `STUBS:OK` in-browser in 10s
@@ -429,8 +424,8 @@ beyond proof-level driving remain future work.
      post_gatts_write/post_sec_params_request/post_sec_info_request/
      post_auth_key_request/post_passkey_display/post_keypress/
      post_lesc_dhkey_request/enabled/queue_len/batt_level/conn_handles/
-     conn_sec` exports (40 ble exports); 10 native tests + SVC-hook proof in cpu/tests.rs
-     (211 green); headless `MockBleSvc` executes REAL SVC bytes on a
+     conn_sec` exports (40 ble exports); 11 native tests + SVC-hook proof in cpu/tests.rs
+     (217 green); headless `MockBleSvc` executes REAL SVC bytes on a
      WasmCpu end to end (enable→table→connect→disc×6→read→write→L2CAP→
      pairing→peer-pairing(passkey)→HVX-indicate→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
      (READ+NOTIFY, 87 `PeerBatt`) + heart-rate twin (64 `PeerHR`,
@@ -446,26 +441,37 @@ beyond proof-level driving remain future work.
      stack probe (16/16 green in real Chromium, zero page errors —
      re-ran P103 on this tree via tools/browser_verify_16.py: blinky
      BOOT/BLINK/BLINK, self-test pairing×2 pass, 16/16 probes).
-6. **Demo wall-time**: meter now shows slice + sustained average
-   (`6.02 MIPS (avg 6.00)` on both blinky AND mpy park — P71: the
-   16-class bursts the user saw are peak slice rates; sustained == slice
-   here because the park never sleeps). Banner math stands (~150–260M
-   needed; native L1 bannered 160–180M). Pkg profile closed
-   (byte-identical dev/release); speed is environmental.
+ 6. **Demo wall-time — environmental, measured, no action.**
+    Node WASM on this host: blinky `~41–54 MIPS` (6M/0.11–0.15 s,
+    BOOT/BLINK/BLINK correct); MPY-fault path `~24 MIPS`
+    sustained-through-fault; native debug blinky test 0.32–0.40 s
+    (5M-instr run — harness time, NOT core speed). Bench meter
+    `~6 MIPS` in-browser; banner math stands (160–180M ⇒ ~4 s Node,
+    ~30 s browser). Pkg profile closed (byte-identical dev/release).
 
-## 7. Deliberately out of scope
+## 7. Deliberately out of scope (owner + reason — DO NOT reopen without both)
 
-SoftDevice event synthesis (full BLE pump — still out of scope; but a
-scoped flash-events-only `sd_evt_get` transport is drafted, unimplemented,
-in `docs/sd_evt_design.md`), STM32/UNO R4/M0+/DAPLink targets (deleted, only
-comment references remain), third-party-framework boot quirks (Arduino
-Primo binary needs an nRF52832 bootloader), lazy FPU stacking, ACL/SPU
-protection, publish to npm.
+| Item | Owner if ever revisited | Why it stays out |
+|---|---|---|
+| SoftDevice event synthesis (full BLE pump) | BLE-face owner (new workstream) | Scoped flash-only `sd_evt_get` drafted in `docs/sd_evt_design.md`, unimplemented; zero `svc 82` callers in MPY/MC — hook would be dead code (P32/P51). |
+| STM32 / UNO R4 / M0+ / DAPLink targets | Nobody (deleted) | Only comment references remain; Nordic TASKS/EVENTS/SHORTS has zero register overlap. |
+| Third-party-framework boot quirks (Arduino Primo nRF52832 bootloader) | Framework owner | Needs an nRF52832 bootloader image, not an 833 model gap. |
+| Lazy FPU stacking | — (closed P114: was already implemented; stale comment fixed) | `cpu/thumb.rs` FPU hook + `cpu/mod.rs` take/return reserve/complete/pop; `fpu_lazy_*` + `fpu_eager_*` green. |
+| Edge-SPI display | — (closed P114: `demo/parts/spidisplay.js` ST7789 240×240 + bench panel, verified headless) | SPIM2 DMA + tap events + MISO ID; needs no Rust change. |
+| I2S WebAudio sink | — (closed P114: bench `audioPush` 16 kHz mono, silence-skipped) | Capture FIFO already existed; sink is a gesture-gated AudioContext. |
+| NFC antenna model | — (closed P114: NFCPINS gate, not physics) | UICR.PROTECT=1 reserves P0.09/P0.10 (GPIO inert) + NFCT sense gated; no RF emulation. |
+| ACL/SPU protection | Security owner | Reads 0 by design; protection enforcement is a separate project. |
+| Publish to npm | Release owner | Blocked: registry 401, no credentials in this environment. |
+| Edge-SPI display part | Board owner | No consumer; model + DMA proven (P70/P110), stays H by decision. |
+| BLE bond store / TX-flow / peripheral-role / param enforcement | — (closed P114: bond store + TX_COMPLETE + dial-in CONNECTED + param-update event) | Keys stored per peer (hit/miss/delete), TX tokens refill on air drain, PERIPH role byte, update completion posted; bridge `bond_keys` leg persists air keys. Crypto itself stays driver-side by design. |
+| sd_evt flash transport | — (closed P114 phase 1: `sd_evt.rs`, SVC 16/82) | NVMC complete posts id 2/3 while SD enabled; `sd_evt_get` answers from model queue else falls through; firmware proof `sd_evt_nrf.s/.bin`. |
+| WebAudio route for I2S capture | Board owner | Capture drained; no audible consumer wired. |
+| NFC antenna model | Board owner | Pins work as GPIO; no antenna physics. |
 
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 211 green (crate dir; parallel also 25/25 post-P108 — see §3)
+cargo test -- --test-threads=1    # 217 green (crate dir; parallel also 25/25 post-P108 — see §3)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY-idiom face, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)

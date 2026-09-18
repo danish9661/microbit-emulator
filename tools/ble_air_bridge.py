@@ -939,7 +939,11 @@ async def handle_socket(websocket, peers: dict, central: Device,
                 # read under the per-peer lock, then report bonded. No
                 # SMP crypto runs here (documented stub — the S132 event
                 # pair AUTH_STATUS + CONN_SEC_UPDATE is real, the keys
-                # are not).
+                # are not). The driver persists the (deterministic demo)
+                # keyset via ble_store_bond so a later SEC_INFO_REQUEST
+                # for the same peer HITS the bond store (re-encrypt
+                # without a new handshake); the key bytes echo back on
+                # ble_bond_keys for the SEC_INFO_REPLY leg.
                 conn = msg.get('conn', 1)
                 bundle = pick_peer(msg)
                 value = await gatt_read_battery_on_link(
@@ -947,6 +951,23 @@ async def handle_socket(websocket, peers: dict, central: Device,
                 await websocket.send(json.dumps({
                     't': 'paired', 'conn': conn, 'bonded': True,
                     'overAir': value is not None}))
+                # Bond-store keys for the NULL-keyset handshake: the peer
+                # address + a deterministic demo keyset (documented stub —
+                # real SMP would negotiate these). The bench persists them
+                # via ble_store_bond so later SEC_INFO_REQUEST re-encrypts
+                # HIT the store instead of failing.
+                try:
+                    peer_addr = list(bundle['peer'].random_address)
+                except Exception:
+                    peer_addr = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66]
+                demo_ltk = [(conn * 16 + i) & 0xFF for i in range(16)]
+                demo_irk = [(conn * 16 + 16 + i) & 0xFF for i in range(16)]
+                demo_csrk = [(conn * 16 + 32 + i) & 0xFF for i in range(16)]
+                demo_mid = [(conn & 0xFF)] + [i & 0xFF for i in range(1, 10)]
+                await websocket.send(json.dumps({
+                    't': 'bond_keys', 'conn': conn, 'peer': peer_addr,
+                    'ltk': demo_ltk, 'irk': demo_irk, 'csrk': demo_csrk,
+                    'master_id': demo_mid}))
                 continue
             if msg.get('t') == 'ble_l2cap':
                 # L2CAP CoC frame: echo on the registered CID (bridge

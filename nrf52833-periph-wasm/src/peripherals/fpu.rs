@@ -4,9 +4,13 @@ use super::Peripheral;
 /// FPU system registers (SVD `FPU` peripheral at 0xE000EF34: FPCCR/FPCAR/
 /// FPDSCR + the M4F MVFR0-2 ID values, which the SVD omits). The S0-S31
 /// file and FPSCR live in the CPU core (`cpu::regs`); this owns only the
-/// memory-mapped system side. No lazy stacking in v1 (see the CPACR-gate
-/// note in `cpu::thumb`): FPCCR ASPEN/LSPEN reset set like hardware, but
-/// exception entry stacks the 8-word integer frame only.
+/// memory-mapped system side. Lazy stacking IS implemented (see the
+/// `cpu::thumb` FPU hook + `cpu::mod` take/return paths): exception
+/// entry reserves the 26-word frame when CONTROL.FPCA + FPCCR.ASPEN
+/// hold (FPSCR-only + FPCAR + LSPACT when LSPEN is set, full S0-S15
+/// when clear), the first handler FPU use completes the lazy state,
+/// and return restores/pops symmetrically. FPCCR ASPEN/LSPEN reset set
+/// like hardware.
 pub struct Fpu {
     fpccr: u32,  // +0x0 (reset ASPEN|LSPEN)
     fpcar: u32,  // +0x4

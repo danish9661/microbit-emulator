@@ -96,7 +96,8 @@ RADIO:     radio_take_tx() -> [ptr,len] | radio_inject_rx(bytes)
 RADIO RX:  radio_take_rx() -> [ptr] | radio_complete_rx() (+inject_corrupt, set_rssi_dbm, set_ed_dbm)
 I2S RX:    i2s_take_rx() -> [ptr,len] | i2s_complete_rx() (silence/fill)
 I2S TX:    i2s_take_tx() -> [ptr,len] | i2s_complete_tx(bytes) (+take_capture())
-NFCT:      nfct_take_tx() -> [ptr,len] | nfct_complete_tx() (+take_rx/complete_rx, field_present)
+NFCT:      nfct_take_tx() -> [ptr,len] | nfct_complete_tx() (+take_rx/complete_rx, field_present; UICR.NFCPINS gates antenna vs GPIO)
+SoC evt:   sd_evt_queue_len() (phase-1 flash events; firmware polls via SVC 82)
 CCM:       ccm_take_job() -> [cnf,in,out,scratch,len,dec] | ccm_complete(mic_ok)
 AAR:       aar_take_job() -> [irkptr,addrptr] | aar_complete(resolved)
 ECB:       ecb_take_job() -> [dataptr] | ecb_complete() (driver AES-128s in place: KEY@+0, CLEAR@+16, ENCRYPTED@+32)
@@ -145,11 +146,13 @@ BLE jobs: ble_take_job() -> words, first word = tag:
   15 GattcValsRead [conn, count] + handles u16[count] (in take words)
 BLE bytes: ble_take_data() -> staged WRITE/HVX/L2CAP bytes (once per job)
 Pairing legs (peer-initiated security; no job — the driver posts the
-request event and firmware answers with the reply SVC):
+request event and firmware answers with the reply SVC; keys persist
+in the bond store across disconnects — hit/miss/delete):
   SEC_PARAMS_REQUEST -> sd_ble_gap_sec_params_reply(conn, status, params, keyset)
     NULL params (or nonzero status) = reject (AUTH_STATUS pair-fail,
     link stays up); non-NULL params = accept needs an outstanding peer
-    request (else INVALID_STATE), stages the air handshake
+    request (else INVALID_STATE), stages the air handshake; a 58B
+    keyset block (LTK/IRK/CSRK/master-id) is COPIED to the bond store
   AUTH_KEY_REQUEST -> sd_ble_gap_auth_key_reply(conn, key_type, key)
     key_type 0 none / 1 passkey (6 ASCII digits, validated) / 2 OOB
     (16 bytes); needs an Accepted/key-entering handshake
@@ -177,6 +180,13 @@ BLE complete (driver -> model, posts the SoftDevice event):
   ble_complete_rssi(conn, rssi)                        (RSSI_CHANGED)
   ble_complete_hvx(conn, handle)                       (HVC confirm)
   ble_complete_pairing(conn, bonded)                   (AUTH_STATUS + CONN_SEC_UPDATE)
+  ble_bond_has_keys(peer6, master_id10) -> bool         (re-encrypt gate)
+  ble_bond_read_keys(peer6) -> [ltk16, irk16, csrk16, mid10] (52B or empty)
+  ble_store_bond(peer6, ltk16, irk16, csrk16, mid10)    (driver-side insert)
+  ble_delete_bond(peer6) -> bool                        (explicit unbond)
+  ble_complete_tx_flow(conn)                            (TX token refill + TX_COMPLETE)
+  ble_complete_peripheral_connect(peer6) -> u16         (dial-in CONNECTED, PERIPH role)
+  ble_complete_conn_param_update(conn)                  (CONN_PARAM_UPDATE)
   ble_fail_pairing(conn, status)                       (AUTH_STATUS failure, link stays up;
                                                         S132 SEC_STATUS codes: 0x00 success,
                                                         0x81 passkey-fail, 0x82 OOB-missing,

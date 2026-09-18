@@ -57,6 +57,21 @@ export function aar_take_job(): Uint32Array;
 export function ble_batt_level(): number;
 
 /**
+ * Bond store: does the store hold keys for this 6B peer address with
+ * this 10B master_id (silicon re-encrypt gate)? The bridge consults
+ * this before answering SEC_INFO_REPLY: hit = reply with stored keys
+ * + ENCRYPT; miss = all-NULL reply.
+ */
+export function ble_bond_has_keys(peer: Uint8Array, master_id: Uint8Array): boolean;
+
+/**
+ * Bond store: read back bonded keys (LTK[16] IRK[16] CSRK[16] MID[10]
+ * = 52 bytes, empty when no bond). Bridge answers SEC_INFO_REPLY
+ * from this instead of failing.
+ */
+export function ble_bond_read_keys(peer: Uint8Array): Uint8Array;
+
+/**
  * Complete an attribute-info discovery: handles[i], uuids[i].
  * Posts ATTR_INFO_RSP (16-bit format).
  */
@@ -67,6 +82,11 @@ export function ble_complete_attr_info_disc(conn: number, handles: Uint16Array, 
  * props[i] (S132 u8 bitfield), decls[i], values[i]. Posts CHAR_DISC_RSP.
  */
 export function ble_complete_char_disc(conn: number, uuids: Uint16Array, props: Uint8Array, decls: Uint16Array, values: Uint16Array): void;
+
+/**
+ * Conn-param update completion: posts CONN_PARAM_UPDATE on the link.
+ */
+export function ble_complete_conn_param_update(conn: number): void;
 
 /**
  * Complete a descriptor discovery: handles[i], uuids[i].
@@ -116,6 +136,12 @@ export function ble_complete_l2cap_rx(conn: number, cid: number, data: Uint8Arra
 export function ble_complete_pairing(conn: number, bonded: boolean): void;
 
 /**
+ * Peripheral-role accept: a peer answered our advertisement; brings
+ * the link up with PERIPH role and posts CONNECTED. Returns handle.
+ */
+export function ble_complete_peripheral_connect(peer: Uint8Array): number;
+
+/**
  * Complete a primary-service discovery with parallel arrays:
  * uuids[i] (0xFFFF = 128-bit, listed without number), starts[i],
  * ends[i]. Posts PRIM_DISC_RSP.
@@ -132,6 +158,12 @@ export function ble_complete_rel_disc(conn: number, handles: Uint16Array, uuids:
  * Complete an RSSI sample: posts RSSI_CHANGED.
  */
 export function ble_complete_rssi(conn: number, rssi: number): void;
+
+/**
+ * TX-flow refill: driver moved one packet over air; refills one TX
+ * token on the link and posts TX_COMPLETE with the free count.
+ */
+export function ble_complete_tx_flow(conn: number): void;
 
 /**
  * Complete a read-by-UUID: parallel handles[i] + flat values with
@@ -155,6 +187,11 @@ export function ble_conn_handles(): Uint16Array;
  * (mode 0x11 open, 0x21 encrypted-after-pairing).
  */
 export function ble_conn_sec(conn: number): Uint8Array;
+
+/**
+ * Explicit unbond: the next SEC_INFO_REQUEST for the peer MISSES.
+ */
+export function ble_delete_bond(peer: Uint8Array): boolean;
 
 export function ble_enabled(): boolean;
 
@@ -217,6 +254,12 @@ export function ble_post_sec_params_request(conn: number, peer_params: Uint8Arra
 export function ble_queue_len(): number;
 
 /**
+ * Bond store: driver-side insert (bridge confirmed air keys when
+ * firmware passed NULL keysets).
+ */
+export function ble_store_bond(peer: Uint8Array, ltk: Uint8Array, irk: Uint8Array, csrk: Uint8Array, master_id: Uint8Array): void;
+
+/**
  * Bytes staged alongside the last take_job (WRITE/HVX payloads only;
  * the SVC copies firmware bytes at call time so the driver read is
  * stable). Drained once per job; empty when the job carries no bytes.
@@ -249,6 +292,8 @@ export function gpio_read_output(port: number, pin: number): boolean;
 /**
  * Drive a raw input level. Buttons are active-low: released = true
  * (idle pull-up default), pressed = false. JS button layer maps to this.
+ * NFC antenna pins (P0.09/P0.10 with UICR.NFCPINS PROTECT=1, the reset
+ * state) ignore levels — silicon routes them to the NFCT front-end.
  */
 export function gpio_set_input(port: number, pin: number, value: boolean): void;
 
@@ -364,6 +409,12 @@ export function saadc_complete_result(amount: number): void;
 
 export function saadc_take_result(): Uint32Array;
 
+/**
+ * SoC event queue length (sd_evt phase 1: flash completions while the
+ * SD is enabled). Debug/pump path; firmware drains via SVC 82.
+ */
+export function sd_evt_queue_len(): number;
+
 export function set_intr_pending(irq: number): void;
 
 export function spi_push_miso(peripheral: string, bytes: Uint8Array): void;
@@ -425,8 +476,11 @@ export interface InitOutput {
     readonly aar_complete: (a: number) => void;
     readonly aar_take_job: (a: number) => void;
     readonly ble_batt_level: () => number;
+    readonly ble_bond_has_keys: (a: number, b: number, c: number, d: number) => number;
+    readonly ble_bond_read_keys: (a: number, b: number, c: number) => void;
     readonly ble_complete_attr_info_disc: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly ble_complete_char_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
+    readonly ble_complete_conn_param_update: (a: number) => void;
     readonly ble_complete_desc_disc: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly ble_complete_gap_connect: (a: number, b: number) => void;
     readonly ble_complete_gap_connect_ret: (a: number, b: number) => number;
@@ -437,13 +491,16 @@ export interface InitOutput {
     readonly ble_complete_hvx: (a: number, b: number) => void;
     readonly ble_complete_l2cap_rx: (a: number, b: number, c: number, d: number) => void;
     readonly ble_complete_pairing: (a: number, b: number) => void;
+    readonly ble_complete_peripheral_connect: (a: number, b: number) => number;
     readonly ble_complete_prim_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly ble_complete_rel_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly ble_complete_rssi: (a: number, b: number) => void;
+    readonly ble_complete_tx_flow: (a: number) => void;
     readonly ble_complete_uuid_read: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly ble_complete_vals_read: (a: number, b: number, c: number) => void;
     readonly ble_conn_handles: (a: number) => void;
     readonly ble_conn_sec: (a: number, b: number) => void;
+    readonly ble_delete_bond: (a: number, b: number) => number;
     readonly ble_enabled: () => number;
     readonly ble_fail_pairing: (a: number, b: number) => void;
     readonly ble_post_adv_report: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
@@ -455,6 +512,7 @@ export interface InitOutput {
     readonly ble_post_sec_info_request: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly ble_post_sec_params_request: (a: number, b: number, c: number) => number;
     readonly ble_queue_len: () => number;
+    readonly ble_store_bond: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
     readonly ble_take_data: (a: number) => void;
     readonly ble_take_job: (a: number) => void;
     readonly ccm_complete: (a: number) => void;
@@ -511,6 +569,7 @@ export interface InitOutput {
     readonly saadc_check_limits: (a: number, b: number) => void;
     readonly saadc_complete_result: (a: number) => void;
     readonly saadc_take_result: (a: number) => void;
+    readonly sd_evt_queue_len: () => number;
     readonly set_intr_pending: (a: number) => void;
     readonly spi_push_miso: (a: number, b: number, c: number, d: number) => void;
     readonly spi_take_events: (a: number, b: number, c: number) => void;

@@ -8,7 +8,7 @@ DAPLink/interface MCU (KL27) is NOT emulated (JS loader + UART only).
 Status key: **F** = functional (timed, IRQs, driver take/complete,
 firmware proof) · **H** = handshake (TASKS/EVENTS/INTEN minimum, no
 timed behavior or no consumer) · **–** = missing / deliberately
-omitted. Counts: `cargo test` **211 green**,
+omitted. Counts: `cargo test` **217 green**,
 `node demo/parts/smoke.mjs` green, `node demo/parts/handshake.mjs`
 18/18, `node demo/parts/ble_live_e2e.mjs` 42/42 over air, browser
 16/16 (`python3 tools/browser_verify_16.py`).
@@ -55,7 +55,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | `0x40029000` | QSPI | `qspi_nrf.rs` | F | Absent from this SVD revision (explicit `new_wasm` slot, `mod.rs:567`); registered image, AND-only program, 4K/64K erase, take/complete + JS backend exports. |
 | `0x10000000`/`0x10001000` | FICR/UICR | `ficr_uicr.rs` | F | PART=`0x52833`, sizes; UICR RAM store (BOOTLOADERADDR-gated boot depends on it). |
 | `0x50000000`/`0x50000300` | P0/P1 | `gpio_nrf.rs` | F | OUT/DIR/CNF, inputs idle-HIGH (active-low buttons), combined block; PIN_CNF.DIR drives `dir[]` (P35, `pin_cnf_dir_bit_drives_dir`). |
-| ARM core | NVIC/SCB/SysTick/MPU/FPU/DWT/ITM/STIR/DEMCR | core files | F | MPU enforced w/ MemManage+escalation; FPU SP (CPACR gate, no lazy stacking — documented); CoreSight `0xF0000000` reads 0. AIRCR SYSRESETREQ honored (P53). |
+| ARM core | NVIC/SCB/SysTick/MPU/FPU/DWT/ITM/STIR/DEMCR | core files | F | MPU enforced w/ MemManage+escalation; FPU SP (CPACR gate, lazy stacking implemented — `fpu_lazy_*` green); CoreSight `0xF0000000` reads 0. AIRCR SYSRESETREQ honored (P53). |
 | `0x40026000` | FPU (nRF engine) | – | – | Deliberately skipped in SVD path (`mod.rs:282`): nRF engine ≠ ARM core FPU; explicit ARM slot owns "FPU". |
 | – | ACL/SPU | – | – | Out of scope (reads 0). |
 | – | SoftDevice SVCs (16/17/18/40/41/82) | – | – | NOT emulated: zero `svc 82` sites in MPY+MC (`0xDF52` zero hits) — sd_evt hook would be dead code (P32/P51, shelved). SVC dispatch observed only (MBR `0xAA4` cmp #24). |
@@ -109,13 +109,14 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | `speaker` / `music` / `audio` / `sound` | H | Speaker-enabled default; audio tick path is the NULL-`this` prime suspect (P24–P25). No WebAudio route (I2S capture drained, TODO). |
 | `microphone` (`SoundEvent`, threshold) | H | PDM pump exists; no mic part; MPY layer never reached. |
 | `pin0`–`pin16`, `pin19/20`, `pin_logo`, `pin_speaker` | H | `getDigitalValue@0x28744` IS the observed poll — but on CODAL LSM303 driver `0x20003960`, not an MP pin (P52 correction). P0.00 toggles nested under NULL fault. |
-| `i2c` / `spi` / `uart` | H | TWIM/UARTE paths proven (`dma_nrf`, `air_nrf`); MPY objects never reached. |
+| UART serial (`uBit.serial`, `NRF52Serial`) | H | Object EXISTS at `0x20002BA4` (id 12 ✓) with TX BUFF_INIT only (`0x4000`); RX never initialized, both ring buffers NULL, baud 0, DMA never armed, UARTE EN=8 (P113 TRUE-seed park). Stalled between TX-setup and RX-setup — NEXT: `0x282E5`-caller trace + DRDY experiment. TX snapshot + RX drip proven independently. |
+| `i2c` / `spi` | H | TWIM/UARTE paths proven (`dma_nrf`, `air_nrf`); MPY objects never reached. |
 | `Image` / `Sound` / `SoundEvent` / `SoundEffect` types | H | Types exist in flash (`MicroBitImage`, `AudioFrame`…); never instantiated (pre-banner). |
 | `reset` / `sleep` / `running_time` / `panic` / `temperature` | H | `sleep` = RAM delay-fn `0x200021b8` (P53–P55: `subs r0,#1; bne; bx lr`, called from the `0x20980` 20× helper, lr `0x26039`; r0 live countdown, r4=1000 — a wait, not a hang; caller TBD via r7-entry watch). `temperature` → TEMP model exists. |
 | `set_volume` / `ws2812_write` (neopixel) | H | Present in image; never reached. |
 | `run_every` / `scale` / `log` (datalog FS) | H | `log` → NVMC/flash path; fds-waiter divergence is demo-only (P26: native skips, demo waits on SD-event completion nothing delivers). |
 | `radio` (`drv_radio.c`) | H | CODAL radio repoints vector (`0x2E44D` = main:57 ran natively); no RX attempts pre-banner. |
-| REPL proper (`pyexec_friendly_repl`, readline, `print(1+2)→3`) | – | BLOCKED: banner first (L1). Post-banner NULL-`this` (`bx r3@0x4F75A` via `mp_call_function`, TIMER1-only, RX/TX-IRQ-excluded) + prompt-in-ring-never-staged (`is_tx` false, no kick) still open. P20 browser prompt+no-fault is env-specific. |
+| REPL proper (`pyexec_friendly_repl`, readline, `print(1+2)→3`) | – | BLOCKED: banner first (LEFT-1). TRUE-seed park `0x200021B8/BB`, 200M/zero-fault, serial TX-only stall. Post-banner NULL-`this` + prompt-never-staged notes kept in STATUS §6. |
 
 ## 4. JS/wasm API + firmware proofs + wall-time
 
@@ -135,7 +136,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | COMP/QDEC | `comp_set_input_mv`, `qdec_step` | F | P58 mock audit (TEMP, reverted): COMP Below/Above + UP edge via driver mV; QDEC host steps accumulate (ACC=+3). No demo consumer (no board knob/comparator wired) — F-grade model, H-grade wiring. |
 | USBD | `usbd_signal_reset`, `usbd_take/complete_epin/epout`, `usbd_inject_setup` | F | Pumped per frame; `air` Run pre-signals USBRESET. |
 | QSPI/NVMC | `qspi_register_flash`, `qspi_take/complete_read/write/erase`, `nvmc_take/erase`, `nvmc_complete_erase` | F | Driver applies 0xFF via `mem_write`; NVMC erase pumped per frame. |
-| RADIO | `radio_take/complete_tx/rx`, `radio_inject_rx/corrupt`, `radio_set_rssi_dbm` | F | P58 BLE verdict: MPY radio is BARE-METAL (`drv_radio.c` drives `NRF_RADIO` directly + custom IRQ handler; SoftDevice never involved) — model covers exactly this surface, loopback proof green. No BLE-enabled image exists (`MICROBIT_BLE_ENABLED: 0` in MPY codal.json; `svc 82` zero even-aligned hits) — BLE stack work needs such an image first (see §8). |
+| RADIO | `radio_take/complete_tx/rx`, `radio_inject_rx/corrupt`, `radio_set_rssi_dbm` | F | P58 BLE verdict: MPY radio is BARE-METAL (`drv_radio.c` drives `NRF_RADIO` directly + custom IRQ handler; SoftDevice never involved) — model covers exactly this surface, loopback proof green. No BLE-enabled stock image (`MICROBIT_BLE_ENABLED: 0` in MPY codal.json; `svc 82` zero even-aligned hits) — see §8 gaps table. |
 | I2S | `i2s_take/complete_rx/tx`, `i2s_take_capture` | F | P58 mock audit (TEMP, reverted): RX silence fill + TX capture FIFO. Streaming proof green; demo feeds silence, capture drained (no WebAudio) — F-grade model, H-grade wiring. |
 | NFCT | `nfct_field_present`, `nfct_take/complete_tx/rx` | F | P58 mock audit (TEMP, reverted): field-present → ACTIVATE → STARTTX/ENDTX + ENABLERXDATA/ENDRX + FIELDLOST. C+S proof green; no demo consumer beyond proof (no NFC antenna UI) — F-grade model, H-grade wiring. |
 
@@ -156,20 +157,22 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | nfct | Field-select + frames | F | Field-detect/select state machine. |
 | 2nd-run | `reset_state`, no leak | F | Every proof re-runs clean (BOOT_LOCK + UART lock discipline). |
 
-| Wall-time (L6, environmental) | Value | Remark |
+| Wall-time (measured P112–P113, no action) | Value | Remark |
 |---|---|---|
-| Pump batching | 5×[20K step+tick+pumpDma] per frame (P54: duties moved INSIDE the sub-loop) | Was 1.20 MIPS vsync-capped; meter reads ~6 in-browser (16-class bursts are peak slice rates, not sustained banner throughput). Duties-once-per-frame starved polled firmware (1B STARTTX waited ~100K; DRDY pulse couldn't land in a 20K window). Browser P54c post-fix: TWIM clean (`t_err=0/endrx=1`) but still pre-banner — throughput no longer suspect, gate is elsewhere (P55: countdown wait). |
-| Banner cost | ~150–260M instr | ~30s at 6 MIPS; 600s+ at 300K. Native L1 banners 160–180M (~43s harness). |
+| Node WASM blinky | ~41–54 MIPS | 6M instr / 0.11–0.15 s, BOOT/BLINK/BLINK correct (`wall_mips.mjs`). |
+| Node WASM MPY-fault path | ~24 MIPS | Sustained through fault/reset path (`wall_mpy2.mjs`). |
+| Native debug blinky test | 0.32–0.40 s | 5M-instr `cpu.run` + model — harness time, NOT core speed. Do not cite as MIPS. |
+| Banner cost | ~150–260M instr | ~4 s Node pure-stepping, ~30 s browser @6 MIPS. |
+| Pump batching | 5×[20K step+tick+pumpDma] per frame (P54: duties moved INSIDE the sub-loop) | Duties-once-per-frame starved polled firmware (1B STARTTX waited ~100K; DRDY pulse couldn't land in a 20K window). |
 | Profile | dev == release (byte-identical) | wasm-pack single profile; speed is environmental, never the lever. |
-| Remaining gap | Browser reparks pre-banner at identical pc | Throughput, not model, is suspect #1. |
 | Package | `demo/pkg` 1.5MB committed, `.gitignore` removed | Deliberate: Pages serves it directly, no toolchain needed. |
 
 ## 5. Real-firmware scoreboard (all executed, zero CPU faults*)
 
 | Firmware | Result | Remark |
 |---|---|---|
-| MicroPython v2.1.2 (direct-app `0x1C000`) | Boots OK; banner 106B natively, pre-banner park in browser | 2 AIRCR resets honored, RESETREAS SREQ, GPIO live, TWIM ACKs, pc `0x282B2` @340M natively. Browser park `0x200021b8/bb`, uartLen 0. *Except post-banner NULL fault (P24–P25, MP-layer, open). |
-| MakeCode `basic.showString("A")` (makecode 1.3.6, `mc/` gitignored) | Scheduler idle; display never enables | P57 zero-touch (300M): TIMER4-CC0/GPIOTE-CONFIG[1..5]/PPI-CHENSET/TWIM1-ADDR/NVMC-CONFIG/UARTE-TXMAX/waiter-`0x30C04` ALL untouched; pc `0x20002078/7A`→`0x37AFA` WFE-idle, DIR0 sticky `0x01788000`. Stall is pre-scroll sequencing (main never issues scroll). |
+| MicroPython v2.1.2 (direct-app `0x1C000`) | TRUE-seed park `0x200021B8/BB`, 200M/zero-fault/uart-0 (P113; wrong-seed `0x1AEF8` fault was a harness typo) | 2 AIRCR resets honored, RESETREAS SREQ, GPIO live, TWIM healthy (txT 117/rxT 1/ev 378, `0x19`+`0x39`, zero NACKs), serial TX-only stall (RX never init). Post-banner NULL fault notes kept in STATUS §6. |
+| MakeCode `basic.showString("A")` (makecode 1.3.6, `mc/` gitignored) | Pre-scroll stall CONFIRMED (P112); shared gate with MPY (app-honor → same `0x1AEF8`; MBR-honor → `0x37F4F`/SVC3 park) | P57 zero-touch + P106 waiter forensics (kept in STATUS §6): run queue ONE fiber, scroll never created, TIMER4 0, DIR0 sticky. |
 | Espruino 2v29 | Boots | CoreSight PID fix needed; console is P0.06 bit-bang, nothing TX in early windows. |
 | Bootloader chain (`0x77000`) | Entry + FICR gather + benign post-UICR reset; 2nd reset CODED AIRCR | `0x78514` via tbb `0x78498` (r5=1); `0x783FE` park = post-AIRCR wait. r4==0 is SD-enable SUCCESS (`cbnz r4@0x7B636` skips validation on FAILURE; success → `0x7B5B4`+`0x7B568` → tbb reset #2 BY DESIGN). `0x7B5B4` = IPR22 validator (`236>>a` odd; IPR22=0 always fails — needs SD priorities). `0x784C4` = DFU-progress gate (`[0x20002DF1]`, `[0x2DFC]-[0x2DF4]` vs 59), not the r4 cause. MBR selector (`0x417`) never reads `0x10001200/204` (`0x0–0xB00` sweep) — P42 refuted, direct-app stays. MBR pass-2 needs SD priorities (shelved). |
 
@@ -177,12 +180,12 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 
 | # | Item | Status | Next action |
 |---|---|---|---|
-| 1 | REPL exec (`print(1+2)` → `3`) | Blocked behind banner (L1) | Long browser run past 160–180M to banner, then `print(1+2)` prompt-kick sampling (pc `0x2874x/0x266Dx` + RXDRDY + ring deltas, P51 pattern). |
-| 2 | TX drops (holes + tail-shift) | Snapshot ACTIVE but incomplete | Firmware-side slot audit (no trait change); live verify needs (1). P53i holds: 0/106 driver mismatches. |
-| 3 | Bootloader full chain | r4==0/DFU decoded (§5); MBR pass-2 needs SD priorities | None without SD event synthesis (explicitly out of scope). |
-| 4 | MakeCode display content | Zero-touch proven (P57: no member init touches HW in 300M) | Constructor-order trace (which member init reaches `0x30CD0`) + (7,1) producer ID. |
+| 1 | REPL exec (`print(1+2)` → `3`) — main gate (P113) | TRUE-seed park `0x200021B8/BB`, 200M/zero-fault, serial TX-only stall | `0x282E5`-caller trace + DRDY-line experiment |
+| 2 | TX drops | Model done, no action (guarded 0/60, unguarded 60/60) | — |
+| 3 | Bootloader full chain | PARKED, stays parked | Reopen only with a faulting config |
+| 4 | MakeCode display content | PARKED, shared gate with (1) | Same NEXT as (1) |
 | 5 | SPIM2/3 | Done + DMA-proven (P110 `spim23_nrf`: TX+RX DMA on both instances) | No edge-SPI demo part (no consumer) — stays H by decision. |
-| 6 | Demo wall-time | Environmental (~6 MIPS, banner ~30s at speed) | Re-measure after (1); wasm-opt/pump-quantum only if still slow. |
+| 6 | Demo wall-time | Environmental, measured, no action (Node ~41–54, MPY ~24, browser ~6 MIPS) | — |
 | 7 | UARTE1 second-instance proof | Done (P110 `uarte1_nrf`: TX+RX DMA through shared take/complete) | — |
 | 8 | RTC/PWM/RNG/TEMP/EGU depth | Done (P110 second proofs: COMPARE/OVRFLW, STOP/INTEN, DATARDY/INTEN, SHORTS/re-arm, channels/mask) | — |
 | 9 | Bench crypto+QSPI pumps | Done (P109: ECB/AAR/CCM/QSPI live in pumpDma via shared `crypto.js`) | AAR has no wasm export (pump resolves present by design). |
@@ -212,22 +215,23 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | GAP central | ADDRESS_SET/GET, ADV_DATA_SET validation, ADV_START/STOP, SCAN_START→live ADV_REPORT (one per peer, unpacked pad) / SCAN_STOP, CONNECT→staged air job→CONNECTED (CENTRAL role, real conn_params) / CONNECT_CANCEL, DISCONNECT with HCI reason echo, CONN_PARAM_UPDATE/PPCP/APPEARANCE/DEVICE_NAME/TX_POWER as validated acks. |
 | GAP RSSI | RSSI_START/STOP validation; RSSI_GET answers the link level synchronously AND stages air sampling; completion posts RSSI_CHANGED. Bridge probes HCI_READ_RSSI on the live link first (SoftDevice-faithful) with adv-sighting fallback (`src:"conn"\|"adv"`), because LocalLink answers UNKNOWN_HCI_COMMAND (probed). |
 | GATT client | All six discovery kinds (primary/relationship/characteristic/descriptor/attr-info/UUID-read) + multi-read + plain read with offset + write (REQ+CMD, bytes copied at SVC time) + HV_CONFIRM; gattc envelope head + unpacked pads on every RSP; 128-bit rows encode null+vendor type. |
-| GATT server | Service/char/descriptor table with SoftDevice-shaped handles; struct-form VALUE_SET/GET (length query, offset checks, conn 0xFFFF allowed); ATTR_GET; per-link CCCD tracking with notify/indicate-bit gating (unsubscribed refuses); HVX staging with per-link TX budget (notify decrements, empty budget refuses). |
-| Pairing legs | AUTHENTICATE stages the handshake; all six peer-initiated request events (SEC_PARAMS_REQUEST 0x13 / SEC_INFO_REQUEST 0x14 / PASSKEY_DISPLAY 0x15 / KEY_PRESSED 0x16 / AUTH_KEY_REQUEST 0x17 / LESC_DHKEY_REQUEST 0x18, conn-first bodies); per-link state machine (Idle/Requested/PeerRequested/Accepted/KeyEntry/LescDhkey/EncryptPending); every reply SVC validated (accept needs a request, passkey shape-checked, OOB/DHKEY/keypress/encrypt/SEC_INFO each gated); S132 SEC_STATUS codes incl. the 0x29→0x85 fix; AUTH_STATUS conn-first; complete/fail post AUTH_STATUS (+CONN_SEC_UPDATE) with bonded/encrypted state feeding CONN_SEC_GET. No crypto, no key storage — documented. |
+| GATT server | Service/char/descriptor table with SoftDevice-shaped handles; struct-form VALUE_SET/GET (length query, offset checks, conn 0xFFFF allowed); ATTR_GET; per-link CCCD tracking with notify/indicate-bit gating (unsubscribed refuses); HVX staging with per-link TX budget (notify decrements, empty budget refuses; TX_COMPLETE refill on air drain). |
+| Pairing legs | AUTHENTICATE stages the handshake; all six peer-initiated request events (SEC_PARAMS_REQUEST 0x13 / SEC_INFO_REQUEST 0x14 / PASSKEY_DISPLAY 0x15 / KEY_PRESSED 0x16 / AUTH_KEY_REQUEST 0x17 / LESC_DHKEY_REQUEST 0x18, conn-first bodies); per-link state machine (Idle/Requested/PeerRequested/Accepted/KeyEntry/LescDhkey/EncryptPending); every reply SVC validated (accept needs a request, passkey shape-checked, OOB/DHKEY/keypress/encrypt/SEC_INFO each gated); S132 SEC_STATUS codes incl. the 0x29→0x85 fix; AUTH_STATUS conn-first; complete/fail post AUTH_STATUS (+CONN_SEC_UPDATE) with bonded/encrypted state feeding CONN_SEC_GET. Key bytes persist per peer in the bond store (hit/miss/delete); crypto math itself stays driver-side — documented. |
 | L2CAP | Dynamic-CID register/unregister (range + capacity checks), TX staging with SVC-time byte copy, RX echo completion. |
 | Multi-link + air | Per-link handles/RSSI/TX/security/pairing/CIDs; events carry their conn; pump + bridge + E2E prove two live links. Bridge (`tools/ble_air_bridge.py`): two Bumble peers on one LocalLink (battery 87 `PeerBatt` + twin 64 `PeerHR`, distinct addresses), per-job `peer` routing, `peer` echo on disc RSPs, per-peer ATT locks + global scan lock (no timeouts under load). |
-| Proofs | 10 native sd_ble tests (byte-offset asserts) + SVC-hook proof in cpu/tests.rs; GCC `ble_conformance.c` + C face + `ble_pairing_fw.c` (CODAL-BLE-shaped JustWorks flow, 17 `BLEP:*` markers, 2nd-run clean); headless MockBleSvc real-SVC flow 18/18; live E2E 42/42 over air (two links, 87-vs-64 reads); browser 16/16 (blinky + self-test pairing×2 + probes, zero page errors). |
+| Proofs | 11 native sd_ble tests (byte-offset asserts) + SVC-hook proof in cpu/tests.rs; GCC `ble_conformance.c` + C face + `ble_pairing_fw.c` (CODAL-BLE-shaped JustWorks flow, 17 `BLEP:*` markers, 2nd-run clean); headless MockBleSvc real-SVC flow 18/18; live E2E 42/42 over air (two links, 87-vs-64 reads); browser 16/16 (blinky + self-test pairing×2 + probes, zero page errors). |
 
 ### Left: the named, bounded gaps (none is a hidden fault)
 
 | Gap | Why it stays |
 |---|---|
-| No SMP crypto / key / bond storage | Passkeys validate shape, OOB zeroes 32B, LTK/IRK/CSRK pointers are accepted never stored, bonds die with the link. A sniffer would see it; firmware draining events would not. |
-| Central role only | The bridge dials out; ADV_START emits no air, CONNECTED never arrives unsolicited; no whitelist/directed advertising. |
-| No parameter enforcement | CONN_PARAM_UPDATE/PPCP accept without posting updates; no MTU/DLE/PHY SVCs exist in S132 form and none are synthesized. |
-| No TX flow events | TX_PACKET_COUNT_GET is static; BLE_EVT_TX_COMPLETE / USER_MEM_REQUEST / RELEASE never post; GATTC/GATTS TIMEOUT, CONN_PARAM_UPDATE(_REQUEST), SEC_REQUEST, SCAN_REQ_REPORT, RW_AUTHORIZE_REQUEST, SYS_ATTR_MISSING, SC_CONFIRM never post (their reply SVCs ack SUCCESS without effect). |
+| No SMP crypto (LESC confirm/key math) | Crypto runs driver-side by design (bridge confirms air handshake); handshake legs + status codes + key-shape validation are real. |
+| Key / bond storage | CLOSED P114: per-peer LTK/IRK/CSRK/master-id store (hit/miss/delete + bridge `bond_keys` leg); SEC_INFO_REQUEST re-encrypts hit from store. |
+| Central role only | CLOSED P114 (dial-in): `complete_peripheral_connect` posts CONNECTED with PERIPH role; bridge/pump `periph_connected` leg. ADV_START still emits no air; no whitelist/directed advertising. |
+| No parameter enforcement | CLOSED P114 (events): request SVC validates; driver completion posts CONN_PARAM_UPDATE. No MTU/DLE/PHY SVCs exist in S132 form and none are synthesized. |
+| No TX flow events | CLOSED P114: TX tokens refill per air packet + TX_COMPLETE posted with free count (pump `tx_complete` leg); NO_TX_PACKETS still gates staging. USER_MEM_REQUEST/RELEASE + GATTC/GATTS TIMEOUT, SEC_REQUEST, SCAN_REQ_REPORT, RW_AUTHORIZE_REQUEST, SYS_ATTR_MISSING, SC_CONFIRM never post (reply SVCs ack SUCCESS without effect). |
 | GATTC write REQ/CMD only | SIGNED_WRITE/PREP_WRITE/EXEC_WRITE refuse INVALID_PARAM — no queued/signed-write path. |
-| SoC/MBR SVCs unmodeled | Mutex/rand-pool/power/clock/PPI sd_ calls are out of scope for the BLE face; on-chip crypto keeps its own take/complete models. |
+| SoC/MBR SVCs unmodeled | Mutex/rand-pool/power/clock/PPI sd_ calls are out of scope for the BLE face; on-chip crypto keeps its own take/complete models. EXCEPTION: SoC flash events closed P114 (`sd_evt.rs` phase 1: SVC 16/82, NVMC-posted id 2/3, firmware proof). |
 | No BLE-enabled stock image | MPY ships `MICROBIT_BLE_ENABLED: 0`; no shipped firmware exercises this face (proven by conformance fw + mock + E2E instead). |
 | Virtual air, not RF | LocalLink peers, not spectrum; RSSI -50 dBm constant with adv fallback; no range/interference/whitening. |
 
@@ -258,7 +262,7 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | `docs/COVERAGE.md` | This file | Table audit (uncommitted, per order). |
 
 ```
-cargo test -- --test-threads=1   # 211 green (parallel also 25/25 post-P108; single-threaded stays the gate by convention)
+cargo test -- --test-threads=1   # 217 green (parallel also 25/25 post-P108; single-threaded stays the gate by convention)
 node demo/parts/smoke.mjs        # parts green
 node demo/parts/handshake.mjs    # 18/18 vs the built pkg
 node demo/parts/ble_live_e2e.mjs # 42/42 over air (bridge on :18771)

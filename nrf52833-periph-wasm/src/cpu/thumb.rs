@@ -1436,10 +1436,12 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut dyn Memory, op: u16, pc
     }
     // SVC: SoftDevice BLE face first (0x60..=0xBF, claimed SVCs write
     // r0 + skip past the svc, zero-cost when idle: one range compare),
-    // then the synchronous exception path. With delivery on, raise
-    // through the priority gate (an SVC that cannot preempt escalates
-    // to HardFault, silicon rule); otherwise loud fault (polling
-    // firmware never SVCs, so hitting one is a bug worth surfacing).
+    // then the SoC event transport (SVC 82 flash events, model queue;
+    // empty falls through), then the synchronous exception path. With
+    // delivery on, raise through the priority gate (an SVC that cannot
+    // preempt escalates to HardFault, silicon rule); otherwise loud
+    // fault (polling firmware never SVCs, so hitting one is a bug
+    // worth surfacing).
     if o & 0xFF00 == 0xDF00 {
         if !cpu.deliver_irqs {
             return fault(cpu, pc, op, 0, 2);
@@ -1453,6 +1455,16 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut dyn Memory, op: u16, pc
                 adv(cpu, pc, 2);
                 return cpu.fault.is_none();
             }
+        }
+        if svc == crate::sd_evt::SVC_SOC_EVT_GET {
+            if let Some(r0) = crate::sd_evt::handle_evt_get(mem, cpu.regs.r[0]) {
+                cpu.regs.r[0] = r0;
+                adv(cpu, pc, 2);
+                return cpu.fault.is_none();
+            }
+        }
+        if svc == crate::sd_evt::SVC_SOC_ENABLE {
+            crate::sd_evt::note_sd_enable();
         }
         adv(cpu, pc, 2);
         cpu.raise_sync(sys, mem, -5);

@@ -6,6 +6,7 @@ pub mod peripherals;
 pub mod ext_devices;
 pub mod cpu;
 pub mod sd_ble;
+pub mod sd_evt;
 
 use system::WasmSystem;
 
@@ -136,9 +137,12 @@ pub fn gpio_read_output(port: u32, pin: u32) -> bool {
 
 /// Drive a raw input level. Buttons are active-low: released = true
 /// (idle pull-up default), pressed = false. JS button layer maps to this.
+/// NFC antenna pins (P0.09/P0.10 with UICR.NFCPINS PROTECT=1, the reset
+/// state) ignore levels — silicon routes them to the NFCT front-end.
 #[wasm_bindgen]
 pub fn gpio_set_input(port: u32, pin: u32, value: bool) {
-    sys().p.gpio.borrow_mut().set_input_pin(port as u8, pin as u8, value);
+    let reserved = crate::peripherals::nfct_nrf::nfct_pins_reserved(sys());
+    sys().p.gpio.borrow_mut().set_input_pin_gated(port as u8, pin as u8, value, reserved);
 }
 
 #[wasm_bindgen]
@@ -492,6 +496,13 @@ pub fn nvmc_complete_erase() {
     crate::peripherals::nvmc_nrf::complete_erase(sys());
 }
 
+/// SoC event queue length (sd_evt phase 1: flash completions while the
+/// SD is enabled). Debug/pump path; firmware drains via SVC 82.
+#[wasm_bindgen]
+pub fn sd_evt_queue_len() -> u32 {
+    crate::sd_evt::queue_len() as u32
+}
+
 // ── SoftDevice BLE SVC face (GAP/GATTS/GATTC over the Bumble air bridge) ──
 // ble_take_job() returns one staged driver job as u32 words; the first
 // word is the tag. The driver resolves it over air and calls the
@@ -741,6 +752,99 @@ pub fn ble_complete_pairing(conn: u16, bonded: bool) {
 #[wasm_bindgen]
 pub fn ble_fail_pairing(conn: u16, status: u8) {
     crate::sd_ble::fail_pairing(conn, status);
+}
+
+/// Bond store: does the store hold keys for this 6B peer address with
+/// this 10B master_id (silicon re-encrypt gate)? The bridge consults
+/// this before answering SEC_INFO_REPLY: hit = reply with stored keys
+/// + ENCRYPT; miss = all-NULL reply.
+#[wasm_bindgen]
+pub fn ble_bond_has_keys(peer: &[u8], master_id: &[u8]) -> bool {
+    let mut p = [0u8; 6];
+    for (i, &b) in peer.iter().take(6).enumerate() {
+        p[i] = b;
+    }
+    let mut m = [0u8; 10];
+    for (i, &b) in master_id.iter().take(10).enumerate() {
+        m[i] = b;
+    }
+    crate::sd_ble::bond_has_keys(&p, &m)
+}
+
+/// Bond store: read back bonded keys (LTK[16] IRK[16] CSRK[16] MID[10]
+/// = 52 bytes, empty when no bond). Bridge answers SEC_INFO_REPLY
+/// from this instead of failing.
+#[wasm_bindgen]
+pub fn ble_bond_read_keys(peer: &[u8]) -> Vec<u8> {
+    let mut p = [0u8; 6];
+    for (i, &b) in peer.iter().take(6).enumerate() {
+        p[i] = b;
+    }
+    match crate::sd_ble::bond_read_keys(&p) {
+        Some((ltk, irk, csrk, mid)) => [ltk.as_slice(), irk.as_slice(), csrk.as_slice(), mid.as_slice()].concat(),
+        None => Vec::new(),
+    }
+}
+
+/// Bond store: driver-side insert (bridge confirmed air keys when
+/// firmware passed NULL keysets).
+#[wasm_bindgen]
+pub fn ble_store_bond(peer: &[u8], ltk: &[u8], irk: &[u8], csrk: &[u8], master_id: &[u8]) {
+    let mut p = [0u8; 6];
+    for (i, &b) in peer.iter().take(6).enumerate() {
+        p[i] = b;
+    }
+    let mut l = [0u8; 16];
+    for (i, &b) in ltk.iter().take(16).enumerate() {
+        l[i] = b;
+    }
+    let mut ir = [0u8; 16];
+    for (i, &b) in irk.iter().take(16).enumerate() {
+        ir[i] = b;
+    }
+    let mut c = [0u8; 16];
+    for (i, &b) in csrk.iter().take(16).enumerate() {
+        c[i] = b;
+    }
+    let mut m = [0u8; 10];
+    for (i, &b) in master_id.iter().take(10).enumerate() {
+        m[i] = b;
+    }
+    crate::sd_ble::store_bond(p, l, ir, c, m);
+}
+
+/// Explicit unbond: the next SEC_INFO_REQUEST for the peer MISSES.
+#[wasm_bindgen]
+pub fn ble_delete_bond(peer: &[u8]) -> bool {
+    let mut p = [0u8; 6];
+    for (i, &b) in peer.iter().take(6).enumerate() {
+        p[i] = b;
+    }
+    crate::sd_ble::delete_bond(p)
+}
+
+/// TX-flow refill: driver moved one packet over air; refills one TX
+/// token on the link and posts TX_COMPLETE with the free count.
+#[wasm_bindgen]
+pub fn ble_complete_tx_flow(conn: u16) {
+    crate::sd_ble::complete_tx_flow(conn);
+}
+
+/// Peripheral-role accept: a peer answered our advertisement; brings
+/// the link up with PERIPH role and posts CONNECTED. Returns handle.
+#[wasm_bindgen]
+pub fn ble_complete_peripheral_connect(peer: &[u8]) -> u16 {
+    let mut p = [0u8; 6];
+    for (i, &b) in peer.iter().take(6).enumerate() {
+        p[i] = b;
+    }
+    crate::sd_ble::complete_peripheral_connect(p)
+}
+
+/// Conn-param update completion: posts CONN_PARAM_UPDATE on the link.
+#[wasm_bindgen]
+pub fn ble_complete_conn_param_update(conn: u16) {
+    crate::sd_ble::complete_conn_param_update(conn);
 }
 
 /// Post a peer-initiated SEC_PARAMS_REQUEST: the peer started SMP

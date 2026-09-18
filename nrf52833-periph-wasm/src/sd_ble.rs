@@ -206,6 +206,7 @@ pub const SVC_L2CAP_TX: u8 = 0xB2;
 // AUTH_STATUS 0x19, CONN_SEC_UPDATE 0x1A, TIMEOUT 0x1B, ...) ----
 pub const EVT_GAP_CONNECTED: u16 = 0x10;
 pub const EVT_GAP_DISCONNECTED: u16 = 0x11;
+pub const EVT_GAP_CONN_PARAM_UPDATE: u16 = 0x12;
 pub const EVT_GAP_SEC_PARAMS_REQUEST: u16 = 0x13;
 pub const EVT_GAP_SEC_INFO_REQUEST: u16 = 0x14;
 pub const EVT_GAP_PASSKEY_DISPLAY: u16 = 0x15;
@@ -214,6 +215,7 @@ pub const EVT_GAP_AUTH_KEY_REQUEST: u16 = 0x17;
 pub const EVT_GAP_LESC_DHKEY_REQUEST: u16 = 0x18;
 pub const EVT_GAP_AUTH_STATUS: u16 = 0x19;
 pub const EVT_GAP_CONN_SEC_UPDATE: u16 = 0x1A;
+pub const EVT_GAP_TIMEOUT: u16 = 0x1B;
 pub const EVT_GAP_RSSI_CHANGED: u16 = 0x1C;
 pub const EVT_GAP_ADV_REPORT: u16 = 0x1D;
 pub const EVT_GATTC_PRIM_DISC_RSP: u16 = 0x30;
@@ -226,6 +228,11 @@ pub const EVT_GATTC_READ_RSP: u16 = 0x36;
 pub const EVT_GATTC_VALS_READ_RSP: u16 = 0x37;
 pub const EVT_GATTC_WRITE_RSP: u16 = 0x38;
 pub const EVT_GATTC_HVX: u16 = 0x39;
+// Silicon BLE_EVT_TX_COMPLETE (GATTC/GATTS TX-token return). S132
+// ble_gatt.h numbers it after the GATTC RSP family; the exact value is
+// model-local (no S132 header in-tree names it numerically), so firmware
+// matches it via the evt_get envelope id we document here (0x3A).
+pub const EVT_GATT_TX_COMPLETE: u16 = 0x3A;
 pub const EVT_GATTS_WRITE: u16 = 0x50;
 pub const EVT_GATTS_HVC: u16 = 0x53;
 pub const EVT_L2CAP_RX: u16 = 0x70;
@@ -265,6 +272,7 @@ pub const SEC_STATUS_PAIRING_NOT_SUPP: u8 = 0x85;
 
 // Roles (ble_gap.h): we initiate the bridge connection -> CENTRAL.
 pub const GAP_ROLE_CENTRAL: u8 = 2;
+pub const GAP_ROLE_PERIPH: u8 = 1;
 // UUID types (ble_types.h).
 pub const UUID_TYPE_BLE: u8 = 1;
 pub const UUID_TYPE_VENDOR_BEGIN: u8 = 2;
@@ -444,19 +452,39 @@ struct Conn {
     cids: Vec<u16>,
 }
 
-/// Pairing state per link (S132-observable behavior; no crypto, no
-/// key storage — the emulator core cannot do SMP, so the driver-side
-/// bridge confirms the air handshake and the reply SVCs below complete
-/// or fail it, posting AUTH_STATUS + CONN_SEC_UPDATE like silicon).
-/// Idle = no procedure. Requested = AUTHENTICATE staged locally,
-/// driver resolves. PeerRequested = the PEER started pairing: the
-/// driver posted SEC_PARAMS_REQUEST / AUTH_KEY_REQUEST / ... and
-/// firmware must answer with SEC_PARAMS_REPLY / AUTH_KEY_REPLY / ....
-/// Accepted = firmware accepted (SEC_PARAMS_REPLY with params, or an
-/// AUTH_KEY/DHKEY reply); the driver handshake completes it. KeyEntry
-/// = AUTH_KEY_REQUEST outstanding (passkey/OOB expected). LescDhkey =
-/// LESC_DHKEY_REQUEST outstanding. EncryptPending = SEC_INFO_REQUEST
-/// answered with keys (SEC_INFO_REPLY non-NULL), ENCRYPT expected.
+/// Bond-store entry: the long-term keys for one peer address, kept
+/// across disconnects (silicon bonds persist; only an explicit delete
+/// clears them). Key bytes are opaque to the model (no crypto here) —
+/// presence is what matters: SEC_INFO_REQUEST for a bonded peer HITS
+/// (firmware answers SEC_INFO_REPLY from store, ENCRYPT re-establishes
+/// the link without a new handshake). LTK 16B + IRK 16B + CSRK 16B +
+/// master-id 10B mirror the ble_gap.h keyset shapes the reply SVCs
+/// already validate.
+#[derive(Clone, Debug, Default)]
+struct Bond {
+    peer: [u8; 6],
+    ltk: [u8; 16],
+    irk: [u8; 16],
+    csrk: [u8; 16],
+    master_id: [u8; 10],
+}
+
+/// Pairing state per link (S132-observable behavior; crypto itself is
+/// driver-side, but the LONG-TERM KEYS are real model state: on a bonded
+/// handshake `complete_pairing` stores the peer LTK/IRK/CSRK-equivalent
+/// keyset (copied from the firmware keyset pointer at accept time, or
+/// driver-supplied), so a later SEC_INFO_REQUEST for the same peer HITS
+/// instead of always missing — silicon re-encrypts from the bond store,
+/// and now so do we. Idle = no procedure. Requested = AUTHENTICATE
+/// staged locally, driver resolves. PeerRequested = the PEER started
+/// pairing: the driver posted SEC_PARAMS_REQUEST / AUTH_KEY_REQUEST /
+/// ... and firmware must answer with SEC_PARAMS_REPLY /
+/// AUTH_KEY_REPLY / .... Accepted = firmware accepted
+/// (SEC_PARAMS_REPLY with params, or an AUTH_KEY/DHKEY reply); the
+/// driver handshake completes it. KeyEntry = AUTH_KEY_REQUEST
+/// outstanding (passkey/OOB expected). LescDhkey = LESC_DHKEY_REQUEST
+/// outstanding. EncryptPending = SEC_INFO_REQUEST answered with keys
+/// (SEC_INFO_REPLY non-NULL), ENCRYPT expected.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 enum Pairing {
     #[default]
@@ -490,6 +518,11 @@ pub struct SdBle {
     tx_count: u8,
     app_ram_base: u32,
     l2cap_cids: Vec<u16>,
+    /// Bond store: survives disconnects AND `reset_for_test`-adjacent
+    /// link churn (cleared only by `delete_bonds` / full fresh state).
+    /// Keyed by peer address; firmware's keyset pointer at accept time
+    /// supplies the bytes (copied, never aliased).
+    bonds: Vec<Bond>,
 }
 
 impl Conn {
@@ -526,7 +559,35 @@ impl SdBle {
             tx_count: 4,
             app_ram_base: 0x2000_2000,
             l2cap_cids: Vec::new(),
+            bonds: Vec::new(),
         }
+    }
+
+    /// Look up the bond for a peer address (bond store survives
+    /// disconnects; silicon persists bonds in flash).
+    fn find_bond(&self, peer: &[u8; 6]) -> Option<&Bond> {
+        self.bonds.iter().find(|b| &b.peer == peer)
+    }
+
+    /// Store (or refresh) the bond for a peer. Key bytes come from the
+    /// firmware keyset pointer at accept/complete time (copied); when
+    /// firmware passes NULL keysets the driver may supply them via
+    /// `store_bond` (bridge confirmed air keys).
+    fn store_bond_keys(&mut self, peer: [u8; 6], ltk: [u8; 16], irk: [u8; 16], csrk: [u8; 16], master_id: [u8; 10]) {
+        if let Some(b) = self.bonds.iter_mut().find(|b| b.peer == peer) {
+            b.ltk = ltk; b.irk = irk; b.csrk = csrk; b.master_id = master_id;
+        } else {
+            self.bonds.push(Bond { peer, ltk, irk, csrk, master_id });
+        }
+    }
+
+    /// Delete one peer's bond (explicit unbond). Returns true when one
+    /// existed. Down links keep running unencrypted; the next
+    /// SEC_INFO_REQUEST for the peer will MISS (fresh handshake).
+    fn delete_bond(&mut self, peer: &[u8; 6]) -> bool {
+        let n = self.bonds.len();
+        self.bonds.retain(|b| &b.peer != peer);
+        self.bonds.len() != n
     }
 
     fn conn(&self, h: u16) -> Option<&Conn> {
@@ -709,21 +770,49 @@ impl SdBle {
     /// GAP CONNECTED body: ble_gap_evt_t = {u16 conn,
     /// connected{peer{type+6}, own{type+6}, role, irk byte,
     /// conn_params{4xu16 min/max/lat/timeout}}}. Role CENTRAL: we
-    /// initiate the bridge connection (ble_gap.h roles).
+    /// initiate the bridge connection (ble_gap.h roles); the
+    /// role-parameterized form below serves the peripheral-role accept
+    /// path (a peer connected TO our advertisement).
     fn connected_payload(conn: u16, peer: [u8; 6], own: [u8; 6]) -> Vec<u8> {
+        Self::connected_payload_role(conn, peer, own, GAP_ROLE_CENTRAL)
+    }
+
+    /// Same body with an explicit role byte (central = we dial out,
+    /// periph = a peer answered our ADV_START advertisement).
+    fn connected_payload_role(conn: u16, peer: [u8; 6], own: [u8; 6], role: u8) -> Vec<u8> {
         let mut p = Vec::new();
         p.extend_from_slice(&conn.to_le_bytes());
         p.push(1); // peer type: random static
         p.extend_from_slice(&peer);
         p.push(1); // own type: random static
         p.extend_from_slice(&own);
-        p.push(GAP_ROLE_CENTRAL);
+        p.push(role);
         p.push(0); // irk_match 0 + idx 0
         // conn_params: min/max interval 6 (7.5ms), latency 0, timeout 400.
         for w in [6u16, 6, 0, 400] {
             p.extend_from_slice(&w.to_le_bytes());
         }
         p
+    }
+
+    /// GAP CONN_PARAM_UPDATE body: {u16 conn, params{4xu16}} — posted
+    /// when the link parameters actually change (silicon posts this on
+    /// update completion, not on the request SVC).
+    fn conn_param_update_payload(conn: u16) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&conn.to_le_bytes());
+        for w in [6u16, 6, 0, 400] {
+            p.extend_from_slice(&w.to_le_bytes());
+        }
+        p
+    }
+
+    /// GATTC/GATTS TX-flow completion body: {u16 conn, u8 count} —
+    /// reports the refilled free-packet budget (silicon
+    /// BLE_EVT_TX_COMPLETE carries count + the packet list; count-only
+    /// is the firmware-observable part through our evt_get envelope).
+    fn tx_complete_payload(conn: u16, count: u8) -> Vec<u8> {
+        vec![(conn & 0xFF) as u8, (conn >> 8) as u8, count]
     }
 
     /// GAP DISCONNECTED body: {u16 conn, u8 reason} (ble_gap.h).
@@ -1321,12 +1410,16 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             // the driver handshake completes it (AUTH_STATUS success +
             // CONN_SEC_UPDATE via complete_pairing). With NO request
             // outstanding there is nothing to reply to (silicon
-            // INVALID_STATE). p_sec_keyset (r3) only names key memory;
-            // never dereferenced (no key storage — documented).
+            // INVALID_STATE). p_sec_keyset (r3) names the firmware key
+            // memory: when it points at a 58-byte keyset block
+            // (LTK[16] + IRK[16] + CSRK[16] + master_id[10]) the bytes
+            // are COPIED into the bond store (presence = re-encrypt
+            // hits later); short/NULL keysets bond presence-only.
             if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
             let (conn, status, p_params) = (r[0] as u16, r[1] as u8, r[2]);
+            let p_keyset = r[3];
             if let Err(e) = s.check_conn(conn) {
                 return Some(e);
             }
@@ -1353,6 +1446,31 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             }
             if !outstanding {
                 return Some(NRF_ERROR_INVALID_STATE);
+            }
+            // Accept: mark accepted; snapshot any firmware keyset bytes
+            // into the bond store (peer address from the live link).
+            // Layout: LTK[16] IRK[16] CSRK[16] master_id[10] = 58 bytes.
+            if p_keyset != 0 && is_ram(p_keyset) {
+                let peer = s.conn(conn).map(|c| c.peer_addr).unwrap_or([0u8; 6]);
+                if is_ram(p_keyset.wrapping_add(57)) {
+                    let mut ltk = [0u8; 16];
+                    let mut irk = [0u8; 16];
+                    let mut csrk = [0u8; 16];
+                    let mut mid = [0u8; 10];
+                    for (i, b) in ltk.iter_mut().enumerate() {
+                        *b = mem.read8(p_keyset.wrapping_add(i as u32));
+                    }
+                    for (i, b) in irk.iter_mut().enumerate() {
+                        *b = mem.read8(p_keyset.wrapping_add(16 + i as u32));
+                    }
+                    for (i, b) in csrk.iter_mut().enumerate() {
+                        *b = mem.read8(p_keyset.wrapping_add(32 + i as u32));
+                    }
+                    for (i, b) in mid.iter_mut().enumerate() {
+                        *b = mem.read8(p_keyset.wrapping_add(48 + i as u32));
+                    }
+                    s.store_bond_keys(peer, ltk, irk, csrk, mid);
+                }
             }
             // Accept: mark accepted; the driver handshake completes it.
             if let Some(c) = s.conn_mut(conn) {
@@ -2396,12 +2514,51 @@ pub fn post_sec_info_request(
             }
             _ => return false,
         }
+        // Bond-store fast path (silicon behavior): when the peer has a
+        // bond AND the presented master_id matches the stored one, note
+        // the hit in the request's reserved top bit is NOT possible
+        // (wire format fixed) — instead the firmware-visible effect is
+        // that SEC_INFO_REPLY with the stored keys succeeds and ENCRYPT
+        // re-establishes the link. The hit itself is observable via
+        // `bond_has_keys` (driver/bridge consults it before answering).
         s.push_evt(
             EVT_GAP_SEC_INFO_REQUEST,
             SdBle::sec_info_request_payload(conn, &peer_addr, &master_id, req),
         );
         true
     })
+}
+
+/// True when the bond store holds keys for this peer address AND the
+/// presented master_id matches (silicon re-encrypt gate). The driver
+/// (bridge) consults this before answering SEC_INFO_REPLY: hit =
+/// reply with stored keys + ENCRYPT; miss = all-NULL reply.
+pub fn bond_has_keys(peer: &[u8; 6], master_id: &[u8; 10]) -> bool {
+    with_sd_ble(|s| match s.find_bond(peer) {
+        Some(b) => &b.master_id == master_id,
+        None => false,
+    })
+}
+
+/// Copy the bonded keys for a peer into caller buffers (LTK/IRK/CSRK +
+/// master_id). Returns false when no bond exists. The bridge uses this
+/// to answer SEC_INFO_REPLY from store instead of failing.
+pub fn bond_read_keys(peer: &[u8; 6]) -> Option<([u8; 16], [u8; 16], [u8; 16], [u8; 10])> {
+    with_sd_ble(|s| {
+        s.find_bond(peer)
+            .map(|b| (b.ltk, b.irk, b.csrk, b.master_id))
+    })
+}
+
+/// Driver-side bond insert (bridge confirmed air keys when firmware
+/// passed NULL keysets): store under the peer address.
+pub fn store_bond(peer: [u8; 6], ltk: [u8; 16], irk: [u8; 16], csrk: [u8; 16], master_id: [u8; 10]) {
+    with_sd_ble(|s| s.store_bond_keys(peer, ltk, irk, csrk, master_id));
+}
+
+/// Explicit unbond (peer forgotten): SEC_INFO_REQUEST will MISS again.
+pub fn delete_bond(peer: [u8; 6]) -> bool {
+    with_sd_ble(|s| s.delete_bond(&peer))
 }
 
 /// Post an AUTH_KEY_REQUEST: the driver needs a passkey/OOB key of
@@ -2498,6 +2655,63 @@ pub fn complete_l2cap_rx(conn: u16, cid: u16, data: &[u8]) {
 pub fn complete_hvx(conn: u16, handle: u16) {
     with_sd_ble(|s| {
         s.push_evt(EVT_GATTS_HVC, SdBle::hvc_payload(conn, handle));
+    });
+}
+
+/// TX-flow refill: the driver moved one notify/indicate/data packet over
+/// air, freeing a TX token. Refills one budget token on the link
+/// (saturating at the per-link ceiling) and posts TX_COMPLETE with the
+/// new free count — silicon returns tokens as the radio drains, which
+/// is what unblocks firmware waiting on NO_TX_PACKETS.
+pub fn complete_tx_flow(conn: u16) {
+    with_sd_ble(|s| {
+        let count = match s.conn_mut(conn) {
+            Some(c) => {
+                c.tx_count = c.tx_count.saturating_add(1).min(4);
+                c.tx_count
+            }
+            None => return,
+        };
+        s.push_evt(EVT_GATT_TX_COMPLETE, SdBle::tx_complete_payload(conn, count));
+    });
+}
+
+/// Peripheral-role accept: a peer answered OUR advertisement (ADV_START
+/// path). Brings the link up with PERIPH role and posts CONNECTED with
+/// the role byte set — the same envelope as the central path, so
+/// firmware reads role to tell dial-out from dial-in apart.
+pub fn complete_peripheral_connect(peer: [u8; 6]) -> u16 {
+    with_sd_ble(|s| {
+        let h = s.alloc_conn();
+        if h == BLE_CONN_HANDLE_INVALID {
+            return h;
+        }
+        let mut c = Conn::fresh(h, peer);
+        c.role = GAP_ROLE_PERIPH;
+        c.rssi_dbm = s.rssi_dbm;
+        c.tx_count = s.tx_count;
+        s.conns.push(c);
+        let own = s.own_addr;
+        s.push_evt(
+            EVT_GAP_CONNECTED,
+            SdBle::connected_payload_role(h, peer, own, GAP_ROLE_PERIPH),
+        );
+        h
+    })
+}
+
+/// Connection-parameter update completion: posts CONN_PARAM_UPDATE with
+/// the (model-constant) params. The request SVC only validates;
+/// completion is driver-side (air negotiation), like every take/complete.
+pub fn complete_conn_param_update(conn: u16) {
+    with_sd_ble(|s| {
+        if s.conn(conn).is_none() {
+            return;
+        }
+        s.push_evt(
+            EVT_GAP_CONN_PARAM_UPDATE,
+            SdBle::conn_param_update_payload(conn),
+        );
     });
 }
 
@@ -2987,6 +3201,88 @@ mod tests {
     }
 
     #[test]
+    fn tx_flow_refills_and_posts_complete_periph_conn_and_param_update() {
+        // TX-flow: spend the whole budget on notifies, refill one token
+        // per air packet, drain TX_COMPLETE with the free count.
+        // Peripheral-role: a peer answers our ADV_START; CONNECTED
+        // carries PERIPH role. Param update: request validates, driver
+        // completion posts CONN_PARAM_UPDATE.
+        let _g = lock_boot();
+        let sys = test_dummy_system();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        reset_for_test();
+        let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
+        // Peripheral-role link up (no GapConnect job staged: dial-in,
+        // not dial-out).
+        let hp = complete_peripheral_connect([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        assert_ne!(hp, BLE_CONN_HANDLE_INVALID, "periph link up");
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20004000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_CONNECTED));
+        assert_eq!(len, 4 + 2 + 7 + 7 + 1 + 1 + 8, "connected wire size");
+        assert_eq!(mem.read16(0x20004004), hp, "conn head");
+        assert_eq!(mem.read8(0x20004014), GAP_ROLE_PERIPH, "peer dialed in");
+        // Conn-param update: request SVC validates only...
+        let r = regs(hp as u32, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_CONN_PARAM_UPDATE, &r), Some(NRF_SUCCESS));
+        // ...driver completion posts the event.
+        complete_conn_param_update(hp);
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20004000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_CONN_PARAM_UPDATE));
+        assert_eq!(len, 4 + 2 + 8, "hdr + conn + params");
+        assert_eq!(mem.read16(0x20004004), hp, "update carries its conn");
+        // Spend TX budget via HVX staging on a subscribed char, then
+        // refill one token per air packet with TX_COMPLETE drained.
+        // (Build the battery table like the HVX lifecycle test: the
+        // value handle auto-allocates a CCCD at value+1; the CCCD write
+        // subscribes this link. HVX params struct: handle@0 u16,
+        // type@2 u8, offset@4 u16, *len@8 u32, *data@12.)
+        let value = build_battery(&sys, &mut mem);
+        post_gatts_write(hp, value + 1, Some(0x2902), 1, &[0x01, 0x00]);
+        mem.write16(0x20005000, 1); // *len = 1
+        mem.write8(0x20005010, 0x55); // data byte
+        // hvx_params @0x20005020: handle=value, type NOTIFY, len/data ptrs
+        mem.write16(0x20005020, value);
+        mem.write8(0x20005022, 1);
+        mem.write16(0x20005024, 0);
+        mem.write32(0x20005028, 0x20005000);
+        mem.write32(0x2000502C, 0x20005010);
+        for _ in 0..4 {
+            let r = regs(hp as u32, 0x20005020, 0, 0);
+            assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_HVX, &r), Some(NRF_SUCCESS));
+            let _ = take_job();
+        }
+        // Budget spent: next notify refuses with NO_TX_PACKETS.
+        let r = regs(hp as u32, 0x20005020, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTS_HVX, &r),
+            Some(BLE_ERROR_NO_TX_PACKETS),
+            "budget exhausted"
+        );
+        complete_tx_flow(hp);
+        // Drain order: HVX-staged jobs from the loop above queue no
+        // events, but the earlier peripheral CONNECTED + CONN_PARAM_UPDATE
+        // are already drained... except the CCCD post_gatts_write, which
+        // pushes GATTS_WRITE. Drain it first if still queued: loop until
+        // the TX_COMPLETE id appears (bounded).
+        let mut id = 0u16;
+        for _ in 0..4 {
+            let (rc, got, _) = drain(&sys, &mut mem, 0x20004000, 128);
+            assert_eq!(rc, NRF_SUCCESS);
+            id = got;
+            if id == EVT_GATT_TX_COMPLETE {
+                break;
+            }
+        }
+        assert_eq!(id, EVT_GATT_TX_COMPLETE, "TX_COMPLETE drained");
+        // ...and notify stages again.
+        let r = regs(hp as u32, 0x20005020, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_HVX, &r), Some(NRF_SUCCESS));
+        let _ = take_job();
+        // Unknown link: refill is a silent no-op (no event, no panic).
+        complete_tx_flow(0x77);
+    }
+
+    #[test]
     fn gattc_rel_attrinfo_uuid_vals_stage_take_complete() {
         let _g = lock_boot();
         let sys = test_dummy_system();
@@ -3244,6 +3540,23 @@ mod tests {
         assert_eq!(mem.read8(0x20003006), SEC_STATUS_SUCCESS);
         let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
         assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_CONN_SEC_UPDATE));
+        // Bond store: driver-recorded keys for the link peer survive
+        // disconnects; SEC_INFO_REQUEST for the same peer+master_id
+        // HITS (bond_has_keys), a wrong master_id MISSES, and delete
+        // returns to MISS. The link peer here is the loopback test
+        // peer (connect() uses the fixed [11,22,...] address).
+        let peer6 = [0x11u8, 0x22, 0x33, 0x44, 0x55, 0x66];
+        let mid = [0x01u8, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        store_bond(peer6, [0xAA; 16], [0xBB; 16], [0xCC; 16], mid);
+        assert!(bond_has_keys(&peer6, &mid), "bond hit, same master_id");
+        assert!(!bond_has_keys(&peer6, &[0x09; 10]), "miss, other master_id");
+        assert!(!bond_has_keys(&[9u8; 6], &mid), "miss, other peer");
+        let (ltk, irk, csrk, got_mid) = bond_read_keys(&peer6).expect("bond bytes");
+        assert_eq!((ltk[0], irk[0], csrk[0]), (0xAA, 0xBB, 0xCC));
+        assert_eq!(got_mid, mid);
+        assert!(delete_bond(peer6), "delete hits");
+        assert!(!bond_has_keys(&peer6, &mid), "miss after delete");
+        assert!(!delete_bond(peer6), "second delete misses");
         // Re-encrypt path on a fresh link: SEC_INFO_REQUEST, no keys ->
         // AUTH_REQ pair-fail, link stays up.
         connect(&sys, &mut mem);

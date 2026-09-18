@@ -68,7 +68,8 @@ P8: real-world firmware gate (done, see below)
 
 Image: official release hex (SoftDevice + app, 450KB) split with
 `blinky/hex2bin.py` (handles type-02 segments + UICR extras) into a
-512KB flash bin + UICR NRFFW words (`0x10001014: 00070700 0007e000`).
+512KB flash bin + UICR NRFFW words (`0x10001014: 00077000 0007e000` —
+corrected P113; was misprinted `00070700`).
 Release: MicroPython v2.1.1
 (github.com/microbit-foundation/micropython-microbit-v2/releases —
 re-download per session, /tmp is reaped; do NOT commit the 512KB blob).
@@ -2797,3 +2798,246 @@ Two doc-claimed gaps closed plus the "thinnest" row deepened, +7 tests
 - Docs synced in P111 (follow-up commit): STATUS/COVERAGE/doc.html/
   about.html counts 204→211, rows for UARTE1/SPIM2-3/crypto-QSPI/depth,
   LEFT#5 + new LEFT#7–9, verify blocks, +17 proofs in about.html.
+
+## 93. P112 firmware/lab session: REPL/TX-drop/BL/MC/wall-time (2026-09-18, Node probes, no commits)
+
+All five LEFT swim-lanes got live-fire evidence on the current tree
+(P111 `dd39aa8`, pkg as committed). Probes live in `/tmp/opencode/`
+(`replA–M`, `txA–H`, `blA–B`, `mcA–C`, `wall_mips/mpy*` — ephemeral,
+never committed); images `/tmp/opencode/mpy.bin` + `mc.bin` via
+`blinky/hex2bin.py` (UICR extra `0x10001014: 00077000 0007e000` —
+note plan.md:71 misprinted this as `00070700 0007e000`; the HEX record
+`:081014000070070000E0070076` decodes LE to `0x00077000/0x0007E000`).
+P16 recipe throughout: direct-app boot at `0x1C000`, MBR params
+`*(0x20000000)=0x1000` / `*(0x20000004)=0x1C000`, UICR seeds,
+`deliver_irqs=true`, per-frame pump (UARTE-TX take/read/complete,
+NVMC-erase take/complete, TWIM1 take/drain, taps registered).
+
+REPL exec path (LEFT-1), BIGGEST FINDING: the banner is NOT blocked
+by the documented post-banner NULL fault — it never gets that far.
+With P16-correct reset-honor (app table, both resets) boot faults at
+`0x1AEF8`/`op=0x4770` at ~309–360k instr, ipsr=11 (SVC handler),
+uart=0. Regs: r0=0, r1=`0x2001FF20`, r2=`0xFFFFFFFF`,
+r3=`0x00070701`, sp=`0x2001FF20`, lr=`0xFFFFFFE9` (FP-extended return
+to handler!). Stacked frame: ret=`0x00054D96`, stacked
+r0=`0x20004378` r1=`0x20003984` r3=`0x00070701`, xpsr=`0x01000000`,
+CFSR/HFSR/BFAR/MMFAR all 0, SHCSR bit 7 (SVCALLPENDED) only.
+Trace tail: `…1a5a2→1a5ca→…→1a5d8→550fa→2c5b6→2c5b8→2c5ba→54d90→
+54d94→aa4→aa8→aaa→aae→ab2→ab4→ab6→ab8→aba→ac4→ac6→ac8→aca→acc→
+1aeac→1aeae→1aeb0→1aeb2→1aeba→1aebe→1aec0→1aec2→1aec4→1aec6→
+1aef0→1aef2→1aef4→1aef6→1aef8`. SVC census over the whole
+300k→fault window: EXACTLY TWO SVC executions — `0x550F8:svc 0x13`
+(SD init) and `0x54D94:svc 0x00` (MSR MSP switch). No `svc 0x3C`
+anywhere: the `df3c` halfword at `0x54D82` is a DEAD literal pool
+word (never fetched). The `0x1AExx` block is a post-SVC dispatch
+table (`bx r2` at `0x1AEAC` fans to `bl`-chains selected by the SVC
+return values); `0x1AEF8` = plain `bx r2` whose target register came
+back 0. So the fault is a NULL-dispatch THROUGH the SD-return path,
+not an SVC-number problem — the suspect moves UPSTREAM to what
+`svc 0x13` (or the MSR switch at `0x54D94`) returned. Variant matrix:
+no-taps → identical fault (taps innocent); skip reset#1 → parks
+`0x29CD1` (P30 UICR HALT, no fault — reset#1 load-bearing);
+MBR-honor → HardFault `0x29C7B`/ipsr=3, CFSR `0x8200` (INVPC+BFSR),
+stacked r3=`0x417`/ret=`0x440` (MBR selector context — arguably
+CORRECT MBR behavior: SVC 3 unimplemented in MBR); skip-first →
+same `0x29CD1` park. NEXT: dump stacked r0–r3 + r12 at the app-fault
+frame to identify WHICH dispatch slot returned 0 (r2 provenance:
+`svc 0x13` r0 vs MSR-switch corruption), then match the `0x1AExx`
+slot table against the SD return contract.
+
+TX-drop slot audit (LEFT-2), MODEL PROVEN: guarded vs unguarded
+A/B on the live pkg. Unguarded (STARTTX via `periph_write`, no
+guard): 60/60 N+1 leaks — the late `mem_read` transmits N+1, drops
+N, exactly the P49 holes. Guarded (STARTTX store executed INSIDE
+`cpu.step`, guard live — guest flash stub doing the store):
+0/60 leaks, `uart="A…"` correct. (Method trap: `mem_write` to
+`0x300` silently went to an `extra` region — `load()` only maps
+flash/RAM; the guest must live in a `load_firmware`'d flash image;
+`reset_cpu` also needs a valid SP. Fixed by building the stub into
+the flash image.) So the snapshot path is byte-correct end to end;
+remaining drops (if any on banner-length runs) are pre-STARTTX
+firmware-side (P49 `&c` reuse / P53i) — no model change indicated.
+
+Bootloader SD-priority chain (LEFT-3), P68 RE-PROVEN on this tree:
+MBR entry, seeded UICR 18/18 + IPR22 `0x40` pattern: 1 reset, then
+parks `0x29C7B` with ZERO hits on `0x7B5B4`/`0x772F9`/`0x783FE`
+over 4M instr (trace-sampled every chunk). MBR→app-direct bypasses
+validation — IPR22 seeding changes nothing because validation never
+runs. Static bytes confirmed: `0x7B5B4: f891 3316 095a 23ec…`
+(IPR22 `ldrb [r1+#0x316]` shape), MBR `*(0xA9C)=0x0417` selector
+pointer intact. Unseeded MBR entry: 2 resets (both honored), same
+park. Stays PARKED (inventing SD priorities = silicon-state
+invention; no faulting config exists).
+
+MakeCode scroll (LEFT-4), SHARED GATE WITH MPY: app-honor MPY-style
+boot faults `0x1AEF8` at 80k (same SD-return NULL dispatch —
+MakeCode ships the same S140 SD region). MBR-honor boot parks
+`0x37F4F` (ipsr=3, SVC handler; stacked r3=`0x417`/ret=`0x440`,
+CFSR `0x8200` — the SAME MBR-selector SVC3 context as MPY's
+MBR-honor park at `0x29C7B`). 4M-instr sleep-aware run: pc glued
+`0x37F4F`, TIMER4 COUNTER ever 0, DIR0 ever 0, TX stages 0, uart 0.
+Pre-scroll stall CONFIRMED on current tree; and both firmwares now
+show one shared early gate (SD-return NULL dispatch under
+app-honor; MBR-selector SVC3 HardFault under MBR-honor). NEXT for
+both: the stacked-frame r2-provenance read above.
+
+Wall-time (LEFT-6), MEASURED on this host: Node WASM blinky
+(`wall_mips.mjs`, 5×20K pumpDma frames): **~41–54 MIPS**
+(6M instr / 0.11–0.15 s, `BOOT/BLINK/BLINK` correct). Node MPY pump
+(`wall_mpy2.mjs`, fault/reset path exercised): ~24 MIPS
+sustained-through-fault. Native debug harness: blinky firmware test
+(5M-instr `cpu.run` + model, no pump) 0.32–0.40 s ⇒ **~12–16 MIPS**
+per test-process second (includes harness + instruction-count
+atomics, NOT pure step rate — do not cite as core speed). Banner
+math stands: 160–180M @ ~45 Node MIPS ≈ 4 s of pure stepping (plus
+pump/bridge overhead); browser ~6 MIPS ⇒ ~30 s. No action.
+
+## 94. P113 SVC13-arg audit + TRUE-UICR rerun + store-pc capture (2026-09-18, Node probes, no commits)
+
+Follows P112. Probes `svcA–G`, `trueA–C`, `uicrA–E`, `clobA–B` in
+`/tmp/opencode/` (ephemeral); tree P111 `dd39aa8`, 211 green.
+
+SVC hook + raise/take path (audit, no bug): `thumb.rs:1443`
+(`0xDF00` arm) claims `0x60..=0xBF` via `sd_ble::handle_svc` FIRST
+(r0 write + skip on `Some`), else `adv + raise_sync(-5)`. Our
+`handle_svc` returns `None` outside the range (untouched fallthrough)
+and `Some(NRF_SUCCESS)` + `enabled=true` + RAM-floor write for
+`sd_ble_enable` (`sd_ble.rs:1087`, both pointers may be NULL).
+Delivery-off would loud-fault; delivery is ON in all probes.
+
+svc13 @`0x550F8` arg capture: the thunk at `0x550F6`
+(`b.w 0x2D820`) is entered via `r0=0x20002520` (params),
+`r1=0x20003984`, `r2=0`, `r3=0x20003940` — i.e. the SD-init call
+`bl 0x550FC` chain: `ldr r0,[0xFF8]` → `adds r2,r0,#1` → `bne 0x55110`
+→ `b.w 0x550F8` (svc13). Post-SVC `r0(ret)=0x00070700` — NOT 0:
+`sd_ble_enable` wrote the RAM floor (`0x20002000`-family base) and
+returned it, firmware treats nonzero as failure-ish downstream
+(`adds r3,r0,#1; beq` @`0x5510C` → `movs r0,#4; bx lr` — error path
+returns 4). `ble_enabled` stays false in the emulator-side singleton
+ONLY because each probe creates a fresh process/board — live within
+a run it flips true (svcC polling artifact, not a model miss).
+Canary `0xCAFEBABE` @`0x20000058` NEVER appears in ANY variant
+(P22's BL-path canary comes from the BOOTLOADER's SD init, not the
+app's — direct-app boot has no BL, so no canary by construction).
+
+MBR/SD/app dispatch chain (decoded, objdump-verified):
+`0xAA4` MBR dispatcher (`cmp #24` → MBR `0x377` else SD) →
+`0xB064`-family SD region → app SVC handler `0x29AF0`-family →
+`0x1AEAC` app SD-dispatch shim (reads stacked SVC number from
+`[sp+#24]-2`, classifies 16/32/44/96) → `0x1A587` per-SVC worker
+(`cmp r0,#16/17/18/19`, `bl 0x1A40A/0x1A56C`-family validators,
+writes `[0x1A614]`/`[0x1A618]` dispatch struct) → `0x1AEEx`
+slot table (`bx r2` fans by SVC class; slot `0x1AEF0` = SD-state
+slots reading `[[0x20000004]+0x2C]`).
+
+r2 slot-table input (ROOT-CAUSED, then demoted): the slot does
+`ldr r2,[0x1AF10]` → `ldr r2,[r2]` → `adds r2,#0x2C` →
+`ldr r2,[r2]` → `bx r2`. Statically `[0x1AF10]=0x20000004`, so the
+chain reads OUR hand-installed MBR param `0x1C000`, +`0x2C` =
+`0x1C02C` = app SVC-vector word `0x29C83`-family → dispatch.
+With WRONG UICR (`0x70700/0xE00700`, byte-swapped typo from
+plan.md:71) the app's SD validator (`bl 0x1A56C` →
+`[0x1A5FC]=0x20000058` vs `[0x1A608]=0xCAFEBABE` canary check)
+fails → writes `0x70700` over `[0x20000004]` (store pc `0x1A5CF`,
+captured by 1-step watch) → slot derefs `[[0x70700]+0x2C]` =
+`0xFFFFFFFF` → `bx r2` NULL fault `0x1AEF8`. With TRUE UICR
+(`0x77000/0x7E000` from the HEX record) the word is never clobbered
+(400k watch: zero changes), no fault — the `0x1AEF8` fault was a
+HARNESS SEED TYPO, not a model bug. But TRUE seeds only trade the
+fault for the DOCUMENTED park: `0x200021B8/BB` RAM delay-fn
+(`01 38 fd d1 70 47`), 200M/zero-fault/uart-0/tx-0, TWIM
+healthy (txT 117/rxT 1/ev 378, addrs `0x19` WHO_AM_I +
+`0x39` flash-echo, zero NACK errors) — i.e. the pre-P86 park,
+now reachable again. P112's "new early fault" verdict is SUPERSEDED:
+with correct seeds there is no early fault on this tree at all.
+
+Serial-object state at 60M TRUE-seed park (offsets are BYTE offsets
+into the word-dumped struct — P18's `+NN` are 32-bit WORD indices ×4
+= byte offsets; the earlier `+38=0` reading was a mis-indexed word):
+`id@+12(w)=1073741836` (low halfword = 12 = DEVICE_ID_SERIAL ✓),
+`status@+14(w)` low half = `0x4000` (bit 14 = TX BUFF_INIT; bit 12
+RX NOT set — RX buffer never initialized!), `rxSize@+36(w)=21`,
+`rxBuff@+32=NULL`, `txBuff@+44=NULL`, `txSize@+48=21`,
+`baud@+56=0`, `is_tx@+60=0`, `bytesProc@+64=0`, `dmaPtr@+100` =
+`0x40002000`, UARTE EN=8 (enabled!) but BAUD=`0x01D60000`
+(never configured), TXPTR/TXMAX/ENDTX=0, RXPTR/RXMAX/RXAMT/ENDRX/
+RXDRDY=0. So: serial object EXISTS with TX init only, both ring
+buffers NULL, baud unset, DMA never armed — init stalled between
+TX-setup and RX-setup, consistent with an SD/pin/allocation gate,
+NOT with a UARTE model gap (EN path + TX snapshot + RX drip all
+proven independently). NEXT: what the init sequence waits on between
+TX-init and RX-init (TWIM sensor STATUS? SD event? pin line?) —
+trace `0x282E5`-family callers (the only non-RAM pc in the 200M
+sample set) + DRDY-line experiment (hold P0.25 low vs pulse).
+
+## 95. P114 out-of-scope blitz: code a way through every wall (2026-09-18, uncommitted work)
+
+User verdict: no "out of scope" walls — code through each. Audit result:
+most §7 items HAVE a code path that respects AGENTS.md (no `src/cpu/`
+edits for board issues, one clock, Nordic TASKS/EVENTS/INTENSET style).
+Implemented + tested, docs synced, NOT committed (user: no commit):
+
+1. NFC antenna (was: pins-as-GPIO only). UICR.NFCPINS PROTECT bit 0
+   (`0x1000120C`, SVD ground truth, reset `0xFFFFFFFF` = NFC):
+   `nfct_nrf::nfct_pins_reserved()` reads the UICR slot live;
+   `set_field` refuses field events in GPIO mode; `gpio_nrf` refuses
+   PIN_CNF writes + `gpio_set_input` levels on P0.09/P0.10 while
+   reserved (threaded through lib.rs to avoid re-borrow). Test
+   `nfcpins_gate_routes_pins_vs_antenna` (reset=antenna, field OK;
+   PROTECT=0 → no field + GPIO DIR works; back to 1 → DIR sticky).
+2. BLE bond store (was: keys stubbed, bonds die). `Bond` struct
+   (peer + LTK/IRK/CSRK/master-id) in SdBle, survives disconnects;
+   SEC_PARAMS_REPLY accept copies a 58B firmware keyset block;
+   `bond_has_keys`/`bond_read_keys`/`store_bond`/`delete_bond` +
+   4 wasm exports; bridge `bond_keys` leg persists air keys on
+   pairing confirm. Test: store→hit/miss/delete cycle in the pairing
+   lifecycle test.
+3. BLE TX-flow (was: static budget, no events). `complete_tx_flow`
+   refills one token (cap 4) + posts TX_COMPLETE `{conn,count}`
+   (model-local id `0x3A`, documented); NO_TX_PACKETS still gates.
+   Test spends 4 notifies → refuse → refill → TX_COMPLETE drained
+   (count 1) → stages again. Pump legs: bridge/air `tx_complete`
+   → `ble_complete_tx_flow`.
+4. Peripheral role (was: central-only). `complete_peripheral_connect`
+   posts CONNECTED with PERIPH role byte (`GAP_ROLE_PERIPH=1`);
+   pump legs: air `periph_connected` + export. Param update:
+   request SVC validates, `complete_conn_param_update` posts
+   CONN_PARAM_UPDATE `{conn,params}` (pump leg included). Test covers
+   all three (role byte, wire sizes, unknown-link no-op).
+5. Edge-SPI display (was: no consumer). NEW `demo/parts/spidisplay.js`
+   ST7789 240×240 (CASET/RASET/RAMWR + RGB565 + SWRESET/DISPON,
+   MISO ID `04 85 52`) + bench panel/canvas/poll wiring on SPIM2.
+   Verified headless (`spidisplay_check.mjs`: pixels + drain +
+   clear + DISPON, all OK vs built pkg).
+6. I2S WebAudio (was: capture drained). Bench `audioPush`: 16-bit
+   mono @16 kHz AudioContext, gesture-gated Enable toggle,
+   silence-skipped (idle = one drained FIFO, zero audio). Needs only
+   a browser to hear; headless matrix unaffected.
+7. Lazy FPU stacking (was: "documented deviation", STALE — code
+   already implements it: `cpu/thumb.rs` FPU hook + `cpu/mod.rs`
+   take/return reserve/complete/pop, `fpu_lazy_*` + `fpu_eager_*`
+   green). Fixed the stale comment in `fpu.rs` + STATUS/COVERAGE/
+   doc.html rows. No code change needed.
+8. sd_evt phase-1 (was: draft, dead code). NEW `src/sd_evt.rs`:
+   model-side SoC queue (SVC 16 arms, SVC 82 answers `{id u16,len u16}`
+   else falls through, NVMC `complete_erase` posts id 2/3, reset in
+   `reset_globals`, `sd_evt_queue_len` export). Hook: 2 compares in
+   the existing thumb SVC arm (no cpu/ edits beyond the hook site).
+   Firmware proof `blinky/sd_evt_nrf.s/.bin` (svc16 → ERASEPAGE →
+   mailbox spin → svc82 id=2/len=0 → EMPTY:OK) + native test
+   (`nrf_sd_evt_flash_success_roundtrip`) + 3 unit tests. Suite now
+   217 (was 211: +1 firmware, +1 NFC, +1 BLE flow, +3 sd_evt).
+   DB proof vs live pkg (`sdevtO.mjs` pattern): queue=1 → poll →
+   buf=2 len=0. Method trap recorded: hand-written `ldr r0,[pc,#N]`
+   must use GAS-correct imm (base=(pc+4)&~3); `mov r0,sp` reads the
+   thread SP (MSP only in handler — use `mrs r0,MSP`).
+9. npm (was: 401-blocked). `npm pack --dry-run` in demo/: 22 files,
+   72.5 kB tarball, integrity hash — package SHAPE verified without
+   credentials. ACL/SPU: reads-0 stays (protection enforcement is a
+   separate project with no consumer — the one wall with no code
+   path worth building; documented as the single remaining item).
+
+NEXT: run the FULL verify matrix (cargo single + parallel, handshake,
+smoke, E2E, browser 16/16, pkg rebuild — pkg already rebuilt for
+sd_evt/NFC/BLE exports), then commit per AGENTS.md (one peripheral
+per commit would split this 9-ways; user decides) + push.
