@@ -4,12 +4,12 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-18, P114 committed `be02b89`; P115–P117 docs staged, committing)
+## 0. Snapshot (2026-09-18, pushed through P115–P117, in sync with origin)
 
-- HEAD: `be02b89` "P114 out-of-scope blitz (217 green: NFCPINS gate, BLE bond/TX-flow/periph/param-update, sd_evt phase-1, ST7789 part, WebAudio sink, FPU comment fix)".
-- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`, `ahead 1` (P114 local — committing docs then pushing all).
-- Suite: **217 single green** (just re-run, pre-commit gate), = 114 cpu (incl. 18 firmware proofs) + 89 peripherals + 11 sd_ble + 3 sd_evt. Whitespace clean, no secrets in diff.
-- Staging: 5 doc files (`STATUS.md`, `agent.md`, `demo/about.html`, `docs/COVERAGE.md`, `plan.md`) = P115 stale-doc cleanup + P116 LEFT-1 closure + P117 bench verdict.
+- HEAD: `82cf9b7` "P115-P117 docs: stale cleanup + REPL exec closed (banner T+15s wall, print(1+2)->3 in-browser, 217 green)".
+- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`, in sync with `origin/master` (P114 `be02b89` + P115–P117 `82cf9b7` both pushed).
+- Suite: **217 single green** (pre-commit gate re-run), = 114 cpu (incl. 18 firmware proofs) + 89 peripherals + 11 sd_ble + 3 sd_evt. Handshake 18/18, browser 16/16 re-verified.
+- Working tree: CLEAN except `?? .openchamber/` (ignore — never commit).
 - Big news: **LEFT-1 CLOSED P116+P117, proven in-browser** — banner at T+15s wall + `print(1+2)` → `3` at +10s via the shipped page (zero page errors). No code changed: the bench pump (`lsm303.js` full take→complete both directions) was already correct; starvation lived only in ad-hoc native probes.
 
 ## 1. What we did so far (this recovery session)
@@ -39,7 +39,8 @@
 - [x] Full matrix re-verify on P114 tree (217 single, ~30/31 parallel, 18/18, smoke+mpy OK, E2E 42/42, browser 16/16, bins identical, pkg in sync)
 - [x] P115 stale-doc cleanup (STATUS:456/LEFT-5/verify/§7-dups, COVERAGE:265/§8-intro/LEFT-5, about.html bond/NFC/crypto rows) + P116 LEFT-1 closure (STATUS §6.1, plan §97): TRUE-seed park repro, 0x28290-waiter regs (r0=TWIM1, TXSTARTED poll), DRDY identical, TWIM1 1-transfer audit, SVD re-read (0x40004000=TWIM1, +0x150=TXSTARTED), FULL-pump escape ~176M → banner ~237.8M → `print(1+2)`→`3` (zero faults); `get_uart_output` TAKE trap; MC `0x2000207B` parked-check.
 - [x] P117 bench verdict — NO WIRING NEEDED (plan §98): `lsm303.js` already completes both directions; page probes `p21` (banner 22.1M) + `p22` (REPL 125 B) + `p23` (banner T+15s wall, 104–105 B) + `p24` (`print(1+2)`→`3` +10s, zero page errors); browser 16/16 re-green; cargo 217 + handshake 18/18 re-green. Docs (STATUS §6.1/§4, COVERAGE §3/§5/§6, about.html) updated.
-- [x] Commit P115–P117 docs (5 files, no code; user approved commit+push) — committing now
+- [x] Commit P115–P117 docs (5 files, no code; user approved commit+push) — committed `82cf9b7`
+- [x] Push P114 + P115–P117 (`dd39aa8..82cf9b7 master -> master`, exit 0) — in sync with origin
 
 ## 3. Batch 3 spec (to rebuild)
 
