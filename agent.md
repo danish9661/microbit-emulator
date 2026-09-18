@@ -4,13 +4,13 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-18, P114 COMMITTED, ahead of origin — push pending)
+## 0. Snapshot (2026-09-18, P114 committed `be02b89`; P115–P117 docs staged, committing)
 
-- HEAD: `7e8e849` "P114 out-of-scope blitz (217 green: NFCPINS gate, BLE bond/TX-flow/periph/param-update, sd_evt phase-1, ST7789 part, WebAudio sink, FPU comment fix)".
-- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`, `ahead 1` (P114 local; push pending user approval).
-- Suite (committed tree): **217 single green** (`-- --test-threads=1` → `217 passed`), = 114 cpu (incl. 18 firmware proofs) + 89 peripherals + 11 sd_ble + 3 sd_evt. **Parallel: ~30/31 runs green** (1 transient run with 4 failures in first 5-loop, then 6/6 + 8/8 + 20/20 green — rare pre-existing rate, backtrace not captured; re-capture on next failure).
-- Working tree: CLEAN except `?? .openchamber/` (ignore — never commit).
-- Last verified (this turn, P114 tree): 217 single, parallel loop above, handshake 18/18, smoke OK, mpy-face OK, E2E 42/42 over air, browser 16/16 zero page errors, spidisplay headless OK, `sd_evt`/`uarte1`/`spim23` bins bit-identical, pkg in sync (all 120 `wasm_bindgen` fns present in `demo/pkg` `.d.ts`).
+- HEAD: `be02b89` "P114 out-of-scope blitz (217 green: NFCPINS gate, BLE bond/TX-flow/periph/param-update, sd_evt phase-1, ST7789 part, WebAudio sink, FPU comment fix)".
+- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`, `ahead 1` (P114 local — committing docs then pushing all).
+- Suite: **217 single green** (just re-run, pre-commit gate), = 114 cpu (incl. 18 firmware proofs) + 89 peripherals + 11 sd_ble + 3 sd_evt. Whitespace clean, no secrets in diff.
+- Staging: 5 doc files (`STATUS.md`, `agent.md`, `demo/about.html`, `docs/COVERAGE.md`, `plan.md`) = P115 stale-doc cleanup + P116 LEFT-1 closure + P117 bench verdict.
+- Big news: **LEFT-1 CLOSED P116+P117, proven in-browser** — banner at T+15s wall + `print(1+2)` → `3` at +10s via the shipped page (zero page errors). No code changed: the bench pump (`lsm303.js` full take→complete both directions) was already correct; starvation lived only in ad-hoc native probes.
 
 ## 1. What we did so far (this recovery session)
 
@@ -36,9 +36,10 @@
 - [x] Doc sync P111: STATUS (counts/rows/LEFT#5/P109-pumps/verify), COVERAGE (counts/rows/proofs/LEFT#5+#7–9/verify+worktree), doc.html (pill/key/UARTE1+SPIM2-3/depth/crypto rows/checks/footer), about.html (17 proofs, 211), plan P91+P92
 - [x] Verify P111 (cargo 211 green + stale-grep clean) + commit 3f95560
 - [x] P112–P113 lab + P114 blitz (UNCOMMITTED in tree): TRUE-UICR rerun, LEFT rewrite, NFCPINS gate, BLE bond/TX-flow/periph/param-update, ST7789 part, WebAudio sink, FPU comment fix, sd_evt phase-1 + proof (217 green, docs synced)
-- [x] Full matrix re-verify on P114 tree (this turn: 217 single, ~30/31 parallel, 18/18, smoke+mpy OK, E2E 42/42, browser 16/16, bins identical, pkg in sync)
-- [x] Commit decision: single P114 commit (user choice 2026-09-18) — committed `7e8e849` (27 files, +1794/−192, whitespace clean, secrets/hygiene clean; `.openchamber/` left untracked)
-- [ ] Push `7e8e849` (ahead 1 — needs user approval)
+- [x] Full matrix re-verify on P114 tree (217 single, ~30/31 parallel, 18/18, smoke+mpy OK, E2E 42/42, browser 16/16, bins identical, pkg in sync)
+- [x] P115 stale-doc cleanup (STATUS:456/LEFT-5/verify/§7-dups, COVERAGE:265/§8-intro/LEFT-5, about.html bond/NFC/crypto rows) + P116 LEFT-1 closure (STATUS §6.1, plan §97): TRUE-seed park repro, 0x28290-waiter regs (r0=TWIM1, TXSTARTED poll), DRDY identical, TWIM1 1-transfer audit, SVD re-read (0x40004000=TWIM1, +0x150=TXSTARTED), FULL-pump escape ~176M → banner ~237.8M → `print(1+2)`→`3` (zero faults); `get_uart_output` TAKE trap; MC `0x2000207B` parked-check.
+- [x] P117 bench verdict — NO WIRING NEEDED (plan §98): `lsm303.js` already completes both directions; page probes `p21` (banner 22.1M) + `p22` (REPL 125 B) + `p23` (banner T+15s wall, 104–105 B) + `p24` (`print(1+2)`→`3` +10s, zero page errors); browser 16/16 re-green; cargo 217 + handshake 18/18 re-green. Docs (STATUS §6.1/§4, COVERAGE §3/§5/§6, about.html) updated.
+- [x] Commit P115–P117 docs (5 files, no code; user approved commit+push) — committing now
 
 ## 3. Batch 3 spec (to rebuild)
 
@@ -127,4 +128,4 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
 - 2026-09-18 (P110 committed 33d7892): full matrix green (211/25-25/18-18/E2E-42/browser-16/16), pkg rebuilt+committed.
 - 2026-09-18 (P111 doc-sync committed (see `git log --oneline -1`; amended: +HANDOVER banner, LEFT numbering)): STATUS+COVERAGE+doc.html+about.html 204→211 + P109/P110 rows; plan P91+P92; fixups (eighteen checks, LEFT-9 head, verify line). Pending: push (ahead 3).
 - 2026-09-18 (P114 out-of-scope blitz, UNCOMMITTED): user verdict "no walls — code through each". NFC NFCPINS gate (UICR 0x20C → GPIO 09/10 + NFCT sense, test); BLE bond store (keys + bridge bond_keys leg, test); BLE TX-flow + periph CONNECTED + param-update (tests + pump/bridge legs); edge-SPI ST7789 part + bench UI (headless-verified); I2S WebAudio sink (gesture-gated); lazy-FPU stale-comment fix (already implemented); sd_evt phase-1 (`sd_evt.rs` + hook + NVMC post + `sd_evt_nrf.s/.bin` proof, id=2 verified live); npm pack dry-run OK (22 files/72.5 kB). Suite 217 green. Docs synced (STATUS/COVERAGE/doc/about/API/plan). NEXT: full matrix + commit decision + push.
-- 2026-09-18 (P115 verify pass): full matrix on the uncommitted P114 tree — 217 single green; parallel ~30/31 (1 transient 4-fail run early, then 6/6+8/8+20/20 green; backtrace missed, treat as the known rare rate); handshake 18/18 + smoke + mpy-face OK vs built pkg; bridge E2E 42/42 over air; browser boot BOOT/BLINK + self-test pairing×2 + 16/16 probes, zero page errors; spidisplay headless OK; sd_evt/uarte1/spim23 bins bit-identical; all 120 wasm_bindgen fns present in demo/pkg `.d.ts`. Stale-count fixups applied same turn (doc.html pill/checks → 217, STATUS §5 + COVERAGE §8 → 11 sd_ble, STATUS §3 + agent.md §4 → parallel wording, TX-budget/bond-store rows) + `cargo test` re-greened 217.
+- 2026-09-18 (P117 bench verdict, docs UNCOMMITTED): NO WIRING NEEDED — `lsm303.js poll()` already takes→completes both TWIM directions; starvation was probe-only. Page proof: banner T+15s (104–105 B) + `print(1+2)`→`3` +10s, zero page errors; browser 16/16 re-green. NEXT: commit P115–P117 docs + push (user approval).

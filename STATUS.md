@@ -156,10 +156,9 @@ jobs (CTR+MIC-4 encrypt / decrypt+verify per the CNF contract), and
 QSPI read/write/erase against a 64 KB bench image (AND-only program,
 `0xFF` erase) — all sharing one implementation with the depth probes
 via `demo/parts/crypto.js` (moved verbatim out of `mocks.js`).
-Sensor DRDY: the LSM303 part holds P0.25 (`SENSOR_DATA_READY`/`irq1`,
-active-lo) low while polling (else the LSM303 `requestUpdate`
-`awaitSample` loop spins on `getDigitalValue` forever — the MPY
-post-banner stall). UARTE TX snapshots `MAXCNT` bytes synchronously
+Sensor DRDY: the LSM303 part pulses P0.25 (`SENSOR_DATA_READY`/`irq1`,
+active-lo) 60 ms low / 140 ms high (a stuck low trips the shared KL27
+idle threshold; the pulse satisfies both consumers). UARTE TX snapshots `MAXCNT` bytes synchronously
 at STARTTX (thread-local RAM published by `WasmCpu::step`; no trait
 or `src/cpu` change), so the deferred driver take cannot transmit
 the reused N+1 byte (P49 putc-slot drops).
@@ -184,9 +183,9 @@ beyond proof-level driving remain future work.
    `NRF52Pin::getDigitalValue@0x28744` inside
    `LSM303Accelerometer/Magnetometer::requestUpdate()` (`0x266B8`/
    `0x26890`) polling `irq1`/P0.25 (`SENSOR_DATA_READY`, active-lo)
-   in the `awaitSample` first-sample loop — the demo part now holds
-   P0.25 low. (P41 "MP object `0x20003960`/type `0x57AC0`" was the
-   CODAL LSM303 driver/vtables, not MicroPython.)
+    in the `awaitSample` first-sample loop — the demo part pulses
+    P0.25 60/140 ms. (P41 "MP object `0x20003960`/type `0x57AC0`" was the
+    CODAL LSM303 driver/vtables, not MicroPython.)
   Post-banner NULL fault narrowed (Sept-12, plan P24–P25): C++ virtual
   through NULL `this` (`bx r3 @0x4F75A`, r0=0) via mp_call_function;
   tick-scheduled (TIMER1-only suffices; all-IRQ-cut parks clean);
@@ -221,7 +220,31 @@ beyond proof-level driving remain future work.
 
 ## 6. LEFT — prioritized (P114 verdicts, 2026-09-18)
 
- 1. **REPL exec (`print(1+2)` → `3`) — the main gate, redefined by P113.**
+  1. **REPL exec (`print(1+2)` → `3`) — CLOSED P116+P117 (2026-09-18, Node probes `p16`–`p20` + bench-page probes `p21`–`p24`, no code changes — the bench pump was already correct).**
+     Root cause was PUMP STARVATION in the ad-hoc native probes only,
+     not a model gap and not the bench: those probes drained TWIM TX
+     takes without completing them, so the sensor-init
+     `STARTTX → LASTTX → (SHORTS STARTRX)` chain never fired and the
+     `0x28290`-family waiter spun in the `0x200021B8/BB` RAM delay-fn
+     to 200M+. With a FULL TWIM pump (take→complete both directions,
+     WHO_AM_I bytes on RX) boot escapes at ~176M, banners at ~237.8M
+     (`MicroPython v1.18 on 2023-10-30; micro:bit v2.1.2 with nRF52833`
+     + `Type "help()"`, 78 B), and `print(1+2)` → `3` + `>>> ` prompt
+     via the RX drip path, zero faults throughout. The `0x28290` waiter
+     polls `[TWIM1+0x150]` = EVENTS_TXSTARTED for a STARTTX the pump
+     must complete (r0=`0x40004000` at trap, r1=`0x148`, r6 climbing to
+     r9=1M bound, lr=`0x26039`); DRDY HIGH-vs-LOW is identical (sensor
+     path innocent); TWIM1 audit pre-fix showed exactly ONE transfer
+     (WHO_AM_I answered, zero RX). Post-banner flash pcs live in the
+     `0x266Dx/0x2678x/0x2874x` + `0x539E7` region.
+     P117 bench verdict: NO WIRING NEEDED — `lsm303.js poll()` already
+     takes→`mem_read`→completes TX and takes→`mem_write`→completes RX
+     every frame (`pumpDma` just calls `parts.poll`). Repro vs the
+     committed page+pkg: banner in the UART box at T+15s wall
+     (104–105 B), `print(1+2)` + Send → `...>>> print(1+2)\n3\n>>> `
+     at +10s, zero page errors. LEFT-1 is closed end to end: native
+     proof + in-browser proof on the shipped bench.
+     Prior P113 forensics (kept for the record):
     P113 (Node probes svcA–G/trueA–C/uicrA–E/clobA–B, no commit —
     SUPERSEDES P112's "new early fault"): P112's `0x1AEF8` fault was a
     HARNESS SEED TYPO, not a model bug. Probes seeded UICR
@@ -234,13 +257,16 @@ beyond proof-level driving remain future work.
     `0xFFFFFFFF` → NULL `bx r2`. With TRUE seeds the word is never
     clobbered (400k watch: zero changes), no fault — boot reaches the
     DOCUMENTED park (`0x200021B8/BB` RAM delay-fn, 200M/zero-fault/
-    uart-0/tx-0, TWIM healthy: txT 117/rxT 1/ev 378, addrs `0x19`+
-    `0x39`, zero NACKs). Serial object at 60M TRUE park: id low-half
+     uart-0/tx-0, TWIM healthy: txT 117/rxT 1/ev 378, addrs `0x19`+
+     `0x39`, zero NACKs — all SUPERSEDED by the P116 starvation
+     finding above (those runs never completed a TWIM transfer, so
+     "healthy" only meant "no NACK storm"). Serial object at 60M TRUE park: id low-half
     12 ✓, status low-half `0x4000` (TX BUFF_INIT only — RX never
-    initialized), both ring buffers NULL, baud 0, DMA never armed,
-    UARTE EN=8. Init stalled between TX-setup and RX-setup: an
-    SD/sensor/pin gate, NOT a UARTE model gap. NEXT: `0x282E5`-caller
-    trace + DRDY-line experiment.
+     initialized), both ring buffers NULL, baud 0, DMA never armed,
+     UARTE EN=8. Init stalled between TX-setup and RX-setup — P116
+     names the gate: the TWIM sensor-init completion the pump was
+     starving (see CLOSED note above), NOT a UARTE model gap.
+     (Old NEXT, done: `0x282E5`-caller trace + DRDY-line experiment.)
     svc13 audit (keep): thunk `0x550F6` entered with
     r0=`0x20002520`/r1=`0x20003984`; post-SVC r0=`0x70700` (our
     RAM-floor report echoed back — firmware-side check fails it, not
@@ -384,8 +410,11 @@ beyond proof-level driving remain future work.
    `S2TX:OK`/`S3RX:OK` via `nrf_spim23_dma_roundtrip`) + the SPI-NACK
    guard (`twim_nrf.rs::arm_nack` — SPI has no address phase; without
    it staged SPIM2/3 DMA cleared ~6000 instr before the driver take).
-   Demo pumpDma covers SPIM2/3 frames live. No edge-SPI part wired
-   (no consumer) — stays H by decision, not by gap.
+    Demo pumpDma covers SPIM2/3 frames live. P114 wires the consumer:
+    `demo/parts/spidisplay.js` ST7789 240×240 (CASET/RASET/RAMWR +
+    RGB565 + SWRESET/DISPON, MISO ID `04 85 52`) + bench panel/canvas
+    on SPIM2, verified headless (`spidisplay_check.mjs`: pixels +
+    drain + clear + DISPON, all OK vs built pkg).
    **UARTE1** — done (P110): `uarte1_nrf.s/.bin` (UARTE1 TX DMA
    `U1DATA` + 3 B RX DMA, `U1TX:OK`/`U1RX:OK` via
    `nrf_uarte1_instance_dma_roundtrip` through the shared take/complete path).
@@ -406,7 +435,10 @@ beyond proof-level driving remain future work.
      KEY_PRESSED / LESC_DHKEY_REQUEST events with conn-first wire
      bodies, per-link state machine, accept/reject/passkey/OOB/
      encrypt reply surface, S132 SEC_STATUS codes incl. the 0x29→0x85
-     fix, keys stubbed — documented), L2CAP CID register/TX/RX
+     fix, LTK/IRK/CSRK/master-id persist per peer in the bond store
+     (hit/miss/delete + bridge `bond_keys` leg — P114), TX tokens refill
+     per air packet with TX_COMPLETE posted (P114), periph-role CONNECTED
+     + param-update event (P114)), L2CAP CID register/TX/RX
      (0xB0–0xB2), multi-connection links (per-link handles, RSSI, TX
      budget, security; conn_handles/conn_sec exports), GATTC PRIM/CHAR/
      DESC/REL/ATTR_INFO discovery + READ-by-UUID + multi-READ + READ +
@@ -453,7 +485,7 @@ beyond proof-level driving remain future work.
 
 | Item | Owner if ever revisited | Why it stays out |
 |---|---|---|
-| SoftDevice event synthesis (full BLE pump) | BLE-face owner (new workstream) | Scoped flash-only `sd_evt_get` drafted in `docs/sd_evt_design.md`, unimplemented; zero `svc 82` callers in MPY/MC — hook would be dead code (P32/P51). |
+| SoftDevice event synthesis (full BLE pump) | BLE-face owner (new workstream) | Phase-1 flash-only CLOSED P114 (`sd_evt.rs`, SVC 16/82, NVMC-posted id 2/3, `sd_evt_nrf.s/.bin` proof); zero `svc 82` callers in MPY/MC so no shipped firmware observes it — full BLE/timeslot event synthesis stays out (P32/P51). |
 | STM32 / UNO R4 / M0+ / DAPLink targets | Nobody (deleted) | Only comment references remain; Nordic TASKS/EVENTS/SHORTS has zero register overlap. |
 | Third-party-framework boot quirks (Arduino Primo nRF52832 bootloader) | Framework owner | Needs an nRF52832 bootloader image, not an 833 model gap. |
 | Lazy FPU stacking | — (closed P114: was already implemented; stale comment fixed) | `cpu/thumb.rs` FPU hook + `cpu/mod.rs` take/return reserve/complete/pop; `fpu_lazy_*` + `fpu_eager_*` green. |
@@ -462,16 +494,13 @@ beyond proof-level driving remain future work.
 | NFC antenna model | — (closed P114: NFCPINS gate, not physics) | UICR.PROTECT=1 reserves P0.09/P0.10 (GPIO inert) + NFCT sense gated; no RF emulation. |
 | ACL/SPU protection | Security owner | Reads 0 by design; protection enforcement is a separate project. |
 | Publish to npm | Release owner | Blocked: registry 401, no credentials in this environment. |
-| Edge-SPI display part | Board owner | No consumer; model + DMA proven (P70/P110), stays H by decision. |
 | BLE bond store / TX-flow / peripheral-role / param enforcement | — (closed P114: bond store + TX_COMPLETE + dial-in CONNECTED + param-update event) | Keys stored per peer (hit/miss/delete), TX tokens refill on air drain, PERIPH role byte, update completion posted; bridge `bond_keys` leg persists air keys. Crypto itself stays driver-side by design. |
 | sd_evt flash transport | — (closed P114 phase 1: `sd_evt.rs`, SVC 16/82) | NVMC complete posts id 2/3 while SD enabled; `sd_evt_get` answers from model queue else falls through; firmware proof `sd_evt_nrf.s/.bin`. |
-| WebAudio route for I2S capture | Board owner | Capture drained; no audible consumer wired. |
-| NFC antenna model | Board owner | Pins work as GPIO; no antenna physics. |
 
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 217 green (crate dir; parallel also 25/25 post-P108 — see §3)
+cargo test -- --test-threads=1    # 217 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY-idiom face, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)

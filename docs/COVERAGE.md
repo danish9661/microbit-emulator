@@ -96,9 +96,9 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | App vectors | VT SP `0x20020000`, PC `0x29C51` at `0x1C000` |
 | MBR params | `*(0x20000000)=0x1000`, `*(0x20000004)=0x1C000` |
 | UICR seeds | BOOTLOADERADDR `0x77000` + settings `0x7E000` |
-| Pump | Pristine re-init + sleep-aware (`tick_n` + wake) |
-| Native banner | 160–180M instr (`0x266D4`, 106B with P49 holes) |
-| Browser park | `0x200021b8/bb` pre-banner, uartLen 0 (P55: countdown wait with lr `0x26039`, caller TBD — not wall-time, not HFCLK, not TWIM/NVMC/UARTE; model clear on all probed state). |
+| Pump | Pristine re-init + sleep-aware (`tick_n` + wake) + full TWIM completion (P116: takes drained-without-complete starved sensor-init to 200M+; the bench `lsm303.js` poll always completed both directions) |
+| Native banner | ~237.8M instr (P116 full-TWIM pump; 78 B, zero faults) |
+| Browser banner | T+15s wall via mpy preset + Run, 104–105 B + `>>> ` prompt (P117, zero page errors) |
 
 | `microbit.*` surface (`modmicrobit.c` + `microbit_*.c`) | St | Remark |
 |---|---|---|
@@ -109,14 +109,14 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | `speaker` / `music` / `audio` / `sound` | H | Speaker-enabled default; audio tick path is the NULL-`this` prime suspect (P24–P25). No WebAudio route (I2S capture drained, TODO). |
 | `microphone` (`SoundEvent`, threshold) | H | PDM pump exists; no mic part; MPY layer never reached. |
 | `pin0`–`pin16`, `pin19/20`, `pin_logo`, `pin_speaker` | H | `getDigitalValue@0x28744` IS the observed poll — but on CODAL LSM303 driver `0x20003960`, not an MP pin (P52 correction). P0.00 toggles nested under NULL fault. |
-| UART serial (`uBit.serial`, `NRF52Serial`) | H | Object EXISTS at `0x20002BA4` (id 12 ✓) with TX BUFF_INIT only (`0x4000`); RX never initialized, both ring buffers NULL, baud 0, DMA never armed, UARTE EN=8 (P113 TRUE-seed park). Stalled between TX-setup and RX-setup — NEXT: `0x282E5`-caller trace + DRDY experiment. TX snapshot + RX drip proven independently. |
+| UART serial (`uBit.serial`, `NRF52Serial`) | F | Object at `0x20002BA4` (id 12 ✓); pre-P116 TRUE-seed park showed TX BUFF_INIT only (`0x4000`), rings NULL, baud 0 — SUPERSEDED by P116 (starved TWIM sensor-init, not a serial stall). Banner + REPL prompt proven native and in-browser (P116+P117). TX snapshot + RX drip carry the bytes. |
 | `i2c` / `spi` | H | TWIM/UARTE paths proven (`dma_nrf`, `air_nrf`); MPY objects never reached. |
 | `Image` / `Sound` / `SoundEvent` / `SoundEffect` types | H | Types exist in flash (`MicroBitImage`, `AudioFrame`…); never instantiated (pre-banner). |
-| `reset` / `sleep` / `running_time` / `panic` / `temperature` | H | `sleep` = RAM delay-fn `0x200021b8` (P53–P55: `subs r0,#1; bne; bx lr`, called from the `0x20980` 20× helper, lr `0x26039`; r0 live countdown, r4=1000 — a wait, not a hang; caller TBD via r7-entry watch). `temperature` → TEMP model exists. |
+| `reset` / `sleep` / `running_time` / `panic` / `temperature` | H | `sleep` = RAM delay-fn `0x200021b8` (P53–P55 shape; pre-P116 park site, exited once TWIM completions flow). `temperature` → TEMP model exists. |
 | `set_volume` / `ws2812_write` (neopixel) | H | Present in image; never reached. |
 | `run_every` / `scale` / `log` (datalog FS) | H | `log` → NVMC/flash path; fds-waiter divergence is demo-only (P26: native skips, demo waits on SD-event completion nothing delivers). |
 | `radio` (`drv_radio.c`) | H | CODAL radio repoints vector (`0x2E44D` = main:57 ran natively); no RX attempts pre-banner. |
-| REPL proper (`pyexec_friendly_repl`, readline, `print(1+2)→3`) | – | BLOCKED: banner first (LEFT-1). TRUE-seed park `0x200021B8/BB`, 200M/zero-fault, serial TX-only stall. Post-banner NULL-`this` + prompt-never-staged notes kept in STATUS §6. |
+| REPL proper (`pyexec_friendly_repl`, readline, `print(1+2)→3`) | F | CLOSED P116+P117: native `print(1+2)` → `3` + prompt (125 B, zero faults) and in-browser `...>>> print(1+2)\n3\n>>> ` (+10s after banner, zero page errors). Pre-P116 park/`0x200021B8` forensics kept in STATUS §6. |
 
 ## 4. JS/wasm API + firmware proofs + wall-time
 
@@ -180,11 +180,11 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 
 | # | Item | Status | Next action |
 |---|---|---|---|
-| 1 | REPL exec (`print(1+2)` → `3`) — main gate (P113) | TRUE-seed park `0x200021B8/BB`, 200M/zero-fault, serial TX-only stall | `0x282E5`-caller trace + DRDY-line experiment |
+| 1 | REPL exec (`print(1+2)` → `3`) | CLOSED P116+P117 (native 125 B + in-browser `>>> print(1+2)\n3\n>>> `, zero faults/page-errors) | — |
 | 2 | TX drops | Model done, no action (guarded 0/60, unguarded 60/60) | — |
 | 3 | Bootloader full chain | PARKED, stays parked | Reopen only with a faulting config |
 | 4 | MakeCode display content | PARKED, shared gate with (1) | Same NEXT as (1) |
-| 5 | SPIM2/3 | Done + DMA-proven (P110 `spim23_nrf`: TX+RX DMA on both instances) | No edge-SPI demo part (no consumer) — stays H by decision. |
+| 5 | SPIM2/3 | Done + DMA-proven (P110 `spim23_nrf`: TX+RX DMA on both instances) + consumer wired (P114 `demo/parts/spidisplay.js` ST7789 240×240 on SPIM2, headless-verified) | — |
 | 6 | Demo wall-time | Environmental, measured, no action (Node ~41–54, MPY ~24, browser ~6 MIPS) | — |
 | 7 | UARTE1 second-instance proof | Done (P110 `uarte1_nrf`: TX+RX DMA through shared take/complete) | — |
 | 8 | RTC/PWM/RNG/TEMP/EGU depth | Done (P110 second proofs: COMPARE/OVRFLW, STOP/INTEN, DATARDY/INTEN, SHORTS/re-arm, channels/mask) | — |
@@ -193,8 +193,8 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 ## 8. BLE: is it fully done? (P58 verdict + P98–P103 build record)
 
 Short answer: the firmware-visible BLE contract is fully answered and
-proven over virtual air; the radio physics, the crypto, and the bond
-store are not. P58 said "needs a BLE-enabled image first, then SVC
+proven over virtual air; the radio physics and the crypto math are not
+(the per-peer bond store closed P114). P58 said "needs a BLE-enabled
 work" — the SVC work happened anyway against the S132 headers with a
 GCC conformance firmware + C face + headless mock + live Bumble air as
 proof instead of a stock image (no shipped MPY/MC image enables the
@@ -262,7 +262,7 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | `docs/COVERAGE.md` | This file | Table audit (uncommitted, per order). |
 
 ```
-cargo test -- --test-threads=1   # 217 green (parallel also 25/25 post-P108; single-threaded stays the gate by convention)
+cargo test -- --test-threads=1   # 217 green (parallel ~30/31 on the P114 tree; single-threaded stays the gate by convention)
 node demo/parts/smoke.mjs        # parts green
 node demo/parts/handshake.mjs    # 18/18 vs the built pkg
 node demo/parts/ble_live_e2e.mjs # 42/42 over air (bridge on :18771)

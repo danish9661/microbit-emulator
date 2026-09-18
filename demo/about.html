@@ -37,13 +37,13 @@
 
     <h2>What it is</h2>
     <p>The bench is two layers. The chip core is Rust compiled to WASM: Cortex-M4F plus every nRF52833 peripheral, timed off one instruction-count clock. The virtual board is JavaScript: the LED matrix, the LSM303 motion sensor, the OLED add-on, and the serial line. Firmware stages a transfer, the bench moves the bytes, then completes it — the same take/complete round trip for UARTE, TWIM, SAADC, PDM, USBD, NVMC, radio, I2S, NFCT, the crypto engines, and the BLE SVC jobs (GAP/GATTC/L2CAP staged, resolved over the Bumble air bridge or loopback, GATTS answered synchronously).</p>
-    <p>It boots MicroPython v2.1.2 to its documented pre-banner park (P113: TRUE-seed `0x200021B8/BB`, 200M/zero-fault, serial TX-only stall — an init gate, not a model gap), runs MakeCode builds to scheduler idle, and passes eighteen GCC-built firmware proofs plus the parts smoke test, the handshake run (18/18), and live BLE-over-air checks (42/42). Suite reads 217 green.</p>
+    <p>It boots MicroPython v2.1.2 to a banner and a live REPL prompt (P116+P117: banner ~15 s wall, <code>print(1+2)</code> → <code>3</code> in-browser, zero faults — the pre-P116 <code>0x200021B8</code> park was pump starvation in ad-hoc probes, not a model gap), runs MakeCode builds to scheduler idle, and passes eighteen GCC-built firmware proofs plus the parts smoke test, the handshake run (18/18), and live BLE-over-air checks (42/42). Suite reads 217 green.</p>
 
     <h2>What it is not</h2>
     <ul>
       <li>No DAPLink or interface MCU. This page is the loader and the USB serial line.</li>
-      <li>No SoftDevice binary, timing, or key storage. BLE exists as an SVC face — all 67 S132 BLE SVC numbers answer, with full pairing legs — over a virtual Bumble air bridge (two peers, not RF). Crypto is stubbed; the CODAL-BLE-shaped pairing-fw image proves the flow end to end natively; see the BLE section on the <a href="./doc.html">docs page</a>.</li>
-      <li>No STM32, no UNO R4, no speaker, mic, touch, or NFC antenna models. Pins are mapped; parts are not built.</li>
+      <li>No SoftDevice binary, timing, or crypto math. BLE exists as an SVC face — all 67 S132 BLE SVC numbers answer, with full pairing legs and a per-peer bond store — over a virtual Bumble air bridge (two peers, not RF). Crypto runs driver-side by design; the CODAL-BLE-shaped pairing-fw image proves the flow end to end natively; see the BLE section on the <a href="./doc.html">docs page</a>.</li>
+      <li>No STM32, no UNO R4, no speaker, mic, touch, or NFC RF physics. Pins are mapped (UICR.NFCPINS reserves P0.09/P0.10); the ST7789 edge-SPI display part is wired on SPIM2.</li>
       <li>No second clock and no silent faults: unimplemented instructions halt loudly by design.</li>
     </ul>
 

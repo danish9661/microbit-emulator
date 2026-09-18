@@ -3041,3 +3041,143 @@ NEXT: run the FULL verify matrix (cargo single + parallel, handshake,
 smoke, E2E, browser 16/16, pkg rebuild — pkg already rebuilt for
 sd_evt/NFC/BLE exports), then commit per AGENTS.md (one peripheral
 per commit would split this 9-ways; user decides) + push.
+
+## 96. P115 stale-doc cleanup + LEFT-1 caller trace + DRDY experiment + MC parked check (2026-09-18, Node probes, no commits)
+
+Tree `be02b89` (P114 committed), pkg as committed, 217 green.
+Probes in `/tmp/opencode/probe/` (`p1`–`p14`, ephemeral); images
+`/tmp/opencode/mpy.bin` + `mc.bin` via `blinky/hex2bin.py`; P16
+recipe throughout (direct-app `0x1C000`, MBR params, TRUE UICR
+`0x77000/0x7E000`, `deliver_irqs=true`, sleep-aware pump).
+
+Stale-doc cleanup (committed state, found non-blocking): STATUS:456
+said sd_evt "unimplemented" (rewrote as phase-1-closed); LEFT-5 said
+"no edge-SPI part" + :409 "keys stubbed" (rewrote: ST7789 wired,
+bond store persists); STATUS:474 + COVERAGE:265 "25/25" (rewrote as
+~30/31, see agent.md §0); §7 duplicate Edge-SPI/NFC/WebAudio rows
+(removed, kept the closed-P114 rows); about.html "no key storage /
+no NFC models / crypto stubbed" (rewrote: bond store, NFCPINS gate,
+driver-side crypto); COVERAGE §8 intro + LEFT-5 row (bond-store /
+ST7789 closed).
+
+LEFT-1 caller trace ( park reproduced first): TRUE seeds, 60M:
+park `0x200021B9`, 2 resets (RESET#1 @step 0 pc `0x29CD1` =
+pre-first-instruction sample, RESET#2 @20K pc `0x29CCF` = AIRCR
+SYSRESETREQ self-request; both honored to app table), zero faults,
+uart 0. Flash-pc histogram (2K samples, ~1900 flash hits):
+`0x57039` x153 (memcpy-shaped byte loop — init copy, not the
+waiter), `0x26039` x57 (u64-compare helper return), then the
+`0x2829x`/`0x2837x` cluster (`0x282E7/0x282B7/0x282C5`…) +
+`0x5048D` x43 (the `bl 0x5048C→b.w 0x26020` delay). Static scan:
+exactly 10 `bl 0x5048C` sites (6 in the `0x28290` waiter family +
+4 in `0x52Fx`). `0x28290` has ZERO static `bl` sites (virtual/
+register-called, as documented). r9 literal `0xF4240` = 1,000,000
+(GAS-correct base `(pc+4)&~3` — the P114 method-trap lesson
+re-verified). `0x26020` region: time-compare helper
+(`[0x26068]=0x20003EA8` live object).
+Regs at `0x282B7` (3 traps, 5M+ apart — STABLE, not transient):
+r0=`0x40004000` (UARTE0!), r1=`0x148`, r4=`0x20002C0C`,
+r5=1, r6 growing (`0x17E0→0x38F5→0x5A01`, bounded by r9=1M),
+lr=`0x26039`. `[r0+0x150]=1`, `[r0+0x200]=0x100`,
+`[r0+0x124/0x148/0x160/0x1C]=0`. Read: the waiter polls
+`[UARTE0+0x150]` for a nonzero that never comes (only
+`[+0x150]=1` set — the init pattern, never the completion
+pattern), i.e. the init sequence waits on a UARTE0-side event
+between TX-setup and RX-setup. Consistent with the P113 serial
+object (TX BUFF_INIT only, baud 0, DMA never armed, both rings
+NULL): the gate is UPSTREAM of UARTE config, not in it.
+NEXT: identify `[0x40004000+0x150]` in the UARTE register map
+(SVD ground truth — NOT guessed) + who sets/clears it; the
+`0x28290`-family caller (register-called — needs a `blx`-site
+scan, not a `bl` scan).
+
+DRDY experiment (P0.25): LOW-held vs HIGH-held whole-run (60M,
+TRUE seeds, same pump): IDENTICAL — park `0x200021B9`, 2 resets,
+same top-8 flash pcs in the same order, uart 0. DRDY level does
+NOT gate the park (the sensor path is innocent here). Deeper
+support: TWIM1 audit over 60M shows exactly ONE transfer —
+`TX addr 0x19 len 1 [0x0F]` (WHO_AM_I, answered) + its event,
+zero RX takes, zero NACK storms. Sensor init is one clean probe,
+not a spin. NEXT for LEFT-1 is the UARTE0+0x150 register
+question above, not pins/sensors.
+
+LEFT-3/4 parked check (current tree+pkg, 4M sleep-aware):
+MakeCode parks `0x2000207B`, ipsr 0, zero faults, 2 resets,
+uart 0, TIMER4 CC0=0, DIR0=`0x01688000` (rows output-driven —
+P35 CNF→DIR fix holding), OUT0=`0x04018100`. Same pre-scroll
+sequencing stall, no new faulting config → stays PARKED per the
+reopen rule. Bootloader likewise: no faulting config exists.
+
+## 97. P116 REPL exec CLOSED: pump starvation, banner + `print(1+2)` → `3` (2026-09-18, Node probes, no commits)
+
+Tree `be02b89` (P114 committed), pkg as committed, 217 green.
+Probes `/tmp/opencode/probe/p16`–`p20` (ephemeral); P16 recipe
+(TRUE UICR, direct-app, sleep-aware pump).
+
+P115 §96 ended with the wrong NEXT (UARTE0+0x150 register
+question). SVD ground truth kills it in one lookup: `0x40004000`
+is TWIM1/SPIM1/TWI1/SPI1, and +`0x150` = EVENTS_TXSTARTED on the
+TWIM map (UARTE0+0x150 would be TXSTARTED too, but r0 pointed at
+TWIM1). The waiter (`0x28290` family, zero static `bl` sites —
+register-called) polls `[TWIM1+0x150]` for a STARTTX completion
+that only the DRIVER delivers. All prior probes took TWIM TX
+takes without completing them (`wasm.twim_take_txdma('TWIM1')`
+bare, return dropped): LASTTX never set, the SHORTS STARTRX
+chain never fired, RX takes never staged (audit: exactly ONE
+transfer in 60M — WHO_AM_I `TX addr 0x19 [0x0F]`, zero RX).
+The "healthy TWIM, no NACKs" readings were starvation readings.
+
+`p16` (FULL TWIM pump: TX take→`mem_read`→complete, RX take→
+`mem_write` WHO_AM_I sample→complete): sensor init completes
+(`TX 0x19 [0x23 0x80]`, `TX 0x1E [0x60 0x0B]` …), park escapes
+~176M (`pc=0x266E3`), flash execution in `0x539E7/0x2874x/
+0x266Dx` regions, txC=132/rxC=1, zero faults. `p19` (fixed
+`get_uart_output` TAKE semantics — P18's `includes()` on the
+take-return always re-read empty, hiding the burst): BANNER at
+237.8M, 78 B (`MicroPython v1.18 on 2023-10-30; micro:bit v2.1.2
+with nRF52833\r\nType "help()"`). `p20` (RX drip past banner):
+`print(1+2)` → `3` + `>>> ` prompt at ~237.9M
+(`...information.\r\n>>> print(1+2)\r\n3\r\n>>> `, 125 B),
+stable 60M+ after, zero faults. LEFT-1 CLOSED.
+
+DRDY verdict: P0.25 LOW-held vs HIGH-held (60M, same pump):
+byte-identical (park, resets, top-8 flash pcs in order, uart 0).
+Sensor level never gated the park.
+
+MC parked check (same tree+pkg, 4M sleep-aware): parks
+`0x2000207B`, ipsr 0, zero faults, TIMER4 CC0=0, DIR0 rows
+driven — same pre-scroll stall, no faulting config → stays
+PARKED. Bootloader likewise PARKED.
+
+NEXT: wire the full-TWIM completion into the bench pump
+(`demo/index.html:pumpDma` + `demo/parts/lsm303.js` RX path —
+today the bench likely takes without completing exactly like
+the old probes) so the banner arrives in-browser; verify with
+`tools/browser_verify_16.py` + a banner watch. Method trap for
+the record: `get_uart_output()` TAKES (clears); progress
+detection must accumulate into a log, never `includes()` the
+fresh return.
+
+## 98. P117 bench pump verdict: NO WIRING NEEDED + in-browser REPL proof (2026-09-18, page probes, no code changes)
+
+P116 ended with "wire the full-TWIM completion into the bench pump".
+Inspection reverses it: `demo/parts/lsm303.js poll()` ALREADY does
+the full round trip every frame (EASYDMA TX take→`mem_read`→complete
+with regptr/CTRL-echo bookkeeping; RX take→`sample()`→`mem_write`→
+complete; byte-path events drained + `i2c_push_rx` anticipated), and
+`demo/index.html:pumpDma()` calls `parts.poll(cpu)` inside the 5×
+sub-loop with UARTE-TX + NVMC-erase duties. The starvation lived only
+in the ad-hoc native probes (`twim_take_txdma` bare, return dropped).
+
+Repro (`p21`–`p24`, `/tmp/opencode/probe/`, ephemeral) against the
+COMMITTED page+pkg (`python3 -m http.server 8080 --directory demo`):
+`p21` (bench-pump replica in Node): BANNER at 22.1M, 82 B.
+`p22` (+bench RX-drip rule): `print(1+2)` → `3` + `>>> ` (125 B),
+zero faults. `p23` (real page, mpy preset + Run): banner in the UART
+box at T+15s wall (`...v2.1.2 with nRF52833\nType "help()" for more
+information.\n>>> `, 104–105 B), zero page errors. `p24` (real page,
+type `print(1+2)` + Send): `...>>> print(1+2)\n3\n>>> ` at +10s,
+zero page errors. LEFT-1 closed end to end on the shipped bench;
+`browser_verify_16.py` re-ran 16/16 green in the same session (no
+regressions). No code changed — docs only (STATUS §6.1, COVERAGE
+§3/§5/§6, about.html).
