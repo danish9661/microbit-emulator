@@ -64,7 +64,8 @@
       <div class="btn-row">
         <button id="btnA" type="button">A</button>
         <button id="btnB" type="button">B</button>
-        <span class="pin-note">A P0.14, B P0.23, active-low</span>
+        <button id="btnLogo" type="button" title="Capacitive logo touch (P1.04)">Logo</button>
+        <span class="pin-note">A P0.14, B P0.23, logo P1.04, active-low</span>
       </div>
       <h3>Motion (LSM303)</h3>
       <div class="tilt">
@@ -101,12 +102,18 @@
         </div>
       </section>
       <section class="panel" aria-labelledby="audio-h">
-        <h2 id="audio-h">Audio (I2S out)</h2>
-        <p class="sub">Firmware TX stream, 16-bit mono. Press Enable once (browser gesture rule), then stream.</p>
+        <h2 id="audio-h">Audio (speaker + mic)</h2>
+        <p class="sub">Speaker P0.00 toggles/PWM1 SEQSTARTs counted live; mic P0.05 fills PDM from RUN_MIC P0.20 power + level knob. Press Enable once (browser gesture rule), then stream I2S.</p>
         <div class="btn-row">
           <button id="audioToggle" type="button" aria-pressed="false">Enable audio</button>
           <span class="pin-note" id="audioStatus">audio: off</span>
         </div>
+        <div class="btn-row" style="margin-top:.5rem">
+          <button id="spkMute" type="button" aria-pressed="false">Mute speaker</button>
+          <label>Mic level <input type="range" id="micLevel" min="0" max="255" value="128"> <output id="micLevelV" for="micLevel">128</output></label>
+          <span class="pin-note" id="micLed" title="Mic LED: lit while RUN_MIC powers the mic">mic: off</span>
+        </div>
+        <p class="sub">Speaker: <span id="spkStat">0 toggles, 0 SEQSTARTs</span></p>
       </section>
       <section class="panel" aria-labelledby="ble-h">
         <h2 id="ble-h">BLE air (Bumble bridge)</h2>
@@ -154,6 +161,7 @@
   import { LSM303 } from './parts/lsm303.js';
   import { SSD1306 } from './parts/ssd1306.js';
   import { SpiDisplay } from './parts/spidisplay.js';
+  import { SpeakerPart, MicPart, LogoTouchPart, BOARD_PINS } from './parts/kl27.js';
   import { BleAir } from './parts/ble_air.js';
   import { aesBlock, ctrCrypt, cbcMic } from './parts/crypto.js';
   // QSPI bench image: 64KB external flash (like MockQspi's backend).
@@ -280,6 +288,24 @@
       }
     }
   });
+  // Speaker/mic/logo board wiring (kl27.js parts, MicroBitIO ground truth).
+  const spkMuteBtn = document.getElementById('spkMute');
+  spkMuteBtn?.addEventListener('click', () => {
+    speakerPart.setSpeakerEnabled(speakerPart.muted); // toggle: muted==was-off
+    const off = speakerPart.muted;
+    spkMuteBtn.textContent = off ? 'Unmute speaker' : 'Mute speaker';
+    spkMuteBtn.setAttribute('aria-pressed', String(off));
+  });
+  const micLevel = document.getElementById('micLevel'), micLevelV = document.getElementById('micLevelV');
+  micLevel?.addEventListener('input', (e) => {
+    micPart.setLevel(parseInt(e.target.value, 10));
+    if (micLevelV) micLevelV.value = String(micPart.level);
+  });
+  const logoBtn = document.getElementById('btnLogo');
+  logoBtn?.addEventListener('pointerdown', () => logoPart.press());
+  logoBtn?.addEventListener('pointerup', () => logoPart.release());
+  logoBtn?.addEventListener('pointerleave', () => logoPart.release());
+  const spkStat = document.getElementById('spkStat'), micLed = document.getElementById('micLed');
   // BLE panel: live stack state + loopback self-test. The stack line
   // mirrors ble_enabled(), the links line ble_conn_handles(), the queue
   // line ble_queue_len(), the battery line ble_batt_level() — all real
@@ -311,11 +337,21 @@
     refreshBlePanel();
   });
   // Virtual board: parts register BEFORE every init() (taps snapshot once).
+  // TWIM1 takes have ONE owner (LSM303.poll); it delegates 0x70/0x39 to
+  // its kl27 engines — the same instances the panels below drive, so
+  // bench buttons/knobs and firmware probes share protocol state.
   import { MockTemp, MockComp, MockQdec, MockEcb, MockAar, MockCcm, MockI2s, MockNfct, MockTwis, MockSpis, MockSpiDisplay, MockSaadcLim, MockUsbdSetup, MockRadio154, MockQspi, MockBleSvc } from './parts/mocks.js';
+  const kl27 = { uipm: null, flash: null };
+  const lsm = new LSM303(wasm, 'TWIM1');
+  kl27.uipm = lsm.kl27; kl27.flash = lsm.flash;
+  const speakerPart = new SpeakerPart(wasm);
+  const micPart = new MicPart(wasm);
+  const logoPart = new LogoTouchPart(wasm);
   const parts = [
-    new LSM303(wasm, 'TWIM1'),
+    lsm,
     new SSD1306(wasm, 'TWIM0', document.getElementById('oled')),
     new SpiDisplay(wasm, 'SPIM2', document.getElementById('spidisp')),
+    speakerPart, micPart, logoPart, // GPIO/PDM observers: no TWIM takes, race-free
   ];
   document.getElementById('spidispClear')?.addEventListener('click', () => {
     const p = parts.find((x) => x instanceof SpiDisplay);
@@ -630,8 +666,11 @@
     }
     t = wasm.pdm_take_sample();
     if (t.length) {
-      const fill = new Uint8Array(t[1] * 2);
-      cpu.mem_write(t[0], fill);
+      // Mic source: RUN_MIC P0.20 powers the mic; unpowered reads
+      // silence (silicon-identical). Powered: 440 Hz sine + noise at
+      // the level knob, 16-bit LE samples.
+      const got = micPart.nextSamples(t[1]);
+      cpu.mem_write(t[0], got.length ? got : new Uint8Array(t[1] * 2));
       wasm.pdm_complete_sample();
     }
     // I2S audio streaming: RX gets silence, TX bytes go to the capture
@@ -976,6 +1015,13 @@
         const col = wasm.gpio_read_output(COLS[c][0], COLS[c][1]);
         leds[r * 5 + c].classList.toggle('on', isOut(ROWS[r]) && !row && isOut(COLS[c]) && col);
       }
+      // Sound/touch panel: speaker edge/SEQSTART counts + mic LED dot.
+      // Observer reads only (never clear firmware events).
+      if (spkStat) {
+        const a = speakerPart.activity();
+        spkStat.textContent = `${a.toggles} toggles, ${a.seqStarts} SEQSTARTs${a.muted ? ' (muted)' : ''}`;
+      }
+      if (micLed) micLed.textContent = micPart.ledOn() ? 'mic: on' : 'mic: off';
     }
   requestAnimationFrame(frame);
   }

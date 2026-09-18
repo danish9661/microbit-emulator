@@ -4,11 +4,11 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-18, pushed through P115–P117, in sync with origin)
+## 0. Snapshot (2026-09-18, P118 COMMITTED, ahead of origin — push pending)
 
-- HEAD: `82cf9b7` "P115-P117 docs: stale cleanup + REPL exec closed (banner T+15s wall, print(1+2)->3 in-browser, 217 green)".
-- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`, in sync with `origin/master` (P114 `be02b89` + P115–P117 `82cf9b7` both pushed).
-- Suite: **217 single green** (pre-commit gate re-run), = 114 cpu (incl. 18 firmware proofs) + 89 peripherals + 11 sd_ble + 3 sd_evt. Handshake 18/18, browser 16/16 re-verified.
+- HEAD: `e7c28ba` "P118 ACL regions + nRF FPU-engine stub + KL27/sound/touch JS (220 green)".
+- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`, `ahead 1` (P118 local; push needs user approval).
+- Suite: **220 single green** (pre-commit gate re-run), = 114 cpu (incl. 18 firmware proofs) + 89 peripherals + 11 sd_ble + 3 sd_evt + 3 ACL/FPU-engine. Handshake 18/18, smoke OK, browser 16/16 re-verified, pkg rebuilt.
 - Working tree: CLEAN except `?? .openchamber/` (ignore — never commit).
 - Big news: **LEFT-1 CLOSED P116+P117, proven in-browser** — banner at T+15s wall + `print(1+2)` → `3` at +10s via the shipped page (zero page errors). No code changed: the bench pump (`lsm303.js` full take→complete both directions) was already correct; starvation lived only in ad-hoc native probes.
 
@@ -91,7 +91,7 @@ session, not a real gap:
 ## 6. Verify matrix (run in order, stop on red)
 
 ```
-cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 217 green
+cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 220 green
 cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml --lib -- --list 2>/dev/null | grep -c ": test"
 node demo/parts/handshake.mjs          # 18/18 (rebuild via npm run build:handshake --prefix demo after Rust changes)
 npm run test:parts --prefix demo ; npm run test:mpy --prefix demo
@@ -130,3 +130,4 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
 - 2026-09-18 (P111 doc-sync committed (see `git log --oneline -1`; amended: +HANDOVER banner, LEFT numbering)): STATUS+COVERAGE+doc.html+about.html 204→211 + P109/P110 rows; plan P91+P92; fixups (eighteen checks, LEFT-9 head, verify line). Pending: push (ahead 3).
 - 2026-09-18 (P114 out-of-scope blitz, UNCOMMITTED): user verdict "no walls — code through each". NFC NFCPINS gate (UICR 0x20C → GPIO 09/10 + NFCT sense, test); BLE bond store (keys + bridge bond_keys leg, test); BLE TX-flow + periph CONNECTED + param-update (tests + pump/bridge legs); edge-SPI ST7789 part + bench UI (headless-verified); I2S WebAudio sink (gesture-gated); lazy-FPU stale-comment fix (already implemented); sd_evt phase-1 (`sd_evt.rs` + hook + NVMC post + `sd_evt_nrf.s/.bin` proof, id=2 verified live); npm pack dry-run OK (22 files/72.5 kB). Suite 217 green. Docs synced (STATUS/COVERAGE/doc/about/API/plan). NEXT: full matrix + commit decision + push.
 - 2026-09-18 (P117 bench verdict, docs UNCOMMITTED): NO WIRING NEEDED — `lsm303.js poll()` already takes→completes both TWIM directions; starvation was probe-only. Page proof: banner T+15s (104–105 B) + `print(1+2)`→`3` +10s, zero page errors; browser 16/16 re-green. NEXT: commit P115–P117 docs + push (user approval).
+- 2026-09-18 (P118 COMMITTED `e7c28ba`, 15 files): ACL regions + nRF FPU-engine stub + kl27.js + bench panels + docs. 220 green + smoke + handshake 18/18 + browser 16/16, pkg rebuilt. Push pending user approval.

@@ -37,7 +37,7 @@
 
     <h2>What it is</h2>
     <p>The bench is two layers. The chip core is Rust compiled to WASM: Cortex-M4F plus every nRF52833 peripheral, timed off one instruction-count clock. The virtual board is JavaScript: the LED matrix, the LSM303 motion sensor, the OLED add-on, and the serial line. Firmware stages a transfer, the bench moves the bytes, then completes it — the same take/complete round trip for UARTE, TWIM, SAADC, PDM, USBD, NVMC, radio, I2S, NFCT, the crypto engines, and the BLE SVC jobs (GAP/GATTC/L2CAP staged, resolved over the Bumble air bridge or loopback, GATTS answered synchronously).</p>
-    <p>It boots MicroPython v2.1.2 to a banner and a live REPL prompt (P116+P117: banner ~15 s wall, <code>print(1+2)</code> → <code>3</code> in-browser, zero faults — the pre-P116 <code>0x200021B8</code> park was pump starvation in ad-hoc probes, not a model gap), runs MakeCode builds to scheduler idle, and passes eighteen GCC-built firmware proofs plus the parts smoke test, the handshake run (18/18), and live BLE-over-air checks (42/42). Suite reads 217 green.</p>
+    <p>It boots MicroPython v2.1.2 to a banner and a live REPL prompt (P116+P117: banner ~15 s wall, <code>print(1+2)</code> → <code>3</code> in-browser, zero faults — the pre-P116 <code>0x200021B8</code> park was pump starvation in ad-hoc probes, not a model gap), runs MakeCode builds to scheduler idle, and passes eighteen GCC-built firmware proofs plus the parts smoke test, the handshake run (18/18), and live BLE-over-air checks (42/42). Suite reads 220 green.</p>
 
     <h2>What it is not</h2>
     <ul>

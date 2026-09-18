@@ -3181,3 +3181,59 @@ zero page errors. LEFT-1 closed end to end on the shipped bench;
 `browser_verify_16.py` re-ran 16/16 green in the same session (no
 regressions). No code changed — docs only (STATUS §6.1, COVERAGE
 §3/§5/§6, about.html).
+
+## 99. P118 ACL regions + nRF FPU-engine stub + KL27/sound/touch JS (2026-09-18)
+
+Ground truth first (SVD + CODAL + specs, no guessing):
+- SVD: 70 peripherals, ACL @0x4001E000 (8-region cluster, dim 8 stride
+  0x10 base 0x800: ADDR+0/SIZE+4/PERM+8), NO SPU anywhere ("ACL/SPU"
+  rows meant ACL; SPU is nRF53/nRF91), FPU engine @0x40026000 with a
+  single UNUSED word (Product Spec: no tasks/events/INTEN, no driver
+  touches it). from_svd visits ACL before NVMC (shared base: first
+  wins) and previously SKIPPED the FPU engine entry.
+- CODAL (codal-microbit-v2, cloned /tmp/codal-mbv2): UIPM 0x70 protocol
+  (READ_REQ 0x10/RSP 0x11/WRITE_REQ 0x12/RSP 0x13/ERR 0x20, props
+  BOARD_REV/I2C_VER/DAPLINK_VER/POWER_SRC/POWER_CONS/USB_STATE/KL27_
+  MODE/LED_STATE/USER_EVENT, BUSY 0x39/INCOMPLETE 0x31, board 0x9904
+  V2.00 KL27, i2c v2 => BUSY_FLAG_SUPPORTED + no null-txn, NOP wake
+  e8777, irq1 threshold 30), USB-FLASH 0x39 (wire 0x72<<1: BE32
+  addr|cmd + len headers, geometry 4096x31 = 0x1F000, 64B maxWrite,
+  single-page-erase-only, valid-echo fast exit), MicroBitIO pins
+  (logo P1_04 capacitive, speaker P0_00, runmic P0_20, mic P0_05),
+  audio over PWM1 44.1 kHz mixer.
+
+Rust (AGENTS.md: new file + Default + new(name) + read/write/tick +
+both maps, Nordic TASKS/EVENTS/INTENSET style, cargo green each step):
+- ACL folded into the NVMC slot (shared 0x4001E000 base, same
+  CLOCK+POWER precedent): sticky ADDR/SIZE/PERM, PERM bit1 WRITE /
+  bit2 READ disables, write-protect ENFORCED at stage (ERASEPAGE/
+  ERASEALL refuse overlap, take_erase stays None — the MBR
+  flash-protect use case), read-block stored + queryable
+  (`acl_read_blocked_at`; mem-layer hook TODO under the cpu rule).
+  Test `acl_regions_sticky_and_block_erase` (region 0 + region 7
+  routing, sticky SIZE-0/PERM-OR, page/eraseall refusal, 2nd run).
+- nRF FPU engine: new `fpu_engine_nrf.rs` (UNUSED reads 0, writes
+  ignored, IRQ 38 never pends), registered in BOTH maps (`FPUENGINE`
+  name; from_svd maps SVD "FPU" -> engine slot, ARM "FPU" slot at
+  0xE000EF34 untouched). Tests: handshake + both-maps slot proof.
+- Suite 217 -> 220 (+1 ACL, +2 FPU-engine). No src/cpu edits.
+
+JS (`demo/parts/kl27.js` NEW + `lsm303.js` delegation + bench panels):
+- Kl27Uipm/Kl27Flash protocol engines (request/response/sample +
+  byteResponse, e8777 NOP-safe, BE32 addr|cmd decode with the top
+  command byte masked — the smoke failure that caught the OR-vs-shift
+  misread); SpeakerPart (P0.00 edges + PWM1 SEQSTARTED, host mute),
+  MicPart (RUN_MIC-gated 440 Hz sine into PDM), LogoTouchPart (P1.04
+  press/release) + BOARD_PINS; pins.js LOGO_TOUCH P1_04; bench Audio
+  panel (mute/mic-level/mic-LED/speaker stats) + Logo button; PDM pump
+  filled from MicPart (unpowered = silence).
+- LSM303 keeps the ONE-owner TWIM1 take/complete contract and
+  delegates 0x70/0x39 (EASYDMA + byte paths); legacy P85 echo kept
+  where the short shape fits, wire tables where it does not.
+- Smoke: UIPM frames + FLASH config/roundtrip/erase + speaker/mic/
+  logo checks (all green; songs: BE32 top-byte mask, null-wasm mic).
+
+Docs synced: COVERAGE §1 rows (:50/:59/:60) + §2 KL27/speaker rows,
+STATUS §1 (:53) + §7 (:495), doc.html chip (:102/:103) + board
+(KL27/speaker) rows. pkg rebuilt (ACL/FPU-engine in wasm).
+NEXT: full verify + commit (user asked).

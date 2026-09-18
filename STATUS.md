@@ -2,13 +2,14 @@
 
 Audited 2026-09-12 by cross-checking all 39 `monox/nrf52833.svd`
 peripherals against `src/peripherals/`, running the suite
-(**217 passed, 0 failed** — +32 since audit: SPIM RXD MISO +
+(**220 passed, 0 failed** — +35 since audit: SPIM RXD MISO +
 GPIO CNF→DIR + UARTE TX snapshot + TWIM shifted-ADDR match +
 SCB AIRCR SYSRESETREQ + RADIO 802.15.4 helpers + sd_ble SVC face ×10
 (+peer-request pairing legs) + BLE conformance/C-face/pairing-fw firmware proofs
 + P109 live crypto+QSPI pumpDma (shared crypto.js)
 + P110 UARTE1 + SPIM2/3 firmware proofs + RTC/PWM/RNG/TEMP/EGU depth
-+ P114 NFC NFCPINS gate + BLE bond store/TX-flow/periph/param-update + sd_evt phase-1),
++ P114 NFC NFCPINS gate + BLE bond store/TX-flow/periph/param-update + sd_evt phase-1
++ ACL regions + nRF FPU-engine stub),
 reading every model, and replaying the
 live firmware runs. Grades: **F** = functional (timed, IRQs,
 driver take/complete, firmware proof), **H** = handshake
@@ -49,8 +50,8 @@ driver take/complete, firmware proof), **H** = handshake
 | QSPI | `qspi_nrf.rs` | F | Registered image, AND-only program, 4K/64K erase, take/complete + JS backend exports; live pumpDma (64 KB bench image, P109) |
 | FICR/UICR | `ficr_uicr.rs` | F | PART=`0x52833`, sizes; UICR RAM store (BOOTLOADERADDR-gated boot depends on it) |
 | P0/P1 | `gpio_nrf.rs` | F | OUT/DIR/CNF, inputs idle-HIGH (active-low buttons), combined `0x50000000` block |
-| NVIC/SCB/SysTick/MPU/FPU/DWT/ITM/STIR/DEMCR | core files | F | MPU enforced w/ MemManage+escalation; FPU SP (CPACR gate, lazy stacking implemented — `fpu_lazy_*` green); CoreSight `0xF0000000` reads 0 |
-| ACL (`0x4001E000`, shares NVMC base) | – | – | Registers unhandled (reads 0); SPU protection out of scope |
+| NVIC/SCB/SysTick/MPU/FPU/DWT/ITM/STIR/DEMCR | core files | F | MPU enforced w/ MemManage+escalation; FPU SP (CPACR gate, lazy stacking implemented — `fpu_lazy_*` green); nRF FPU engine `0x40026000` minimal stub (`fpu_engine_nrf.rs`: UNUSED reads 0, both maps); CoreSight `0xF0000000` reads 0 |
+| ACL (`0x4001E000`, shares NVMC base) | `nvmc_nrf.rs` | F | 8 regions ADDR/SIZE/PERM (sticky), write-protect enforced at stage (ERASEPAGE/ERASEALL refuse overlap, `acl_regions_sticky_and_block_erase`); read-block stored + queryable, mem-layer hook TODO. No SPU on 833 (70 SVD peripherals, none named SPU). |
 | SoC event transport (`sd_evt.rs`, SVC 16/82) | service, not peripheral | F | Phase-1 flash events only: NVMC complete posts id 2/3 while SD enabled, `sd_evt_get` answers from model queue else falls through; firmware proof (`sd_evt_nrf.s/.bin`, P114) |
 | BLE bond store / TX-flow / peripheral-role / param-update | `sd_ble.rs` | F | Bonds persist across disconnects (hit/miss/delete + bridge `bond_keys` leg); TX token refill + `TX_COMPLETE`; dial-in CONNECTED (PERIPH role); param-update completion event (P114) |
 
@@ -66,7 +67,7 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 217 green (`cargo test`)
+## 3. Tests — 220 green (`cargo test`)
 
 - 114 integration tests (`src/cpu/tests.rs`): 18 GCC-built firmware
   proofs (`blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
@@ -74,20 +75,21 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   `i2s_nrf`, `wdt_nrf`, `nfct_nrf`, `ble_conformance.c`,
   `c_ble_face.bin`, `ble_pairing_fw.c`, `uarte1_nrf`, `spim23_nrf`,
   `sd_evt_nrf`, +2nd-run reset-state checks each).
-- ~89 peripheral + 3 sd_evt + 11 sd_ble unit tests (register handshake,
+- ~89 peripheral + 3 sd_evt + 11 sd_ble + 3 ACL/FPU-engine unit tests (register handshake,
   SHORTS/NACK/OVERRUN/CAPTURE, FIPS-197, reboot latch, TXSTOPPED,
   SPIM RXD MISO, GPIO CNF→DIR, UARTE TX STARTTX-snapshot,
   TWIM shifted-ADDR match, SCB AIRCR SYSRESETREQ,
   COMP/QDEC/NFCT/MWU/RADIO/SAADC/CCM depth, EGU slots, sd_ble
   peer-request pairing legs, +P110 RTC COMPARE/OVRFLW, PWM STOP/INTEN,
   RNG SHORTS/re-arm, TEMP INTEN/STOP, EGU channels/mask, +P114 NFC
-  NFCPINS gate, BLE bond store, TX-flow/periph/param-update,
-  sd_evt queue/order/reset).
+   NFCPINS gate, BLE bond store, TX-flow/periph/param-update,
+   sd_evt queue/order/reset, ACL sticky/block-erase, FPU-engine
+   UNUSED/both-maps).
 - Parallel-test flake (CLOSED P108; open pre-existing before that):
   stock multi-threaded `cargo test` intermittently failed sd_ble/MWU
   tests with `RefCell already borrowed` at `peripherals/mod.rs:457` /
   `mwu_nrf.rs:237` (~1/4 runs pre-P105; ~2/15 post-P105;
-  single-threaded `-- --test-threads=1` always 217/217). Two
+   single-threaded `-- --test-threads=1` always 220/220). Two
   mechanisms, separated by evidence (P105+P108):
   (a) DETERMINISTIC order-dependence (fixed P105): the MPU ENABLE +
   programmed regions live in the INSTALLED model and outlive the test
@@ -456,8 +458,8 @@ beyond proof-level driving remain future work.
      post_gatts_write/post_sec_params_request/post_sec_info_request/
      post_auth_key_request/post_passkey_display/post_keypress/
      post_lesc_dhkey_request/enabled/queue_len/batt_level/conn_handles/
-     conn_sec` exports (40 ble exports); 11 native tests + SVC-hook proof in cpu/tests.rs
-     (217 green); headless `MockBleSvc` executes REAL SVC bytes on a
+      conn_sec` exports (40 ble exports); 11 native tests + SVC-hook proof in cpu/tests.rs
+      (220 green); headless `MockBleSvc` executes REAL SVC bytes on a
      WasmCpu end to end (enable→table→connect→disc×6→read→write→L2CAP→
      pairing→peer-pairing(passkey)→HVX-indicate→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
      (READ+NOTIFY, 87 `PeerBatt`) + heart-rate twin (64 `PeerHR`,
@@ -492,7 +494,7 @@ beyond proof-level driving remain future work.
 | Edge-SPI display | — (closed P114: `demo/parts/spidisplay.js` ST7789 240×240 + bench panel, verified headless) | SPIM2 DMA + tap events + MISO ID; needs no Rust change. |
 | I2S WebAudio sink | — (closed P114: bench `audioPush` 16 kHz mono, silence-skipped) | Capture FIFO already existed; sink is a gesture-gated AudioContext. |
 | NFC antenna model | — (closed P114: NFCPINS gate, not physics) | UICR.PROTECT=1 reserves P0.09/P0.10 (GPIO inert) + NFCT sense gated; no RF emulation. |
-| ACL/SPU protection | Security owner | Reads 0 by design; protection enforcement is a separate project. |
+| ACL/SPU protection | ACL owner (done: model) / SPU n/a | ACL modeled + write-enforced (`nvmc_nrf.rs`); read-block queryable, mem hook TODO. No SPU exists on nRF52833 (SVD-verified) — nothing to model. |
 | Publish to npm | Release owner | Blocked: registry 401, no credentials in this environment. |
 | BLE bond store / TX-flow / peripheral-role / param enforcement | — (closed P114: bond store + TX_COMPLETE + dial-in CONNECTED + param-update event) | Keys stored per peer (hit/miss/delete), TX tokens refill on air drain, PERIPH role byte, update completion posted; bridge `bond_keys` leg persists air keys. Crypto itself stays driver-side by design. |
 | sd_evt flash transport | — (closed P114 phase 1: `sd_evt.rs`, SVC 16/82) | NVMC complete posts id 2/3 while SD enabled; `sd_evt_get` answers from model queue else falls through; firmware proof `sd_evt_nrf.s/.bin`. |
@@ -500,7 +502,7 @@ beyond proof-level driving remain future work.
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 217 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
+cargo test -- --test-threads=1    # 220 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY-idiom face, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)

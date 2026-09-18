@@ -32,6 +32,7 @@ pub mod nfct_nrf;
 pub mod egu_nrf;
 pub mod mwu_nrf;
 pub mod misc_nrf;
+pub mod fpu_engine_nrf;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -237,6 +238,7 @@ fn make_nrf_peripheral(name: &str, _ext: &ExtDevices) -> Option<Box<dyn Peripher
         .or_else(|| misc_nrf::EcbNrf::new(name))
         .or_else(|| misc_nrf::AarCcmNrf::new(name))
         .or_else(|| misc_nrf::I2sNrf::new(name))
+        .or_else(|| fpu_engine_nrf::FpuEngineNrf::new(name))
         .or_else(|| Mpu::new(name))
         .or_else(|| Fpu::new(name))
         .or_else(|| Dwt::new(name))
@@ -279,13 +281,13 @@ impl Peripherals {
                 .unwrap_or(p);
             let name = &p.name;
             let size = extract_svd_max_offset(resolved).max(0x10).min(0x1000);
-            // nRF FPU engine (@0x40026000) is not the ARM core FPU: skip the
-            // SVD entry (read-as-0 is fine, no driver touches it) and let
-            // the explicit ARM slot below own the "FPU" model.
-            if name.as_str() == "FPU" {
-                continue;
-            }
-            let (start, end, name_eff) = if name.as_str() == "P0" {
+            // nRF FPU engine (@0x40026000) is not the ARM core FPU: it is
+            // its own minimal model (UNUSED reads 0, writes ignored) at
+            // the SVD base. The explicit ARM slot below owns the "FPU"
+            // system registers (FPCCR/FPCAR/MVFR at 0xE000EF34).
+            let (start, end, name_eff) = if name.as_str() == "FPU" {
+                (0x4002_6000, 0x4002_7000, "FPUENGINE")
+            } else if name.as_str() == "P0" {
                 // P0/P1 blocks overlap in the SVD (shared GPIO register
                 // file): one combined slot, same as new_wasm (see gpio_nrf).
                 (0x5000_0000, 0x5000_0C00, "GPIO")
@@ -387,6 +389,7 @@ impl Peripherals {
             (0x4002_3000, 0x4002_4000, "SPIM2"),
             (0x4002_4000, 0x4002_5000, "RTC2"),
             (0x4002_5000, 0x4002_6000, "I2S"),
+            (0x4002_6000, 0x4002_7000, "FPUENGINE"),
             (0x4002_7000, 0x4002_8000, "USBD"),
             (0x4002_8000, 0x4002_9000, "UARTE1"),
             (0x4002_9000, 0x4002_A000, "QSPI"),

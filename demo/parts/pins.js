@@ -29,13 +29,14 @@ export const EDGE = {
 export const ROWS = [[0,21],[0,22],[0,15],[0,24],[0,19]];
 export const COLS = [[0,28],[0,11],[0,31],[1,5],[0,30]];
 
-// Internal (not on edge): buttons, speaker/mic, sensor bus, interface UART.
+// Internal (not on edge): buttons, speaker/mic, logo touch, sensor bus, interface UART.
 export const INTERNAL = {
   BTN_A: [0, 14],
   BTN_B: [0, 23],
   SPEAKER: [0, 0],
   MIC_IN: [0, 5],
   RUN_MIC: [0, 20],
+  LOGO_TOUCH: [1, 4], // P1_04 capacitive touch (MicroBitIO.h/.cpp)
   I2C_INT_SCL: [0, 8],   // motion sensors (TWIM1)
   I2C_INT_SDA: [0, 16],
   UART_INT_RX: [0, 6],   // interface MCU (UARTE0)

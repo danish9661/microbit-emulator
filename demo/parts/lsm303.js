@@ -8,6 +8,8 @@
 // Live model: gentle tilt sine waves in mg + static mag field; override
 // anytime with setAccel({x,y,z}) / setMag({x,y,z}) / shake().
 
+import { Kl27Uipm, Kl27Flash } from './kl27.js';
+
 const ACCEL = 0x19;
 const MAG = 0x1E;
 // nrfx writes ADDRESS shifted (7-bit addr<<1: 0x19->0x32, 0x1E->0x3C,
@@ -31,10 +33,16 @@ function le16(v) {
 }
 
 export class LSM303 {
-  constructor(wasm, peripheral = 'TWIM1') {
+  constructor(wasm, peripheral = 'TWIM1', kl27 = null) {
     this.wasm = wasm;
     this.peripheral = peripheral;
-    this.regptr = { [ACCEL]: 0, [MAG]: 0 };
+    // KL27 protocol engines (kl27.js): owned here so the SAME instances
+    // serve the EASYDMA path, the byte path, and the bench panels.
+    // Shared instance may be injected (index.html wires one board-wide
+    // pair); default constructs a private pair for headless tests.
+    this.kl27 = kl27?.uipm ?? new Kl27Uipm();
+    this.flash = kl27?.flash ?? new Kl27Flash();
+    this.regptr = { [ACCEL]: 0, [MAG]: 0, [0x70]: 0, [0x39]: 0 };
     // regfile[(addr,reg)] = last written value (CTRL echo etc.)
     this.regs = {};
     // live sensor state (milli-g / microtesla-ish raw-ish units)
@@ -83,27 +91,38 @@ export class LSM303 {
   }
 
   // Sample bytes for (addr, startReg, len), MSB-masked auto-increment.
+  // KL27 traffic is owned by the kl27.js protocol engines (Kl27Uipm /
+  // Kl27Flash): UIPM answers valid protocol frames per the CODAL wire
+  // contract (READ_RSP/WRITE_RSP/ERR_UNKNOWN, never a bare empty frame —
+  // the model would treat zeros as "no event" and burn the 20x20 retry
+  // budget); USB-FLASH answers config/geometry/storage per the same.
+  // NOTE: this pointer+length shape only fits SHORT queries (UIPM ≤ 12 B,
+  // config/geometry). Full transact frames (READ/WRITE/ERASE with BE32
+  // addr+len headers) flow through poll()'s take/complete path below.
   sample(addr, reg, len) {
     addr = normAddr(addr);
-    // KL27 UIPM stub: empty frame (no event).
-    if (addr === 0x70) return new Array(len).fill(0);
-    // KL27 USB-FLASH stub: answer VALID request-echo frames so _transact
-    // EXITS on the first RX attempt (P85: b[0]==request[0] → return).
-    // The old FAIL-FAST bytes ([0x20,0x01] = ERROR_RESPONSE) never
-    // matched the request echo: with BUSY_FLAG_SUPPORTED clear the
-    // firmware treats b[0]==0x00 OR (0x20 && b[1] in {request[0],0})
-    // as busy → rx_attempts=0 → 20×20 fiber_sleep(1) retries per
-    // transact (×2 with the NULL-transaction wrapper) = the whole
-    // pre-banner MicroPython boot time. An echo is what a real KL27
-    // returns for a live register read, and it advances instantly.
-    // (reg) here is the pointer-set byte = the command: echo it back.
+    if (addr === 0x70) {
+      const r = this.kl27.byteResponse([0x10, reg & 0xFF]);
+      while (r.length < len) r.push(0);
+      return r.slice(0, len);
+    }
+    // USB-FLASH legacy echo (P85): answers VALID request-echo frames so
+    // _transact EXITS on the first RX attempt (b[0]==request[0]); zeros
+    // or 0x20-mismatches read as busy and burn the 20x20 retry budget.
+    // Full READ/WRITE/ERASE transact frames go through poll() below.
+    // Config/geometry queries additionally match the wire contract:
+    // FILENAME echoes + 8.3 body (getConfiguration needs len>5 to parse),
+    // FILESIZE/DISK_SIZE/SECTOR_SIZE/VISIBILITY answer their tables.
     if (addr === 0x39) {
-      const f = [reg & 0xFF];
-      // Filename query (0x01): needs length>5 to parse: echo + an
-      // 8.3-ish name body so getConfiguration proceeds.
-      if ((reg & 0xFF) === 0x01) { f.push(...[...'DATA    TXT'].map((c) => c.charCodeAt(0)), 0); }
-      while (f.length < len) f.push(0);
-      return f.slice(0, len);
+      const f = this.flash.byteResponse([reg & 0xFF]);
+      if (f.length) {
+        while (f.length < len) f.push(0);
+        return f.slice(0, len);
+      }
+      const g = [reg & 0xFF];
+      if ((reg & 0xFF) === 0x01) { g.push(...[...'DATA    TXT'].map((c) => c.charCodeAt(0)), 0); }
+      while (g.length < len) g.push(0);
+      return g.slice(0, len);
     }
     const out = [];
     const a = this.liveAccel();
@@ -139,8 +158,20 @@ export class LSM303 {
     // the USB threshold (30 ticks) can never fill.
     if (typeof w.gpio_set_input === 'function') w.gpio_set_input(0, 25, (Date.now() % 200) < 60 ? false : true);
     // --- EASYDMA path (nrfx drivers): staged transfers with addresses ---
+    // KL27 frames route to the protocol engines: the UIPM request write
+    // is recorded (e8777 NOP-safe) and its RX answered from the SAME
+    // request bytes; USB-FLASH transact frames (BE32 addr+len headers)
+    // go request->response through Kl27Flash. Sensor addrs keep the
+    // regptr/file behavior below.
     let t = w.twim_take_txdma(P);
     if (t.length) t[0] = normAddr(t[0]);
+    if (t.length && (t[0] === 0x70 || t[0] === 0x39)) {
+      const bytes = [...cpu.mem_read(t[1], t[2])];
+      if (t[0] === 0x70) this.kl27.request(bytes);
+      else this.flash.request(bytes);
+      w.twim_complete_txdma(P, bytes);
+      t = [];
+    }
     if (t.length) {
       const bytes = cpu.mem_read(t[1], t[2]);
       if (bytes.length === 1) {
@@ -159,6 +190,14 @@ export class LSM303 {
     // model normalizes at the source, so 0x72 arrives as 0x39); the
     // local normAddr is a harmless idempotent belt-and-braces.
     if (t.length) t[0] = normAddr(t[0]);
+    if (t.length && (t[0] === 0x70 || t[0] === 0x39)) {
+      const bytes = t[0] === 0x70
+        ? this.kl27.response(t[2])
+        : this.flash.response(t[2]);
+      cpu.mem_write(t[1], bytes);
+      w.twim_complete_rxdma(P, t[2]);
+      t = [];
+    }
     if (t.length) {
       const reg = this.regptr[t[0]] ?? 0;
       const bytes = this.sample(t[0], reg, t[2]);
@@ -170,13 +209,25 @@ export class LSM303 {
     let addr = null, buf = [];
     const flush = () => {
       if (addr === null || !buf.length) { buf = []; return; }
-      this.feedWrite(addr, buf);
-      // A lone pointer-set always precedes a read: anticipate it now,
-      // whether the transaction closed (STOP) or stays open for a
-      // repeated START. (Only staleness source: a pointer-set that is
-      // never read; firmware always reads what it points at.)
-      if (buf.length === 1) {
-        w.i2c_push_rx(P, this.sample(addr, buf[0] & 0x7F, 8));
+      if (addr === 0x70) {
+        // UIPM byte transaction: request bytes in, natural-length reply
+        // anticipated into the RX queue (recvUIPMPacket only reads while
+        // irq1 is active — the DRDY pulse gates that on silicon).
+        const resp = this.kl27.byteResponse(buf);
+        if (resp.length) w.i2c_push_rx(P, resp);
+      } else if (addr === 0x39) {
+        // USB-FLASH byte transaction: same request/response shape.
+        const resp = this.flash.byteResponse(buf);
+        if (resp.length) w.i2c_push_rx(P, resp);
+      } else {
+        this.feedWrite(addr, buf);
+        // A lone pointer-set always precedes a read: anticipate it now,
+        // whether the transaction closed (STOP) or stays open for a
+        // repeated START. (Only staleness source: a pointer-set that is
+        // never read; firmware always reads what it points at.)
+        if (buf.length === 1) {
+          w.i2c_push_rx(P, this.sample(addr, buf[0] & 0x7F, 8));
+        }
       }
       buf = [];
     };

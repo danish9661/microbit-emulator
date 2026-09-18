@@ -8,7 +8,7 @@ DAPLink/interface MCU (KL27) is NOT emulated (JS loader + UART only).
 Status key: **F** = functional (timed, IRQs, driver take/complete,
 firmware proof) · **H** = handshake (TASKS/EVENTS/INTEN minimum, no
 timed behavior or no consumer) · **–** = missing / deliberately
-omitted. Counts: `cargo test` **217 green**,
+omitted. Counts: `cargo test` **220 green**,
 `node demo/parts/smoke.mjs` green, `node demo/parts/handshake.mjs`
 18/18, `node demo/parts/ble_live_e2e.mjs` 42/42 over air, browser
 16/16 (`python3 tools/browser_verify_16.py`).
@@ -47,7 +47,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | `0x40014000`–`0x40019000` | EGU0–5 (+SWI0–5) | `egu_nrf.rs` | F | All six, trigger/status; per-channel independence + INTEN mask + INTENCLR (P110 depth). |
 | `0x4001C000`/`0x40021000`/`0x40022000`/`0x4002D000` | PWM0–3 | `pwm_nrf.rs` | F | All four, IRQs 28/33/34/45; loop/decoders; STOP→STOPPED + INTEN/ISER gating + SEQSTART1 (P110 depth). |
 | `0x4001D000` | PDM | `pdm_nrf.rs` | F | take/complete sample pump. |
-| `0x4001E000` | ACL+NVMC | `nvmc_nrf.rs` (+–) | F/– | NVMC: READY/READYNEXT always-1, WEN/EEN staging, erase take/complete (driver applies 0xFF). ACL/SPU deliberately out of scope (reads 0). |
+| `0x4001E000` | ACL+NVMC | `nvmc_nrf.rs` | F | NVMC: READY/READYNEXT always-1, WEN/EEN staging, erase take/complete (driver applies 0xFF). ACL: 8 regions (ADDR/SIZE/PERM, sticky SIZE-0/PERM-OR), write-protect enforced at stage (ERASEPAGE/ERASEALL refuse overlap), read-block queryable (`acl_read_blocked_at`; mem-layer hook TODO). No SPU on 833 (verified: no SPU in 70 SVD peripherals). |
 | `0x4001F000` | PPI (+CHG, no FORK) | `ppi_nrf.rs` | F | Direct dispatch + group EN/DIS; no FORK register exists. |
 | `0x40020000` | MWU | `mwu_nrf.rs` | F | Region/pregion config, SUB-masks, mem-access hook, armed-interrupt proof. |
 | `0x40025000` | I2S | `misc_nrf.rs` | F | SVD-verified offsets, START-staged take_rx/take_tx, TX capture FIFO, streaming proof. Demo feeds silence (no WebAudio route — TODO in page). |
@@ -56,8 +56,9 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | `0x10000000`/`0x10001000` | FICR/UICR | `ficr_uicr.rs` | F | PART=`0x52833`, sizes; UICR RAM store (BOOTLOADERADDR-gated boot depends on it). |
 | `0x50000000`/`0x50000300` | P0/P1 | `gpio_nrf.rs` | F | OUT/DIR/CNF, inputs idle-HIGH (active-low buttons), combined block; PIN_CNF.DIR drives `dir[]` (P35, `pin_cnf_dir_bit_drives_dir`). |
 | ARM core | NVIC/SCB/SysTick/MPU/FPU/DWT/ITM/STIR/DEMCR | core files | F | MPU enforced w/ MemManage+escalation; FPU SP (CPACR gate, lazy stacking implemented — `fpu_lazy_*` green); CoreSight `0xF0000000` reads 0. AIRCR SYSRESETREQ honored (P53). |
-| `0x40026000` | FPU (nRF engine) | – | – | Deliberately skipped in SVD path (`mod.rs:282`): nRF engine ≠ ARM core FPU; explicit ARM slot owns "FPU". |
-| – | ACL/SPU | – | – | Out of scope (reads 0). |
+| `0x40026000` | FPU (nRF engine) | `fpu_engine_nrf.rs` | F | Minimal stub, SVD-grounded: single UNUSED word reads 0, writes ignored, both maps (`engine_slot_in_both_maps`). nRF engine ≠ ARM core FPU (FPCCR/FPCAR/MVFR at `0xE000EF34`, `fpu.rs`); IRQ 38 never pends. |
+| – | ACL/SPU | – | – | No SPU peripheral exists on nRF52833 (SVD-verified: 70 peripherals, none named SPU); ACL is a modeled region above. |
+| – | ACL CPU-read gate | – | – | Stored + queryable (`acl_read_blocked_at`); enforcement needs a mem-layer hook (AGENTS.md cpu rule — TODO, reads behave unprotected). |
 | – | SoftDevice SVCs (16/17/18/40/41/82) | – | – | NOT emulated: zero `svc 82` sites in MPY+MC (`0xDF52` zero hits) — sd_evt hook would be dead code (P32/P51, shelved). SVC dispatch observed only (MBR `0xAA4` cmp #24). |
 
 ## 2. micro:bit v2 board hardware → virtual part / driver
@@ -67,12 +68,12 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | 5×5 LED matrix (NRF52LEDMatrix → TIMER4 + GPIOTE/PPI) | `demo/index.html` matrix (DIR+OUT gate) + `demo/parts/pins.js` ROWS/COLS | F | DIR-gated render (P35 CNF→DIR fix); sticky DIR0=`0x01788000` in MakeCode. Content never drawn — init stalls pre-scroll (L4), not a render gap. |
 | BTN_A P0.14 / BTN_B P0.23 (active-low, pull-up) | Buttons + `gpio_set_input`; `input_state` survives `init()` (P43) | F | Level-poll `sensors_nrf` proof prints BTN:1/0 on change; Playwright press→release verified. |
 | LSM303AGR accel `0x19` + mag `0x1E` (internal TWIM1, DRDY P0.25/`irq1` active-lo) | `demo/parts/lsm303.js` (WHO_AM_I `0x33`/`0x40`, STATUS data-ready, live tilt) | F | DRDY pulses 60ms/140ms (P53: permanent low trips KL27 `idleCallback` >30-tick USB threshold on shared irq1). `requestUpdate` awaitSample spin needs the low window. `normAddr` handles nrfx shifted form. Smoke: WHO_AM_I/CTRL-echo/tilt/DMA/byte paths green. |
-| KL27 USB interface (UIPM `0x70`, irq1-shared) | `lsm303.js` UIPM stub (empty = no event) | H | Answers version/board-revision probes so boot proceeds. `0x39/0x72` deliberately NOT stubbed (USB-FLASH chip; NACK = correct "no flash op"). |
-| KL27 USB-FLASH (`0x39`, shifted `0x72`) | `lsm303.js` fail-fast stub (`0x20 0x01` = ERROR_RESPONSE, non-busy) | H | Exits `transact` in one RX attempt (P54: zeros meant "NOT READY"→busy→`rx_attempts=0` forever, 1217 reads/100M; NACK `break`s but still costs 20 TX×20 RX retries per call). P54b native: USB-flash reads 0, sensor-only 250/20M — busy-loop gone, banner still gated elsewhere. |
+| KL27 USB interface (UIPM `0x70`, irq1-shared) | `demo/parts/kl27.js` Kl27Uipm via `lsm303.js` TWIM1 delegation | F | Valid protocol frames per CODAL wire contract: READ_RSP BOARD_REV 0x9904 (V2.00 KL27) / I2C v2 (BUSY_FLAG_SUPPORTED, no null-txn) / DAPLink / POWER_SRC / POWER_CONS / USB_STATE / KL27_MODE / LED_STATE + USER_EVENT queue; WRITE applies LED/mode; e8777 NOP-wake ignored; unknown -> ERR/UNKNOWN. Smoke: protocol + geometry + speaker/mic/logo checks. |
+| KL27 USB-FLASH (`0x39`, wire `0x72<<1`) | `demo/parts/kl27.js` Kl27Flash via `lsm303.js` TWIM1 delegation | F | transact() contract: FILENAME echo+8.3 body / FILESIZE BE32 / VISIBILITY / DISK_SIZE / SECTOR_SIZE 4096 / STATUS never-busy; READ/WRITE/ERASE on a 0x1F000 image (4096x31, 64B maxWrite, single-page-erase-only). Always-valid answers (taps registered => no NACK, no 20x20 retry burn). |
 | Edge I2C (P19/P20, TWIM0) + SSD1306 OLED add-on | `demo/parts/ssd1306.js` (addr `0x3C`) | F | Smoke: init/fill/framebuffer/DMA paths green. |
 | Edge SPI (P13/SCK, P14/MISO, P15/MOSI, P16/CS) | SPIM2/3 DMA pump in page + `spi_tap`/`spi_push_miso` API | H | Model routes MISO/DMA (L5 unit-green); no edge-SPI part wired in demo (no consumer). |
 | UART USB serial (UARTE0 → KL27) | UART box + drip (`RXD.PTR+AMOUNT` mirror, never early ENDRX) | F | P39: RX handoff proven (head=tail=1, readline consumes). P51: RXDRDY stays 0 post-banner — parked-main, not drip-deadlock. |
-| Speaker P0.00 / mic P0.05+RUN_MIC P0.20 / logo touch | `INTERNAL` pins map only | – | No audio/mic/touch parts. modaudio fetcher exonerated (NULL-source instant return); speaker-tick NULL-`this` fault is MP-layer (P24–P25). TODO if REPL audio matters. |
+| Speaker P0.00 / mic P0.05+RUN_MIC P0.20 / logo touch P1.04 | `demo/parts/kl27.js` SpeakerPart/MicPart/LogoTouchPart + bench Audio panel | F | Pins per MicroBitIO.h/.cpp (logo P1_04 capacitive, speaker P0_00, runmic P0_20, mic P0_05). Speaker: P0.00 edge + PWM1 SEQSTARTED observer (read-only, host-side mute). Mic: RUN_MIC-gated 440 Hz sine+noise into PDM (unpowered = silence). Logo: active-low press/release on P1.04 + bench button. Smoke: edges/mute/silence/tone/press checks. |
 | NFC pins (P0.09/P0.10) | GPIO only | H | NFCPINS-as-GPIO UICR path noted in `MicroBit.cpp`; no NFC antenna model. |
 | Power (KL27 UIPM) / deep sleep (WFE/WFI) | Sleep-aware pump (`tick_n` + wake on pending IRQ) | F | Without it the core naps forever at first idle (P16). `is_watchdog_reset_requested` → vector-table reboot (app table after direct-app boot). |
 | LSM303 data-ready IRQ line (P0.25 level) | DRDY pulse (see LSM303 row) | F | Permanent-low regresses to USB-threshold hammering; pulse satisfies both consumers. |
@@ -262,7 +263,7 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | `docs/COVERAGE.md` | This file | Table audit (uncommitted, per order). |
 
 ```
-cargo test -- --test-threads=1   # 217 green (parallel ~30/31 on the P114 tree; single-threaded stays the gate by convention)
+cargo test -- --test-threads=1   # 220 green (parallel ~30/31 on the P114 tree; single-threaded stays the gate by convention)
 node demo/parts/smoke.mjs        # parts green
 node demo/parts/handshake.mjs    # 18/18 vs the built pkg
 node demo/parts/ble_live_e2e.mjs # 42/42 over air (bridge on :18771)
