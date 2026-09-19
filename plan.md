@@ -3383,5 +3383,60 @@ SVC bytes / MMIO pokes) is proven independently:
   already run JS end to end (18/18 + 42/42 + 16/16).
 
 Verify: cargo 226 single (= 116 cpu incl. 20 fw proofs), `npm run
-test:wasm` (handshake + smoke + mpy + ts) all green, browser 16/16.
+test:wasm` (handshake + smoke + mpy + ts + repl) all green, browser 16/16.
 NEXT: commit per approval.
+
+## 104. P123 MPY banner+REPL committed proof (2026-09-19)
+
+"Complete MicroPython" = the stock hex boots to a live REPL in-repo:
+`demo/parts/ble_lang/run_mpy_repl.mjs` (`npm run test:repl`, folded
+into `test:wasm`) runs the exact bench recipe headless — reset_state,
+QSPI+LSM303 register, init, 512KB image, UICR words, MBR params,
+direct-app reset to 0x1C000 vectors — with the exact bench pump
+(reset-honor appBoot-style, sleep tick_n+wake, lsm.poll, TX
+take/complete, NVMC erase apply/complete, RXDRDY-gated drip + DMA
+mirror, TAKE-accumulate UART log). Proves: 105B banner
+(`MicroPython v1.18 ... >>>`) + `print(1+2)` -> `3`, zero faults, in
+~0.3s Node. The two load-bearing details (found by elimination):
+resets must return to the APP table (MBR table re-enters the
+bootloader loop) and the UART log must be TAKE-accumulated
+(`get_uart_output` clears on read — the old probes re-read it empty
+and reported "no banner" over a live one). No model change: the
+P123 probe series closed every candidate (memcpy verified, FICR-SD
+branch correct, NVMC READY passes, NFCPINS skip correct, TWIM
+flowing txC=95/rxC=730) and the wake path (`tick_n` + `wake()` on
+pending IRQ, bench-exact) was the only missing pump piece.
+
+## 105. MPY + MakeCode native repro notes (2026-09-19, probes only, no code changes)
+
+MPY (`demo/firmware/micropython-microbit-v2.1.2.hex`, this tree +
+rebuilt pkg, bench-exact pump): entry memcpy at 0x29C51 verified
+(src `[0x6785C]` == dst `[0x20002030]` after the loop); bl 0x29CDC
+branches correctly on FICR SOFTDEVICE (0x0D != 13 -> 0x29D96 path);
+NVMC READY poll at 0x29DC0 passes (model READY=1); UICR NFCPINS reads
+0xFFFFFFFF (unprogrammed) -> reservation skipped correctly.
+0x29CD1 is the post-SYSRESETREQ `dsb;nop;b .` wait (same AIRCR-wait
+family as MC's 0x37F77): the model latches the reset
+(`is_watchdog_reset_requested` true at slice 0); honoring it with
+appBoot semantics (back to 0x29C51, NOT the MBR table) reaches
+0x539E7; with the FULL TWIM pump (take->complete both directions)
+boot reaches the 0x200021B9/BB RAM delay loop with txC=95/rxC=730
+flowing at 240M, uart still empty. That matches P116 (banner at
+~237.8M, delay-loop park is the documented countdown wait, not a
+hang): within pump-parity noise, NO new model gap, no fix indicated.
+Without reset-honoring the park is permanent (bench `pumpDma` honors
+it — native probes must too).
+
+MakeCode (`mc/built/mbcodal-binary.hex`, same pump): 2 AIRCR resets
+honored back to the MBR table, then permanent park at
+0x37F4F/0x37F77 (tight 2-instr loop, 2995/3000 histogram hits);
+TIMER4/DIR0 never driven, scroll fiber never created, zero faults.
+Same pre-scroll stall as P112/P96 — no faulting config, stays PARKED
+per the reopen rule (needs a faulting config, none exists).
+
+Language verdicts (evidence in §104): C fully proven (20 fw proofs);
+C++ proven at SVC level (P122); TS proven (strict face, BLE+RADIO);
+JS proven end to end (18/18 + 42/42 + 16/16); MPY runtime proven
+(banner + REPL P116+P117, BLE module absent by build config);
+MakeCode boots to idle, display content parked firmware-side, BLE
+compiled out (`MICROBIT_DAL_BLUETOOTH_ENABLED: 0`).
