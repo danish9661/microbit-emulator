@@ -757,8 +757,7 @@ fn nrf_ecb_aes128_fips_vector() {
     // registers, take dataptr, AES-128 in the driver, write back, complete.
     // FIPS-197 B: key 00..0f, pt 001122..ff -> ct 69c4e0d8...
     use aes::Aes128;
-    use cipher::{KeyInit, BlockEncryptMut};
-    use generic_array::GenericArray;
+    use cipher::{Block, BlockCipherEncrypt, Key, KeyInit};
     let _g = lock_boot();
     let sys = WasmSystem::new();
     crate::init_for_test(sys);
@@ -779,8 +778,8 @@ fn nrf_ecb_aes128_fips_vector() {
         k[i] = mem.read8(ptr.wrapping_add(i as u32));
         blk[i] = mem.read8(ptr.wrapping_add(16 + i as u32));
     }
-    let mut block = GenericArray::clone_from_slice(&blk);
-    Aes128::new(&GenericArray::clone_from_slice(&k)).encrypt_block_mut(&mut block);
+    let mut block: Block<Aes128> = Block::<Aes128>::try_from(&blk[..]).expect("block len");
+    Aes128::new(&Key::<Aes128>::try_from(&k[..]).expect("key len")).encrypt_block(&mut block);
     for (i, &b) in block.iter().enumerate() {
         mem.write8(ptr.wrapping_add(32 + i as u32), b);
     }

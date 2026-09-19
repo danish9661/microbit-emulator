@@ -498,7 +498,6 @@ struct Conn {
     encrypted: bool,
     bonded: bool,
     pairing: Pairing,
-    cids: Vec<u16>,
     /// Prepared-write queue (GATT_OP_PREP_WRITE_REQ entries): (handle,
     /// offset, bytes). EXEC_WRITE_REQ with WRITE flag commits them in
     /// order onto the local GATTS table mirror; CANCEL drops them.
@@ -627,7 +626,6 @@ impl Conn {
             encrypted: false,
             bonded: false,
             pairing: Pairing::Idle,
-            cids: Vec::new(),
             prep_queue: Vec::new(),
         }
     }
@@ -700,25 +698,9 @@ impl SdBle {
         self.conns.iter_mut().find(|c| c.handle == h && c.up)
     }
 
-    /// First live link (legacy single-conn callers: RSSI sync answer,
-    /// loopback pump). None when no link is up.
-    fn first_conn(&self) -> Option<u16> {
-        self.conns.iter().find(|c| c.up).map(|c| c.handle)
-    }
-
     /// Legacy compat: the old `connected` bool (any link up).
     fn connected(&self) -> bool {
         self.conns.iter().any(|c| c.up)
-    }
-
-    /// Legacy compat: old single `conn_handle` (first live link).
-    fn conn_handle(&self) -> u16 {
-        self.first_conn().unwrap_or(BRIDGE_CONN_HANDLE)
-    }
-
-    /// Legacy compat: old single peer_addr (first live link).
-    fn peer_addr(&self) -> [u8; 6] {
-        self.conns.iter().find(|c| c.up).map(|c| c.peer_addr).unwrap_or([0u8; 6])
     }
 
     fn find_attr(&self, handle: u16) -> Option<&Attr> {
@@ -1916,8 +1898,17 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             }
         }
         x if x == SVC_GAP_LESC_DHKEY_REPLY => {
-            // Reply to LESC_DHKEY_REQUEST: (conn, *dhkey32). Completes
-            // an outstanding LescDhkey; otherwise INVALID_STATE.
+            // Reply to LESC_DHKEY_REQUEST: (conn, *dhkey32). Validates
+            // the peer point through real P-256 ECDH when the firmware
+            // leaves its public key in the reply buffer: [pk_x LE 32B
+            // ++ pk_y LE 32B ++ own_priv BE 32B] (96B, the only layout
+            // that carries everything the DHKey needs). Shorter
+            // buffers keep the legacy accept path (driver ran ECDH
+            // over air and only posted presence); a 96B buffer with an
+            // off-curve point refuses INVALID_PARAM like silicon,
+            // which fails the procedure instead of faulting the host.
+            // Completes an outstanding LescDhkey; otherwise
+            // INVALID_STATE.
             if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
@@ -1929,9 +1920,31 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
                 return Some(NRF_ERROR_INVALID_ADDR);
             }
             match s.conn(conn) {
-                Some(c) if matches!(c.pairing, Pairing::LescDhkey { .. }) => Some(NRF_SUCCESS),
-                _ => Some(NRF_ERROR_INVALID_STATE),
+                Some(c) if matches!(c.pairing, Pairing::LescDhkey { .. }) => {}
+                _ => return Some(NRF_ERROR_INVALID_STATE),
             }
+            if is_ram(p_key.wrapping_add(95)) {
+                let mut pk_x = [0u8; 32];
+                let mut pk_y = [0u8; 32];
+                let mut priv_be = [0u8; 32];
+                for (i, b) in pk_x.iter_mut().enumerate() {
+                    *b = mem.read8(p_key.wrapping_add(i as u32));
+                }
+                for (i, b) in pk_y.iter_mut().enumerate() {
+                    *b = mem.read8(p_key.wrapping_add(32 + i as u32));
+                }
+                for (i, b) in priv_be.iter_mut().enumerate() {
+                    *b = mem.read8(p_key.wrapping_add(64 + i as u32));
+                }
+                // All-zero private scalar = no key material posted
+                // (driver-signed flow); skip ECDH, keep legacy accept.
+                if priv_be.iter().any(|&b| b != 0)
+                    && crate::smp_crypto::lesc_dhkey(&priv_be, &pk_x, &pk_y).is_none()
+                {
+                    return Some(NRF_ERROR_INVALID_PARAM);
+                }
+            }
+            Some(NRF_SUCCESS)
         }
         x if x == SVC_GAP_KEYPRESS_NOTIFY => {
             // Keypress notification during passkey entry: (conn,
@@ -2034,14 +2047,50 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             if let Err(e) = s.check_conn(conn) {
                 return Some(e);
             }
-            // OOB data is 16B confirm + 16B random: zeroed stub (no real
-            // crypto — documented; the handshake still completes).
+            // OOB data is 16B confirm + 16B random, derived from the
+            // local public key via f4 when a SEPARATE scratch area
+            // carries the key material ([pk_x LE 32B ++ pk_y LE 32B
+            // ++ rand LE 16B] at p_own+32, 80B total, so the 32B
+            // confirm+random output at p_own never overlaps its own
+            // inputs). Shorter/NULL buffers keep the legacy zeroed
+            // stub (no key material posted — documented; handshake
+            // completes).
             if p_own != 0 {
                 if !is_ram(p_own) {
                     return Some(NRF_ERROR_INVALID_ADDR);
                 }
-                for i in 0..32u32 {
-                    mem.write8(p_own.wrapping_add(i), 0);
+                let mut oob = [0u8; 32];
+                // Key-material present = the 80B scratch holds a
+                // non-default public key (all-zero X = nothing posted;
+                // silicon has no key to confirm with). The length gate
+                // alone can't tell garbage RAM from real keys, so the
+                // zero-key check is the presence signal.
+                if is_ram(p_own.wrapping_add(111)) {
+                    let mut pk_x = [0u8; 32];
+                    let mut pk_y = [0u8; 32];
+                    let mut rand = [0u8; 16];
+                    for (i, b) in pk_x.iter_mut().enumerate() {
+                        *b = mem.read8(p_own.wrapping_add(32 + i as u32));
+                    }
+                    for (i, b) in pk_y.iter_mut().enumerate() {
+                        *b = mem.read8(p_own.wrapping_add(64 + i as u32));
+                    }
+                    for (i, b) in rand.iter_mut().enumerate() {
+                        *b = mem.read8(p_own.wrapping_add(96 + i as u32));
+                    }
+                    // Local X doubles as both U and V (self-confirm);
+                    // Z = 0x00 per Core Spec 2.2.6. Random stays LE.
+                    // All-zero keys = nothing posted: keep the zeroed
+                    // stub (test garbage / untouched RAM is not a key).
+                    if pk_x.iter().any(|&b| b != 0) {
+                        let confirm = crate::smp_crypto::smp_f4(&pk_x, &pk_x, &rand, 0x00);
+                        oob[..16].copy_from_slice(&confirm);
+                        oob[16..].copy_from_slice(&rand);
+                    }
+                    let _ = pk_y;
+                }
+                for (i, &b) in oob.iter().enumerate() {
+                    mem.write8(p_own.wrapping_add(i as u32), b);
                 }
             }
             Some(NRF_SUCCESS)
@@ -3206,6 +3255,63 @@ pub fn post_lesc_dhkey_request(conn: u16, oobd_req: bool) -> bool {
         );
         true
     })
+}
+
+/// SMP toolbox re-exports for the driver/bridge (Core Spec Vol 3,
+/// Part H, 2.2.5–2.2.9): the handshake legs the SoftDevice leaves to
+/// firmware/host. All inputs/outputs are SMP protocol order
+/// (little-endian); see `smp_crypto` for the wire rule.
+///
+/// - `lesc_dhkey`: P-256 ECDH shared secret — our BE private scalar +
+///   peer LE point (X ++ Y) -> DHKey LE, or None off-curve.
+/// - `lesc_public_key`: our BE private scalar -> our LE point
+///   (X ++ Y) for the DHKEY_REQUEST peer-key / OOB fields.
+/// - `smp_f4`: confirm value (peer/local X LE, random LE, Z byte).
+/// - `smp_f5`: (MacKey, LTK) from DHKey LE, nonces LE, addrs LE.
+/// - `smp_f6`: DHKey-check from MacKey LE, nonces/r/IOcap/addrs LE.
+/// - `smp_g2`: numeric-compare u32 from public X coords + nonces LE.
+pub fn lesc_dhkey(own_priv_be: &[u8], peer_x_le: &[u8], peer_y_le: &[u8]) -> Option<[u8; 32]> {
+    crate::smp_crypto::lesc_dhkey(own_priv_be, peer_x_le, peer_y_le)
+}
+
+/// Our P-256 public key (SMP LE order X ++ Y) from our BE scalar.
+pub fn lesc_public_key(own_priv_be: &[u8]) -> Option<[u8; 64]> {
+    crate::smp_crypto::lesc_public_key(own_priv_be)
+}
+
+/// f4 confirm (LE in/out): U/V public X coords, X random, Z byte.
+pub fn smp_f4(u_le: &[u8], v_le: &[u8], x_le: &[u8], z: u8) -> [u8; 16] {
+    crate::smp_crypto::smp_f4(u_le, v_le, x_le, z)
+}
+
+/// f5 key generation (LE in/out): W DHKey, N1/N2 nonces, A1/A2 addrs.
+/// Returns (MacKey, LTK).
+pub fn smp_f5(
+    w_le: &[u8],
+    n1_le: &[u8],
+    n2_le: &[u8],
+    a1_le: &[u8],
+    a2_le: &[u8],
+) -> ([u8; 16], [u8; 16]) {
+    crate::smp_crypto::smp_f5(w_le, n1_le, n2_le, a1_le, a2_le)
+}
+
+/// f6 DHKey-check (LE in/out): W MacKey, N1/N2, R, IOcap, A1/A2.
+pub fn smp_f6(
+    w_le: &[u8],
+    n1_le: &[u8],
+    n2_le: &[u8],
+    r_le: &[u8],
+    iocap: &[u8],
+    a1_le: &[u8],
+    a2_le: &[u8],
+) -> [u8; 16] {
+    crate::smp_crypto::smp_f6(w_le, n1_le, n2_le, r_le, iocap, a1_le, a2_le)
+}
+
+/// g2 numeric comparison (LE in): U/V public X coords, X/Y nonces.
+pub fn smp_g2(u_le: &[u8], v_le: &[u8], x_le: &[u8], y_le: &[u8]) -> u32 {
+    crate::smp_crypto::smp_g2(u_le, v_le, x_le, y_le)
 }
 
 /// Complete an L2CAP TX: driver moved the frame over air on the
@@ -4528,7 +4634,8 @@ mod tests {
         mem.write8(0x20004310, 0);
         let r = regs(h3 as u32, 0x20004300, 0x20004310, 0);
         assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_ENCRYPT, &r), Some(NRF_SUCCESS));
-        // LESC paths: DHKEY request needs Accepted; OOB data zeroes.
+        // LESC paths: DHKEY request needs Accepted; OOB confirm is real
+        // f4 crypto when the reply buffer carries key material.
         connect(&sys, &mut mem);
         let h4 = conn_handles().into_iter().max().unwrap();
         assert!(!post_lesc_dhkey_request(h4, false), "no handshake yet");
@@ -4545,6 +4652,8 @@ mod tests {
         let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
         assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_LESC_DHKEY_REQUEST));
         assert_eq!(mem.read8(0x20003006), 1, "oobd_req set");
+        // Short reply buffer (32B, no key material) keeps the legacy
+        // accept path — the driver ran ECDH over air.
         for i in 0..32u32 {
             mem.write8(0x20004400 + i, 0x55);
         }
@@ -4553,11 +4662,98 @@ mod tests {
             handle_svc(&sys, &mut mem, SVC_GAP_LESC_DHKEY_REPLY, &r),
             Some(NRF_SUCCESS)
         );
+        // 96B reply buffer [pk_x LE 32B ++ pk_y LE 32B ++ priv BE 32B]
+        // runs real P-256 ECDH: the frozen bumble vector's peer point
+        // + scalar accept; an off-curve point refuses INVALID_PARAM.
+        let a_priv_be = [
+            0x60u8, 0xC4, 0xB5, 0x5B, 0x4D, 0xEB, 0x27, 0x4D, 0xBA, 0x4E, 0xA7, 0xD3, 0x2E,
+            0x07, 0x47, 0x23, 0x9D, 0x9F, 0xE0, 0xEA, 0x6A, 0xF5, 0x43, 0x2E, 0x3C, 0x8E,
+            0xC9, 0x67, 0x33, 0x06, 0x87, 0x31,
+        ];
+        // Peer point (bumble EccKey, BE) reversed to SMP LE order.
+        let b_x_be = [
+            0xA7u8, 0xD3, 0xF3, 0x35, 0x84, 0x3C, 0x46, 0x78, 0x27, 0x4E, 0xA1, 0x3B,
+            0x9F, 0xE1, 0x74, 0xCB, 0xD1, 0xB9, 0x70, 0x08, 0x6E, 0x7C, 0x17, 0x1D,
+            0x45, 0xB3, 0xC1, 0x04, 0x80, 0x5A, 0xEF, 0x8F,
+        ];
+        let b_y_be = [
+            0x65u8, 0xE4, 0x86, 0x2A, 0x2E, 0xEB, 0x7D, 0x0A, 0x58, 0xC0, 0xA5, 0x1E,
+            0x17, 0x99, 0xA3, 0x38, 0xA6, 0x0E, 0x41, 0x4A, 0xE8, 0x72, 0x74, 0x16,
+            0xF4, 0xA0, 0xE4, 0xD0, 0x93, 0xCA, 0xA4, 0xC0,
+        ];
+        for (i, &b) in b_x_be.iter().rev().enumerate() {
+            mem.write8(0x20004400 + i as u32, b);
+        }
+        for (i, &b) in b_y_be.iter().rev().enumerate() {
+            mem.write8(0x20004420 + i as u32, b);
+        }
+        for (i, &b) in a_priv_be.iter().enumerate() {
+            mem.write8(0x20004440 + i as u32, b);
+        }
+        let r = regs(h4 as u32, 0x20004400, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_LESC_DHKEY_REPLY, &r),
+            Some(NRF_SUCCESS),
+            "real ECDH accept"
+        );
+        // Same buffer, corrupted X (off-curve) -> INVALID_PARAM.
+        mem.write8(0x20004400, mem.read8(0x20004400).wrapping_add(1));
+        let r = regs(h4 as u32, 0x20004400, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_LESC_DHKEY_REPLY, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "off-curve point refused"
+        );
+        // OOB_DATA_GET with key material derives a real f4 confirm
+        // (LE) + echoes the random; the short/NULL path below still
+        // zeroes. Key material lives in a scratch area AFTER the 32B
+        // output ([pk_x LE 32B ++ pk_y LE 32B ++ rand LE 16B] at
+        // p_own+32, 80B total) so the read inputs and the confirm+
+        // random write at p_own never overlap.
+        let pk_x = [
+            0x5Cu8, 0xEF, 0x2D, 0x5B, 0xC2, 0x12, 0xC6, 0x78, 0xE9, 0x48, 0xF0, 0xB4,
+            0x60, 0x9E, 0x3C, 0xA3, 0x5C, 0xEF, 0x2D, 0x5B, 0xC2, 0x12, 0xC6, 0x78,
+            0xE9, 0x48, 0xF0, 0xB4, 0x60, 0x9E, 0x3C, 0xA3,
+        ];
+        let rand = [
+            0xBDu8, 0xA2, 0x78, 0xDA, 0xF0, 0x90, 0xF4, 0x02, 0x81, 0x4A, 0x63, 0x10,
+            0xC8, 0x32, 0x6C, 0x38,
+        ];
+        for (i, &b) in pk_x.iter().enumerate() {
+            mem.write8(0x20004520 + i as u32, b);
+        }
+        for (i, &b) in pk_x.iter().enumerate() {
+            mem.write8(0x20004540 + i as u32, b);
+        }
+        for (i, &b) in rand.iter().enumerate() {
+            mem.write8(0x20004560 + i as u32, b);
+        }
         let r = regs(h4 as u32, 0, 0x20004500, 0);
         assert_eq!(
             handle_svc(&sys, &mut mem, SVC_GAP_LESC_OOB_DATA_GET, &r),
             Some(NRF_SUCCESS)
         );
+        // OOB writes the 32B confirm+random block at p_own.
+        let want_confirm = crate::smp_crypto::smp_f4(&pk_x, &pk_x, &rand, 0x00);
+        for (i, &b) in want_confirm.iter().enumerate() {
+            assert_eq!(mem.read8(0x20004500 + i as u32), b, "f4 confirm byte {i}");
+        }
+        for (i, &b) in rand.iter().enumerate() {
+            assert_eq!(mem.read8(0x20004510 + i as u32), b, "random byte {i}");
+        }
+        // Short/NULL OOB buffer keeps the legacy zeroed stub (fresh
+        // area — the key-material scratch above ends at 0x20004570).
+        for i in 0..32u32 {
+            mem.write8(0x20004600 + i, 0x00);
+        }
+        let r = regs(h4 as u32, 0, 0x20004600, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_LESC_OOB_DATA_GET, &r),
+            Some(NRF_SUCCESS)
+        );
+        for i in 0..32u32 {
+            assert_eq!(mem.read8(0x20004600 + i), 0, "stub zero {i}");
+        }
         // Passkey display + peer keypress post without a handshake.
         assert!(post_passkey_display(h4, *b"123456", true));
         let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);

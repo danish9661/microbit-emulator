@@ -646,15 +646,14 @@ mod ccm_tests {
     use crate::cpu::mem::{FlatMemory, Memory};
     use crate::system::test_dummy_system;
     use aes::Aes128;
-    use cipher::{KeyInit, BlockEncrypt};
-    use generic_array::GenericArray;
+    use cipher::{Block, BlockCipherEncrypt, Key, KeyInit};
 
     fn aes_block(key: &[u8], blk: &[u8]) -> [u8; 16] {
-        let cipher = Aes128::new(GenericArray::from_slice(key));
-        let mut b = GenericArray::clone_from_slice(blk);
+        let cipher = Aes128::new(&Key::<Aes128>::try_from(key).expect("key len"));
+        let mut b: Block<Aes128> = Block::<Aes128>::try_from(blk).expect("block len");
         cipher.encrypt_block(&mut b);
         let mut out = [0u8; 16];
-        out.copy_from_slice(&b);
+        out.copy_from_slice(b.as_slice());
         out
     }
 

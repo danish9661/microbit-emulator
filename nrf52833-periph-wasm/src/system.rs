@@ -249,6 +249,10 @@ pub fn i2s_capture() -> Option<&'static Mutex<Vec<u8>>> {
 pub fn i2s_take_capture() -> Vec<u8> {
     I2S_CAPTURE.get().map_or(Vec::new(), |m| std::mem::take(&mut *m.lock().unwrap()))
 }
+/// Clear the I2S TX capture FIFO without draining (test setup: lets
+/// each TX test start from an empty FIFO instead of asserting on a
+/// prefix of the previous test's bytes).
+#[allow(dead_code)]
 pub fn i2s_clear() {
     if let Some(m) = I2S_CAPTURE.get() {
         m.lock().unwrap().clear();

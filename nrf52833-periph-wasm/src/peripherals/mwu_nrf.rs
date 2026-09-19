@@ -168,7 +168,7 @@ impl Peripheral for MwuNrf {
             _ => 0,
         }
     }
-    fn write(&mut self, sys: &System, offset: u32, value: u32) {
+    fn write(&mut self, _sys: &System, offset: u32, value: u32) {
         match offset {
             0x100 | 0x104 | 0x108 | 0x10C | 0x110 | 0x114 | 0x118 | 0x11C |
             0x160 | 0x164 | 0x168 | 0x16C => {

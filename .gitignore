@@ -1,2 +1,6 @@
 nrf52833-periph-wasm/target/
 mc/
+# cargo-vendor snapshot (registry cache suffices; 37M/88 crates)
+nrf52833-periph-wasm/vendor/
+# local OpenChamber screenshots (bench captures, not sources)
+.openchamber/

@@ -858,10 +858,6 @@ mod tests {
     }
 }
 
-fn with_twim_base<R>(sys: &System, base: u32, f: impl FnOnce(&mut Twim) -> R) -> Option<R> {
-    with_twim(sys, base, f)
-}
-
 /// TWIS address match helper: returns the matched ADDRESS index, or
 /// performs the DNACK path (ERROR + DNACK cause + STOPPED + IRQs) and
 /// returns None.

@@ -449,7 +449,7 @@ impl Peripherals {
         (addr - byte_offset as u32, byte_offset)
     }
 
-    pub fn read(&self, sys: &System, addr: u32, size: u8) -> u32 {
+    pub fn read(&self, sys: &System, addr: u32, _size: u8) -> u32 {
         if let Some((addr, bit_number)) = Self::bitbanding(addr) {
             return (self.read(sys, addr, 1) >> bit_number) & 1;
         }
@@ -466,7 +466,7 @@ impl Peripherals {
         value >> (8 * byte_offset)
     }
 
-    pub fn write(&self, sys: &System, addr: u32, size: u8, mut value: u32) {
+    pub fn write(&self, sys: &System, addr: u32, _size: u8, mut value: u32) {
         if let Some((addr, bit_number)) = Self::bitbanding(addr) {
             let mut v = self.read(sys, addr, 1);
             v &= !(1 << bit_number);

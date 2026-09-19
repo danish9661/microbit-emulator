@@ -770,6 +770,61 @@ export function ble_fail_pairing(conn, status) {
 }
 
 /**
+ * SMP toolbox (Core Spec Vol 3, Part H, 2.2.5–2.2.9): the pairing
+ * crypto the SoftDevice leaves to firmware/host. All inputs/outputs
+ * are SMP protocol order (little-endian).
+ *
+ * P-256 ECDH shared secret: our BE private scalar + peer LE point
+ * (X ++ Y) -> DHKey LE, or empty when the point is off-curve
+ * (silicon fails the procedure; the reply SVC refuses INVALID_PARAM).
+ * @param {Uint8Array} own_priv_be
+ * @param {Uint8Array} peer_x_le
+ * @param {Uint8Array} peer_y_le
+ * @returns {Uint8Array}
+ */
+export function ble_lesc_dhkey(own_priv_be, peer_x_le, peer_y_le) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArray8ToWasm0(own_priv_be, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(peer_x_le, wasm.__wbindgen_export2);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray8ToWasm0(peer_y_le, wasm.__wbindgen_export2);
+        const len2 = WASM_VECTOR_LEN;
+        wasm.ble_lesc_dhkey(retptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v4 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v4;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * Our P-256 public key (SMP LE order X ++ Y, 64 bytes) from our BE
+ * private scalar. Empty on a bad scalar (never for RNG-fed scalars).
+ * @param {Uint8Array} own_priv_be
+ * @returns {Uint8Array}
+ */
+export function ble_lesc_public_key(own_priv_be) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArray8ToWasm0(own_priv_be, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.ble_lesc_public_key(retptr, ptr0, len0);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v2 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * @param {Uint8Array} peer
  * @param {number} rssi
  * @param {boolean} scan_rsp
@@ -1020,6 +1075,131 @@ export function ble_post_user_mem_request(conn, mem_type) {
  */
 export function ble_queue_len() {
     const ret = wasm.ble_queue_len();
+    return ret >>> 0;
+}
+
+/**
+ * f4 confirm value (LE 16B): peer/local public X coords (LE 32B
+ * each), random (LE 16B), Z byte.
+ * @param {Uint8Array} u_le
+ * @param {Uint8Array} v_le
+ * @param {Uint8Array} x_le
+ * @param {number} z
+ * @returns {Uint8Array}
+ */
+export function ble_smp_f4(u_le, v_le, x_le, z) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArray8ToWasm0(u_le, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(v_le, wasm.__wbindgen_export2);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray8ToWasm0(x_le, wasm.__wbindgen_export2);
+        const len2 = WASM_VECTOR_LEN;
+        wasm.ble_smp_f4(retptr, ptr0, len0, ptr1, len1, ptr2, len2, z);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v4 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v4;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * f5 key generation: DHKey (LE 32B), nonces (LE 16B), addrs (LE 7B)
+ * -> MacKey ++ LTK (LE 16B each, 32 bytes).
+ * @param {Uint8Array} w_le
+ * @param {Uint8Array} n1_le
+ * @param {Uint8Array} n2_le
+ * @param {Uint8Array} a1_le
+ * @param {Uint8Array} a2_le
+ * @returns {Uint8Array}
+ */
+export function ble_smp_f5(w_le, n1_le, n2_le, a1_le, a2_le) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArray8ToWasm0(w_le, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(n1_le, wasm.__wbindgen_export2);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray8ToWasm0(n2_le, wasm.__wbindgen_export2);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArray8ToWasm0(a1_le, wasm.__wbindgen_export2);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passArray8ToWasm0(a2_le, wasm.__wbindgen_export2);
+        const len4 = WASM_VECTOR_LEN;
+        wasm.ble_smp_f5(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v6 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v6;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * f6 DHKey-check (LE 16B): MacKey (LE 16B), nonces (LE 16B),
+ * r (LE 16B), IOcap (3B), addrs (LE 7B).
+ * @param {Uint8Array} w_le
+ * @param {Uint8Array} n1_le
+ * @param {Uint8Array} n2_le
+ * @param {Uint8Array} r_le
+ * @param {Uint8Array} iocap
+ * @param {Uint8Array} a1_le
+ * @param {Uint8Array} a2_le
+ * @returns {Uint8Array}
+ */
+export function ble_smp_f6(w_le, n1_le, n2_le, r_le, iocap, a1_le, a2_le) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArray8ToWasm0(w_le, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passArray8ToWasm0(n1_le, wasm.__wbindgen_export2);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passArray8ToWasm0(n2_le, wasm.__wbindgen_export2);
+        const len2 = WASM_VECTOR_LEN;
+        const ptr3 = passArray8ToWasm0(r_le, wasm.__wbindgen_export2);
+        const len3 = WASM_VECTOR_LEN;
+        const ptr4 = passArray8ToWasm0(iocap, wasm.__wbindgen_export2);
+        const len4 = WASM_VECTOR_LEN;
+        const ptr5 = passArray8ToWasm0(a1_le, wasm.__wbindgen_export2);
+        const len5 = WASM_VECTOR_LEN;
+        const ptr6 = passArray8ToWasm0(a2_le, wasm.__wbindgen_export2);
+        const len6 = WASM_VECTOR_LEN;
+        wasm.ble_smp_f6(retptr, ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, ptr6, len6);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v8 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v8;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * g2 numeric comparison: public X coords (LE 32B), nonces (LE 16B)
+ * -> u32 (firmware shows % 1000000, 6 digits).
+ * @param {Uint8Array} u_le
+ * @param {Uint8Array} v_le
+ * @param {Uint8Array} x_le
+ * @param {Uint8Array} y_le
+ * @returns {number}
+ */
+export function ble_smp_g2(u_le, v_le, x_le, y_le) {
+    const ptr0 = passArray8ToWasm0(u_le, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(v_le, wasm.__wbindgen_export2);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passArray8ToWasm0(x_le, wasm.__wbindgen_export2);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passArray8ToWasm0(y_le, wasm.__wbindgen_export2);
+    const len3 = WASM_VECTOR_LEN;
+    const ret = wasm.ble_smp_g2(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3);
     return ret >>> 0;
 }
 

@@ -7,6 +7,7 @@ pub mod ext_devices;
 pub mod cpu;
 pub mod sd_ble;
 pub mod sd_evt;
+pub mod smp_crypto;
 
 use system::WasmSystem;
 
@@ -985,6 +986,66 @@ pub fn ble_post_keypress(conn: u16, kp_not: u8) -> bool {
 #[wasm_bindgen]
 pub fn ble_post_lesc_dhkey_request(conn: u16, oobd_req: bool) -> bool {
     crate::sd_ble::post_lesc_dhkey_request(conn, oobd_req)
+}
+
+/// SMP toolbox (Core Spec Vol 3, Part H, 2.2.5–2.2.9): the pairing
+/// crypto the SoftDevice leaves to firmware/host. All inputs/outputs
+/// are SMP protocol order (little-endian).
+///
+/// P-256 ECDH shared secret: our BE private scalar + peer LE point
+/// (X ++ Y) -> DHKey LE, or empty when the point is off-curve
+/// (silicon fails the procedure; the reply SVC refuses INVALID_PARAM).
+#[wasm_bindgen]
+pub fn ble_lesc_dhkey(own_priv_be: &[u8], peer_x_le: &[u8], peer_y_le: &[u8]) -> Vec<u8> {
+    crate::sd_ble::lesc_dhkey(own_priv_be, peer_x_le, peer_y_le)
+        .map(|d| d.to_vec())
+        .unwrap_or_default()
+}
+
+/// Our P-256 public key (SMP LE order X ++ Y, 64 bytes) from our BE
+/// private scalar. Empty on a bad scalar (never for RNG-fed scalars).
+#[wasm_bindgen]
+pub fn ble_lesc_public_key(own_priv_be: &[u8]) -> Vec<u8> {
+    crate::sd_ble::lesc_public_key(own_priv_be)
+        .map(|k| k.to_vec())
+        .unwrap_or_default()
+}
+
+/// f4 confirm value (LE 16B): peer/local public X coords (LE 32B
+/// each), random (LE 16B), Z byte.
+#[wasm_bindgen]
+pub fn ble_smp_f4(u_le: &[u8], v_le: &[u8], x_le: &[u8], z: u8) -> Vec<u8> {
+    crate::sd_ble::smp_f4(u_le, v_le, x_le, z).to_vec()
+}
+
+/// f5 key generation: DHKey (LE 32B), nonces (LE 16B), addrs (LE 7B)
+/// -> MacKey ++ LTK (LE 16B each, 32 bytes).
+#[wasm_bindgen]
+pub fn ble_smp_f5(w_le: &[u8], n1_le: &[u8], n2_le: &[u8], a1_le: &[u8], a2_le: &[u8]) -> Vec<u8> {
+    let (mk, lt) = crate::sd_ble::smp_f5(w_le, n1_le, n2_le, a1_le, a2_le);
+    [mk.as_slice(), lt.as_slice()].concat()
+}
+
+/// f6 DHKey-check (LE 16B): MacKey (LE 16B), nonces (LE 16B),
+/// r (LE 16B), IOcap (3B), addrs (LE 7B).
+#[wasm_bindgen]
+pub fn ble_smp_f6(
+    w_le: &[u8],
+    n1_le: &[u8],
+    n2_le: &[u8],
+    r_le: &[u8],
+    iocap: &[u8],
+    a1_le: &[u8],
+    a2_le: &[u8],
+) -> Vec<u8> {
+    crate::sd_ble::smp_f6(w_le, n1_le, n2_le, r_le, iocap, a1_le, a2_le).to_vec()
+}
+
+/// g2 numeric comparison: public X coords (LE 32B), nonces (LE 16B)
+/// -> u32 (firmware shows % 1000000, 6 digits).
+#[wasm_bindgen]
+pub fn ble_smp_g2(u_le: &[u8], v_le: &[u8], x_le: &[u8], y_le: &[u8]) -> u32 {
+    crate::sd_ble::smp_g2(u_le, v_le, x_le, y_le)
 }
 
 /// Complete an L2CAP TX: posts the RX echo on (conn, cid).

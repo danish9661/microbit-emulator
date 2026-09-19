@@ -3,20 +3,16 @@ use crate::system::{System, instruction_count, get_uart_output};
 use crate::cpu::mem::{FlatMemory, Memory};
 use super::Peripheral;
 
-/// Synchronous TX snapshot hooks (P49 N+1 drops).
-///
-/// Silicon EasyDMA latches TXD bytes within cycles of TASKS_STARTTX, but
-/// our driver take runs up to ~100K instructions later (once per demo
-/// frame), after MicroPython's `putc` reuses its `&c` stack slot for the
-/// next char. The deferred `mem_read` then transmits char N+1 twice and
-/// drops N (holes every ~20 takes, always `0x20`, aligned).
-///
-/// Fix: `WasmCpu::step` (the only producer of peripheral writes that owns
-/// guest RAM) publishes its `FlatMemory` in this thread-local for the
-/// duration of `cpu.run`. STARTTX copies `MAXCNT` bytes synchronously;
-/// `complete_txdma` emits the snapshot instead of the driver's late bytes.
-/// No `Peripheral::write` trait change, no `src/cpu` edits. Native
-/// `cpu.run` harnesses and unit tests never set it (null = legacy path).
+// Thread-local guest-RAM hook the TX snapshot path reads through.
+//
+// Synchronous TX snapshot (P49 N+1 drops): silicon EasyDMA latches
+// TXD bytes within cycles of TASKS_STARTTX, but our driver take runs
+// up to ~100K instructions later, after MicroPython's `putc` reuses
+// its `&c` stack slot. `WasmCpu::step` publishes its `FlatMemory`
+// here for the duration of `cpu.run`; STARTTX copies `MAXCNT` bytes
+// synchronously and `complete_txdma` emits the snapshot instead of
+// the driver's late bytes. No `Peripheral::write` trait change, no
+// `src/cpu` edits; native harnesses never set it (null = legacy).
 thread_local! {
     static TX_SNAPSHOT_MEM: Cell<*const FlatMemory> = Cell::new(std::ptr::null());
 }
@@ -287,7 +283,7 @@ pub fn take_rxdma(sys: &System) -> Option<(u32, u32)> {
 pub fn complete_rxdma(sys: &System, amount: u32) {
     let taken0 = with_uarte(sys, |u| u.rx_taken).unwrap_or(false);
     let taken1 = with_uarte_at(sys, 0x4002_8000, |u| u.rx_taken).unwrap_or(false);
-    let complete_on = |sys: &System, u: &mut Uarte| {
+    let complete_on = |_sys: &System, u: &mut Uarte| {
         u.rx_amount = amount;
         u.rx_taken = false;
         u.ev_endrx = true;
@@ -339,7 +335,7 @@ pub fn take_txdma(sys: &System) -> Option<(u32, u32)> {
 pub fn complete_txdma(sys: &System, data: &[u8]) {
     let taken0 = with_uarte(sys, |u| u.tx_taken).unwrap_or(false);
     let taken1 = with_uarte_at(sys, 0x4002_8000, |u| u.tx_taken).unwrap_or(false);
-    let complete_on = |sys: &System, u: &mut Uarte| {
+    let complete_on = |_sys: &System, u: &mut Uarte| {
         // Prefer the synchronous snapshot; fall back to driver bytes on
         // legacy paths (unit/native harnesses never publish mem).
         let bytes: &[u8] = if u.tx_snapshot_valid { &u.tx_snapshot } else { data };

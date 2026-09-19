@@ -26,13 +26,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 console_error_panic_hook = "0.1"
 svd-parser = "0.13"
-aes = "0.8"
-sha2 = "0.10"
-sha1 = "0.10"
-md-5 = "0.10"
-des = "0.8"
-
-[dev-dependencies]
-cipher = "0.4"
-generic-array = "0.14"
+aes = "0.9"
+p256 = { version = "0.14.0", default-features = false, features = ["alloc", "arithmetic", "ecdh"] }
+cmac = "0.8.0"
+cipher = "0.5"
+getrandom = { version = "0.4", features = ["wasm_js"] }
 

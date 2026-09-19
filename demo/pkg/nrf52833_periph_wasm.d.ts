@@ -218,6 +218,23 @@ export function ble_enabled(): boolean;
  */
 export function ble_fail_pairing(conn: number, status: number): void;
 
+/**
+ * SMP toolbox (Core Spec Vol 3, Part H, 2.2.5–2.2.9): the pairing
+ * crypto the SoftDevice leaves to firmware/host. All inputs/outputs
+ * are SMP protocol order (little-endian).
+ *
+ * P-256 ECDH shared secret: our BE private scalar + peer LE point
+ * (X ++ Y) -> DHKey LE, or empty when the point is off-curve
+ * (silicon fails the procedure; the reply SVC refuses INVALID_PARAM).
+ */
+export function ble_lesc_dhkey(own_priv_be: Uint8Array, peer_x_le: Uint8Array, peer_y_le: Uint8Array): Uint8Array;
+
+/**
+ * Our P-256 public key (SMP LE order X ++ Y, 64 bytes) from our BE
+ * private scalar. Empty on a bad scalar (never for RNG-fed scalars).
+ */
+export function ble_lesc_public_key(own_priv_be: Uint8Array): Uint8Array;
+
 export function ble_post_adv_report(peer: Uint8Array, rssi: number, scan_rsp: boolean, data: Uint8Array): void;
 
 /**
@@ -325,6 +342,30 @@ export function ble_post_user_mem_release(conn: number, mem_type: number): boole
 export function ble_post_user_mem_request(conn: number, mem_type: number): boolean;
 
 export function ble_queue_len(): number;
+
+/**
+ * f4 confirm value (LE 16B): peer/local public X coords (LE 32B
+ * each), random (LE 16B), Z byte.
+ */
+export function ble_smp_f4(u_le: Uint8Array, v_le: Uint8Array, x_le: Uint8Array, z: number): Uint8Array;
+
+/**
+ * f5 key generation: DHKey (LE 32B), nonces (LE 16B), addrs (LE 7B)
+ * -> MacKey ++ LTK (LE 16B each, 32 bytes).
+ */
+export function ble_smp_f5(w_le: Uint8Array, n1_le: Uint8Array, n2_le: Uint8Array, a1_le: Uint8Array, a2_le: Uint8Array): Uint8Array;
+
+/**
+ * f6 DHKey-check (LE 16B): MacKey (LE 16B), nonces (LE 16B),
+ * r (LE 16B), IOcap (3B), addrs (LE 7B).
+ */
+export function ble_smp_f6(w_le: Uint8Array, n1_le: Uint8Array, n2_le: Uint8Array, r_le: Uint8Array, iocap: Uint8Array, a1_le: Uint8Array, a2_le: Uint8Array): Uint8Array;
+
+/**
+ * g2 numeric comparison: public X coords (LE 32B), nonces (LE 16B)
+ * -> u32 (firmware shows % 1000000, 6 digits).
+ */
+export function ble_smp_g2(u_le: Uint8Array, v_le: Uint8Array, x_le: Uint8Array, y_le: Uint8Array): number;
 
 /**
  * Bond store: driver-side insert (bridge confirmed air keys when
@@ -639,6 +680,8 @@ export interface InitOutput {
     readonly ble_delete_bond: (a: number, b: number) => number;
     readonly ble_enabled: () => number;
     readonly ble_fail_pairing: (a: number, b: number) => void;
+    readonly ble_lesc_dhkey: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
+    readonly ble_lesc_public_key: (a: number, b: number, c: number) => void;
     readonly ble_post_adv_report: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly ble_post_auth_key_request: (a: number, b: number) => number;
     readonly ble_post_conn_param_update_request: (a: number) => number;
@@ -659,6 +702,10 @@ export interface InitOutput {
     readonly ble_post_user_mem_release: (a: number, b: number) => number;
     readonly ble_post_user_mem_request: (a: number, b: number) => number;
     readonly ble_queue_len: () => number;
+    readonly ble_smp_f4: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
+    readonly ble_smp_f5: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number) => void;
+    readonly ble_smp_f6: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number) => void;
+    readonly ble_smp_g2: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => number;
     readonly ble_store_bond: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
     readonly ble_take_data: (a: number) => void;
     readonly ble_take_job: (a: number) => void;

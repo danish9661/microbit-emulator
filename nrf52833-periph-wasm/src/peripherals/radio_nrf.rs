@@ -231,7 +231,7 @@ impl RadioNrf {
         self.fire(sys, 1 << 22);
         self.cascade(sys, 0);
     }
-    fn do_start(&mut self, sys: &System) {
+    fn do_start(&mut self, _sys: &System) {
         if !self.powered {
             return;
         }
@@ -949,7 +949,7 @@ pub fn radio_crc(body: &[u8], poly: u32, init: u32, len: usize) -> u32 {
             let bit = ((b >> i) & 1) as u32;
             let msb = (crc & top) != 0;
             crc = ((crc << 1) & mask) | bit;
-            if (msb) {
+            if msb {
                 crc ^= poly;
             }
         }
@@ -958,7 +958,7 @@ pub fn radio_crc(body: &[u8], poly: u32, init: u32, len: usize) -> u32 {
     for _ in 0..8 * len {
         let msb = (crc & top) != 0;
         crc = (crc << 1) & mask;
-        if (msb) {
+        if msb {
             crc ^= poly;
         }
     }
