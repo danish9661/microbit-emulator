@@ -21,7 +21,7 @@ driver take/complete, firmware proof), **H** = handshake
 | SVD peripheral(s) | Model | Grade | Notes |
 |---|---|---|---|
 | CLOCK, POWER (shared `0x40000000`) | `clock_nrf.rs` | F | HF/LF STARTED events+STAT, USBDETECTED/USBPWRRDY, RESETREAS+SREQ latch, GPREGRET, RAMSTATUS, LFCLKSRC; POWER_CLOCK IRQ 0 |
-| RADIO `0x40001000` | `radio_nrf.rs` | F | PCNF-length TX take / RX completion+inject, CRCERROR inject, RSSI, SHORTS; bare-metal loopback proven (`air_nrf`) |
+| RADIO `0x40001000` | `radio_nrf.rs` | F | PCNF-length TX take / RX completion+inject, CRCERROR inject, RSSI, SHORTS; bare-metal loopback proven (`air_nrf`); link-budget air level (P119: TXPOWER-code table + path-loss inject forms, RX stamps the packet's own level) |
 | UART0+UARTE0 | `uarte_nrf.rs` | F | 1-byte TX DMA + RXDMA ring; OVERRUN, ERROR, TXSTOPPED (`0x158`/INTEN 22, fixed P20); STARTTX snapshots bytes synchronously (P49 putc-slot drops) |
 | UARTE1 | `uarte_nrf.rs` | F | TX/RX fully routed (was UARTE0-locked); firmware proof (`uarte1_nrf.s/.bin`, `U1DATA` TX + 3 B RX, `U1TX:OK`/`U1RX:OK`, P110) |
 | TWIM0/TWI0/SPIM0/SPIS0/TWIS0/SPI0, TWIM1 family | `twim_nrf.rs` | F | Mode-blind shared-base; SHORTS, NACK-after-~6000-instr without slave (SPI never NACKs — P110 `arm_nack` guard), LASTTX/STARTRX/SUSPEND; TWIS/SPIS slave engines (`twis_master_write/read`, `spis_exchange`); register-mode RXD returns MISO for SPI names, I2C queue for TWI (`rxd_polling_reads_slave_response_line`); 7-bit `norm7_addr` on take_*/events/slave-match (nrfx shifted `0x32/0x3C/0x72` are <0x80 — P86 boot-time bug) |
@@ -53,7 +53,7 @@ driver take/complete, firmware proof), **H** = handshake
 | NVIC/SCB/SysTick/MPU/FPU/DWT/ITM/STIR/DEMCR | core files | F | MPU enforced w/ MemManage+escalation; FPU SP (CPACR gate, lazy stacking implemented — `fpu_lazy_*` green); nRF FPU engine `0x40026000` minimal stub (`fpu_engine_nrf.rs`: UNUSED reads 0, both maps); CoreSight `0xF0000000` reads 0 |
 | ACL (`0x4001E000`, shares NVMC base) | `nvmc_nrf.rs` | F | 8 regions ADDR/SIZE/PERM (sticky), write-protect enforced at stage (ERASEPAGE/ERASEALL refuse overlap, `acl_regions_sticky_and_block_erase`); read-block stored + queryable, mem-layer hook TODO. No SPU on 833 (70 SVD peripherals, none named SPU). |
 | SoC event transport (`sd_evt.rs`, SVC 16/82) | service, not peripheral | F | Phase-1 flash events only: NVMC complete posts id 2/3 while SD enabled, `sd_evt_get` answers from model queue else falls through; firmware proof (`sd_evt_nrf.s/.bin`, P114) |
-| BLE bond store / TX-flow / peripheral-role / param-update | `sd_ble.rs` | F | Bonds persist across disconnects (hit/miss/delete + bridge `bond_keys` leg); TX token refill + `TX_COMPLETE`; dial-in CONNECTED (PERIPH role); param-update completion event (P114) |
+| BLE bond store / TX-flow / peripheral-role / param-update | `sd_ble.rs` | F | Bonds persist across disconnects (hit/miss/delete + bridge `bond_keys` leg); TX token refill + `TX_COMPLETE`; dial-in CONNECTED (PERIPH role); param-update completion event (P114); SIGNED/PREP/EXEC write path + driver-posted request/report/timeout/user-mem/authorize legs + TX-power/adv-state store + radio link-budget RSSI (P119) |
 
 ## 2. CPU core (`src/cpu/`, ~8.4k lines)
 
@@ -67,29 +67,31 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 220 green (`cargo test`)
+## 3. Tests — 225 green (`cargo test`)
 
-- 114 integration tests (`src/cpu/tests.rs`): 18 GCC-built firmware
+- 115 integration tests (`src/cpu/tests.rs`): 19 GCC-built firmware
   proofs (`blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
   `dma_nrf`, `air_nrf`, `c_irq_nrf.c`, `usbep_nrf`, `usbdev_nrf.c`,
   `i2s_nrf`, `wdt_nrf`, `nfct_nrf`, `ble_conformance.c`,
-  `c_ble_face.bin`, `ble_pairing_fw.c`, `uarte1_nrf`, `spim23_nrf`,
+  `c_ble_face.bin`, `ble_pairing_fw.c`, `ble_roles_fw.c`, `uarte1_nrf`, `spim23_nrf`,
   `sd_evt_nrf`, +2nd-run reset-state checks each).
-- ~89 peripheral + 3 sd_evt + 11 sd_ble + 3 ACL/FPU-engine unit tests (register handshake,
+- ~89 peripheral + 3 sd_evt + 14 sd_ble + 3 ACL/FPU-engine unit tests (register handshake,
   SHORTS/NACK/OVERRUN/CAPTURE, FIPS-197, reboot latch, TXSTOPPED,
   SPIM RXD MISO, GPIO CNF→DIR, UARTE TX STARTTX-snapshot,
   TWIM shifted-ADDR match, SCB AIRCR SYSRESETREQ,
   COMP/QDEC/NFCT/MWU/RADIO/SAADC/CCM depth, EGU slots, sd_ble
   peer-request pairing legs, +P110 RTC COMPARE/OVRFLW, PWM STOP/INTEN,
   RNG SHORTS/re-arm, TEMP INTEN/STOP, EGU channels/mask, +P114 NFC
-   NFCPINS gate, BLE bond store, TX-flow/periph/param-update,
-   sd_evt queue/order/reset, ACL sticky/block-erase, FPU-engine
-   UNUSED/both-maps).
+  NFCPINS gate, BLE bond store, TX-flow/periph/param-update,
+  sd_evt queue/order/reset, ACL sticky/block-erase, FPU-engine
+  UNUSED/both-maps, +P119 TX-power store, adv validation, SIGNED/PREP/EXEC
+  write path, radio link-budget RSSI, +P120 SC-gated indication,
+  scan/adv slot + whitelist arbitration).
 - Parallel-test flake (CLOSED P108; open pre-existing before that):
   stock multi-threaded `cargo test` intermittently failed sd_ble/MWU
   tests with `RefCell already borrowed` at `peripherals/mod.rs:457` /
   `mwu_nrf.rs:237` (~1/4 runs pre-P105; ~2/15 post-P105;
-   single-threaded `-- --test-threads=1` always 220/220). Two
+   single-threaded `-- --test-threads=1` always 225/225). Two
   mechanisms, separated by evidence (P105+P108):
   (a) DETERMINISTIC order-dependence (fixed P105): the MPU ENABLE +
   programmed regions live in the INSTALLED model and outlive the test
@@ -112,7 +114,7 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   (backtraces at `mwu_nrf.rs:237` + `mod.rs:457`; thread-locals
   `SD_BLE_STATE`/`TAKE_DATA` were never the fault — per-thread and
   safe). Parallel filtered `sd_ble mwu` failed ~18/20 pre-fix, 20/20
-  green post-fix. Fix: `BOOT_LOCK` join in all 11 sd_ble tests (same
+  green post-fix. Fix: `BOOT_LOCK` join in all 14 sd_ble tests (same
   discipline as cpu/tests + mwu tests; no model change, no new locks,
   no thread-locals). Full suite parallel green post-fix (~30/31 runs
   on the P114 tree; the residual is rare scheduling noise with no
@@ -451,17 +453,20 @@ beyond proof-level driving remain future work.
      the gattc head / unpacked pads per the headers (tests assert byte
      offsets). thumb.rs SVC hook claims 0x60..=0xBF first (r0 + skip,
      else fall through to raise_sync — zero-cost when idle); air-backed
-     ops stage take/complete jobs (16 tags incl. take_data for WRITE/
+     ops stage take/complete jobs (17 tags incl. take_data for WRITE/
      HVX/L2CAP bytes) the demo pump resolves via the Bumble bridge
      (local loopback default mirrors the bridge peer table: battery 87
-     + NUS). `ble_take_job/take_data/complete_*×16/post_adv_report/
+     + NUS). `ble_take_job/take_data/complete_*×17/post_adv_report/
      post_gatts_write/post_sec_params_request/post_sec_info_request/
      post_auth_key_request/post_passkey_display/post_keypress/
      post_lesc_dhkey_request/enabled/queue_len/batt_level/conn_handles/
-      conn_sec` exports (40 ble exports); 11 native tests + SVC-hook proof in cpu/tests.rs
-      (220 green); headless `MockBleSvc` executes REAL SVC bytes on a
-     WasmCpu end to end (enable→table→connect→disc×6→read→write→L2CAP→
-     pairing→peer-pairing(passkey)→HVX-indicate→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
+     conn_sec/tx_power/adv_state/post_sec_request/post_timeouts/
+     post_user_mem/post_rw_authorize/post_sys_attr/post_sc_confirm/
+     complete_service_changed` exports; 14 native tests + SVC-hook proof
+     in cpu/tests.rs (225 green); headless `MockBleSvc` executes REAL SVC
+     bytes on a WasmCpu end to end (enable→table→connect→disc×6→read→
+     write→L2CAP→pairing→peer-pairing(passkey)→HVX-indicate→
+     service-changed→ADV/SCAN roles→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
      (READ+NOTIFY, 87 `PeerBatt`) + heart-rate twin (64 `PeerHR`,
      distinct address) + Nordic UART (RX write, TX notify) + live handles +
      full job protocol incl. desc_disc/pair/l2cap with per-job `peer`
@@ -475,6 +480,11 @@ beyond proof-level driving remain future work.
      stack probe (16/16 green in real Chromium, zero page errors —
      re-ran P103 on this tree via tools/browser_verify_16.py: blinky
      BOOT/BLINK/BLINK, self-test pairing×2 pass, 16/16 probes).
+     P121 roles firmware (`blinky/ble_fw/ble_roles_fw.c`, xpack GCC,
+     bit-identical rebuild): ADV_START(NULL/struct/IN_USE) → SCAN_START
+     (BUSY/param/selective/cross-IN_USE) → CONNECT (CENTRAL role) →
+     SERVICE_CHANGED range leg → DISCONNECT, 21 `BLER:*` markers,
+     2nd-run clean (`nrf_ble_roles_fw_markers`).
  6. **Demo wall-time — environmental, measured, no action.**
     Node WASM on this host: blinky `~41–54 MIPS` (6M/0.11–0.15 s,
     BOOT/BLINK/BLINK correct); MPY-fault path `~24 MIPS`
@@ -502,7 +512,7 @@ beyond proof-level driving remain future work.
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 220 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
+cargo test -- --test-threads=1    # 225 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY-idiom face, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)

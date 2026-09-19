@@ -94,6 +94,9 @@ QSPI:      qspi_take_read/write/erase() | complete_read/write/erase(...)
 NVMC:      nvmc_take_erase() -> [base] | nvmc_complete_erase()
 RADIO:     radio_take_tx() -> [ptr,len] | radio_inject_rx(bytes)
 RADIO RX:  radio_take_rx() -> [ptr] | radio_complete_rx() (+inject_corrupt, set_rssi_dbm, set_ed_dbm)
+  link-budget air: radio_txpower_dbm(code) -> dBm | radio_air_rssi_dbm(code, loss_db) -> dBm
+  (pure fns, one honest number) | radio_inject_rx_lossy(bytes, loss_db) | radio_inject_rx_to_lossy(idx, bytes, loss_db)
+  | radio_complete_rx_with_path_loss(loss_db) (RX stamps TX-minus-loss into the RSSI latch)
 I2S RX:    i2s_take_rx() -> [ptr,len] | i2s_complete_rx() (silence/fill)
 I2S TX:    i2s_take_tx() -> [ptr,len] | i2s_complete_tx(bytes) (+take_capture())
 NFCT:      nfct_take_tx() -> [ptr,len] | nfct_complete_tx() (+take_rx/complete_rx, field_present; UICR.NFCPINS gates antenna vs GPIO)
@@ -166,6 +169,7 @@ in the bond store across disconnects — hit/miss/delete):
   (no crypto — documented); LESC_OOB_DATA_SET is an ack
 BLE complete (driver -> model, posts the SoftDevice event):
   ble_complete_gattc_read(conn, handle, offset, data)  (READ_RSP)
+  ble_complete_gattc_write(conn, handle, op, data)      (WRITE_RSP, op echo — SIGNED op 3 carries its 12B signature in data; PREP op 4 / EXEC op 5 queue/commit)
   ble_complete_prim_disc(conn, uuids[], starts[], ends[]) (0xFFFF = 128-bit)
   ble_complete_char_disc(conn, uuids[], props[], decls[], values[])
   ble_complete_desc_disc(conn, handles[], uuids[])
@@ -203,6 +207,20 @@ BLE complete (driver -> model, posts the SoftDevice event):
   ble_post_passkey_display(conn, passkey6, match_request) -> bool
   ble_post_keypress(conn, kp_not) -> bool             (peer keypress -> KEY_PRESSED)
   ble_post_lesc_dhkey_request(conn, oobd_req) -> bool (firmware answers LESC_DHKEY_REPLY)
+  ble_post_sec_request(conn, bond, mitm, lesc, keypress) -> bool     (peer SEC_REQUEST)
+  ble_post_conn_param_update_request(conn) -> bool                   (peer param ask)
+  ble_post_scan_req_report(peer6, rssi) -> bool                      (scanner hit our ADV)
+  ble_post_gap_timeout(conn, src) -> bool       (0 adv, 1 sec-req, 2 scan, 3 conn)
+  ble_post_gattc_timeout(conn) -> bool          (ATT client timeout)
+  ble_post_gatts_timeout(conn) -> bool          (ATT server timeout)
+  ble_post_user_mem_request(conn, mem_type) -> bool  (firmware answers USER_MEM_REPLY)
+  ble_post_user_mem_release(conn, mem_type) -> bool  (informational)
+  ble_post_rw_authorize_request(conn, auth_type, handle, offset, op, data) -> bool
+  ble_post_sys_attr_missing(conn) -> bool       (firmware answers SYS_ATTR_SET)
+  ble_post_sc_confirm(conn) -> bool             (header only, no reply path)
+  ble_tx_power_dbm() -> i8                      (TX_POWER_SET store, S132-legal set)
+  ble_adv_state() -> [active, directed, fp, wl] (ADV_START arms, ADV_STOP clears)
+  ble_adv_peer_addr() -> peer6                  (directed-ADV target)
   ble_complete_l2cap_rx(conn, cid, data)               (L2CAP RX echo)
   ble_post_adv_report(peer6, rssi, scan_rsp, data31)   (ADV_REPORT)
   ble_post_gatts_write(conn, handle, uuid16, op, data) (WRITE + table update)

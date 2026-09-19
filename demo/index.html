@@ -385,9 +385,9 @@
       // resolved via loopback.
       const svcCpu = new wasm.WasmCpu(0x20020000, 0x20000001, 512 * 1024, 128 * 1024);
       try { for (let i = 0; i < 4 && !p.done; i++) p.poll(svcCpu); } catch (e) { return 'error: ' + e.message; }
-      const keys = ['gatts', 'connected', 'disc', 'disc2', 'readRsp', 'writeRsp', 'paired', 'peerPair', 'hvx', 'full'];
+      const keys = ['gatts', 'connected', 'disc', 'disc2', 'readRsp', 'writeRsp', 'paired', 'peerPair', 'hvx', 'roles', 'full'];
       const missing = keys.filter((k) => !p.seen[k]);
-      return p.done && !missing.length ? 'enable, table, link, GATT×7, L2CAP, pairing×2' : false;
+      return p.done && !missing.length ? 'enable, table, link, GATT×7, L2CAP, pairing×2, roles' : false;
     }],
   ];
   document.getElementById('depthRun').addEventListener('click', () => {
@@ -833,6 +833,7 @@
       else if (tag === 12 || tag === 13) { job.conn = bj[1]; job.start = bj[2]; job.end = bj[3]; }
       else if (tag === 14) { job.conn = bj[1]; job.uuid16 = bj[2]; job.start = bj[3]; job.end = bj[4]; }
       else if (tag === 15) { job.conn = bj[1]; job.handles = [...bj.slice(3)]; }
+      else if (tag === 16) { job.conn = bj[1]; job.start = bj[2]; job.end = bj[3]; }
       if (!bleAir.sendBle(job)) pumpBleLoopback(tag, job);
     }
     // Drain bridge SoftDevice replies into completions (take->complete,
@@ -913,6 +914,8 @@
         job.lastConn = h;
       } else if (air.t === 'conn_param_update') {
         wasm.ble_complete_conn_param_update(air.conn ?? 1);
+      } else if (air.t === 'sc_confirm') {
+        wasm.ble_complete_service_changed(air.conn ?? 1);
       } else if (air.t === 'cancel') {
         // Link failure: never a ghost event. Reads fall back to the
         // local battery byte (loopback legibility); writes/disc/hvx
@@ -959,6 +962,8 @@
       wasm.ble_complete_uuid_read(job.conn ?? 1, [0x13], [87], [1]);
     } else if (tag === 15) {
       wasm.ble_complete_vals_read(job.conn ?? 1, (job.handles ?? []).map(() => wasm.ble_batt_level()));
+    } else if (tag === 16) {
+      wasm.ble_complete_service_changed(job.conn ?? 1);
     }
   }
   function frame() {

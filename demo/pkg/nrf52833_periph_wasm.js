@@ -347,6 +347,43 @@ export function aar_take_job() {
 }
 
 /**
+ * Directed-advertising peer address (6 LE bytes; valid when directed).
+ * @returns {Uint8Array}
+ */
+export function ble_adv_peer_addr() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.ble_adv_peer_addr(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * Advertising state: [active, directed, filter_policy, whitelist_addrs].
+ * Armed by ADV_START validation, cleared by ADV_STOP / reset.
+ * @returns {Uint8Array}
+ */
+export function ble_adv_state() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.ble_adv_state(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * @returns {number}
  */
 export function ble_batt_level() {
@@ -617,6 +654,15 @@ export function ble_complete_rssi(conn, rssi) {
 }
 
 /**
+ * Complete a Service Changed indication: the peer confirmed the
+ * 0x2A05 indication over air; posts SC_CONFIRM on the link.
+ * @param {number} conn
+ */
+export function ble_complete_service_changed(conn) {
+    wasm.ble_complete_service_changed(conn);
+}
+
+/**
  * TX-flow refill: driver moved one packet over air; refills one TX
  * token on the link and posts TX_COMPLETE with the free count.
  * @param {number} conn
@@ -751,6 +797,48 @@ export function ble_post_auth_key_request(conn, key_type) {
 }
 
 /**
+ * Post a peer CONN_PARAM_UPDATE_REQUEST (firmware answers with the
+ * CONN_PARAM_UPDATE request SVC).
+ * @param {number} conn
+ * @returns {boolean}
+ */
+export function ble_post_conn_param_update_request(conn) {
+    const ret = wasm.ble_post_conn_param_update_request(conn);
+    return ret !== 0;
+}
+
+/**
+ * Post a GAP TIMEOUT (src 0 adv, 1 sec-req, 2 scan, 3 conn).
+ * @param {number} conn
+ * @param {number} src
+ * @returns {boolean}
+ */
+export function ble_post_gap_timeout(conn, src) {
+    const ret = wasm.ble_post_gap_timeout(conn, src);
+    return ret !== 0;
+}
+
+/**
+ * Post a GATTC TIMEOUT (ATT protocol).
+ * @param {number} conn
+ * @returns {boolean}
+ */
+export function ble_post_gattc_timeout(conn) {
+    const ret = wasm.ble_post_gattc_timeout(conn);
+    return ret !== 0;
+}
+
+/**
+ * Post a GATTS TIMEOUT (ATT protocol).
+ * @param {number} conn
+ * @returns {boolean}
+ */
+export function ble_post_gatts_timeout(conn) {
+    const ret = wasm.ble_post_gatts_timeout(conn);
+    return ret !== 0;
+}
+
+/**
  * Post a peer write to our table: conn handle, attr handle,
  * uuid16 (0xFFFF = 128-bit/vendor), op (1 = write request), bytes.
  * @param {number} conn
@@ -805,6 +893,46 @@ export function ble_post_passkey_display(conn, passkey, match_request) {
 }
 
 /**
+ * Post a GATTS RW_AUTHORIZE_REQUEST (firmware answers RW_AUTHORIZE_REPLY).
+ * @param {number} conn
+ * @param {number} auth_type
+ * @param {number} handle
+ * @param {number} offset
+ * @param {number} op
+ * @param {Uint8Array} data
+ * @returns {boolean}
+ */
+export function ble_post_rw_authorize_request(conn, auth_type, handle, offset, op, data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ble_post_rw_authorize_request(conn, auth_type, handle, offset, op, ptr0, len0);
+    return ret !== 0;
+}
+
+/**
+ * Post a GATTS SC_CONFIRM (header only, no reply path).
+ * @param {number} conn
+ * @returns {boolean}
+ */
+export function ble_post_sc_confirm(conn) {
+    const ret = wasm.ble_post_sc_confirm(conn);
+    return ret !== 0;
+}
+
+/**
+ * Post a SCAN_REQ_REPORT (a scanner hit our advertisement).
+ * @param {Uint8Array} peer
+ * @param {number} rssi
+ * @returns {boolean}
+ */
+export function ble_post_scan_req_report(peer, rssi) {
+    const ptr0 = passArray8ToWasm0(peer, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ble_post_scan_req_report(ptr0, len0, rssi);
+    return ret !== 0;
+}
+
+/**
  * Post a peer-initiated SEC_INFO_REQUEST: the peer asks to re-encrypt
  * (peer_addr 7B type+6, master_id 10B ediv+rand[8], req bits: bit0
  * enc_info, bit1 id_info, bit2 sign_info). Firmware answers
@@ -838,6 +966,52 @@ export function ble_post_sec_params_request(conn, peer_params) {
     const ptr0 = passArray8ToWasm0(peer_params, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
     const ret = wasm.ble_post_sec_params_request(conn, ptr0, len0);
+    return ret !== 0;
+}
+
+/**
+ * Post a peer SEC_REQUEST (firmware answers AUTHENTICATE).
+ * @param {number} conn
+ * @param {boolean} bond
+ * @param {boolean} mitm
+ * @param {boolean} lesc
+ * @param {boolean} keypress
+ * @returns {boolean}
+ */
+export function ble_post_sec_request(conn, bond, mitm, lesc, keypress) {
+    const ret = wasm.ble_post_sec_request(conn, bond, mitm, lesc, keypress);
+    return ret !== 0;
+}
+
+/**
+ * Post a GATTS SYS_ATTR_MISSING (firmware answers SYS_ATTR_SET).
+ * @param {number} conn
+ * @returns {boolean}
+ */
+export function ble_post_sys_attr_missing(conn) {
+    const ret = wasm.ble_post_sys_attr_missing(conn);
+    return ret !== 0;
+}
+
+/**
+ * Post a USER_MEM_RELEASE (informational, no reply path).
+ * @param {number} conn
+ * @param {number} mem_type
+ * @returns {boolean}
+ */
+export function ble_post_user_mem_release(conn, mem_type) {
+    const ret = wasm.ble_post_user_mem_release(conn, mem_type);
+    return ret !== 0;
+}
+
+/**
+ * Post a USER_MEM_REQUEST (firmware answers USER_MEM_REPLY).
+ * @param {number} conn
+ * @param {number} mem_type
+ * @returns {boolean}
+ */
+export function ble_post_user_mem_request(conn, mem_type) {
+    const ret = wasm.ble_post_user_mem_request(conn, mem_type);
     return ret !== 0;
 }
 
@@ -907,6 +1081,16 @@ export function ble_take_job() {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
+}
+
+/**
+ * GAP TX power level in dBm, as stored by TX_POWER_SET (debug/export).
+ * Default 0 (silicon reset); only the S132-legal set is ever stored.
+ * @returns {number}
+ */
+export function ble_tx_power_dbm() {
+    const ret = wasm.ble_tx_power_dbm();
+    return ret;
 }
 
 /**
@@ -1370,8 +1554,30 @@ export function qspi_take_write() {
     }
 }
 
+/**
+ * Link-budget air level: TX dBm minus path loss, clamped [-127, 0].
+ * Pure function so JS air and the model agree on one honest number.
+ * @param {number} tx_code
+ * @param {number} path_loss_db
+ * @returns {number}
+ */
+export function radio_air_rssi_dbm(tx_code, path_loss_db) {
+    const ret = wasm.radio_air_rssi_dbm(tx_code, path_loss_db);
+    return ret;
+}
+
 export function radio_complete_rx() {
     wasm.radio_complete_rx();
+}
+
+/**
+ * Complete RX with an explicit path loss (dB) for this packet's RSSI
+ * stamp. Driver-side air calls this when it knows the range; the
+ * plain complete_rx() keeps the queued/default loss.
+ * @param {number} path_loss_db
+ */
+export function radio_complete_rx_with_path_loss(path_loss_db) {
+    wasm.radio_complete_rx_with_path_loss(path_loss_db);
 }
 
 export function radio_complete_tx() {
@@ -1397,6 +1603,17 @@ export function radio_inject_rx(bytes) {
 }
 
 /**
+ * Plain inject with a path-loss in dB (same RSSI stamp, no address byte).
+ * @param {Uint8Array} bytes
+ * @param {number} path_loss_db
+ */
+export function radio_inject_rx_lossy(bytes, path_loss_db) {
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.radio_inject_rx_lossy(ptr0, len0, path_loss_db);
+}
+
+/**
  * Inject a received packet addressed to a DAB/DAP entry (air peer).
  * Convenience over inject_rx for the two-instance bridge: the first
  * byte is the device-address byte the match unit checks (DEVMATCH
@@ -1408,6 +1625,20 @@ export function radio_inject_rx_to(dab_idx, bytes) {
     const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
     wasm.radio_inject_rx_to(dab_idx, ptr0, len0);
+}
+
+/**
+ * Addressed inject with a path-loss in dB (air range model): the RX
+ * completion stamps TXPOWER-minus-loss into the RSSI latch, so a
+ * firmware RSSISTART after RX reads this packet's level like silicon.
+ * @param {number} dab_idx
+ * @param {Uint8Array} bytes
+ * @param {number} path_loss_db
+ */
+export function radio_inject_rx_to_lossy(dab_idx, bytes, path_loss_db) {
+    const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.radio_inject_rx_to_lossy(dab_idx, ptr0, len0, path_loss_db);
 }
 
 /**
@@ -1458,6 +1689,17 @@ export function radio_take_tx() {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
+}
+
+/**
+ * nRF52 TXPOWER code (SVD 0x50C) as signed dBm (+8..0, -4..-40).
+ * Pure function for the driver link-budget (shared with the model).
+ * @param {number} code
+ * @returns {number}
+ */
+export function radio_txpower_dbm(code) {
+    const ret = wasm.radio_txpower_dbm(code);
+    return ret;
 }
 
 /**

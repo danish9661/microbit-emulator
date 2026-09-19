@@ -4,13 +4,13 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-18, P118 COMMITTED, ahead of origin — push pending)
+## 0. Snapshot (2026-09-19, P121 UNCOMMITTED in tree — user approval needed to commit)
 
-- HEAD: `e7c28ba` "P118 ACL regions + nRF FPU-engine stub + KL27/sound/touch JS (220 green)".
-- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`, `ahead 1` (P118 local; push needs user approval).
-- Suite: **220 single green** (pre-commit gate re-run), = 114 cpu (incl. 18 firmware proofs) + 89 peripherals + 11 sd_ble + 3 sd_evt + 3 ACL/FPU-engine. Handshake 18/18, smoke OK, browser 16/16 re-verified, pkg rebuilt.
-- Working tree: CLEAN except `?? .openchamber/` (ignore — never commit).
-- Big news: **LEFT-1 CLOSED P116+P117, proven in-browser** — banner at T+15s wall + `print(1+2)` → `3` at +10s via the shipped page (zero page errors). No code changed: the bench pump (`lsm303.js` full take→complete both directions) was already correct; starvation lived only in ad-hoc native probes.
+- HEAD: `d614d38` "P118 ACL regions + nRF FPU-engine stub + KL27/sound/touch JS (220 green: smoke + handshake 18/18 + browser 16/16)".
+- Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`.
+- Suite: **225 single green** (gate re-run), = 115 cpu (incl. 19 firmware proofs) + 93 peripherals + 14 sd_ble + 3 sd_evt. Handshake 18/18, smoke OK, browser 16/16 re-verified, both pkgs rebuilt.
+- Working tree: P119 BLE/Radio legs + SIGNED-WRITE_RSP mock fix + rebuilt pkgs + this doc sync (see §9 log); `?? .openchamber/` stays untracked (never commit).
+- Big news: **handshake SIGNED WRITE_RSP path FIXED** — the mock asserted the op echo at `body[2]` (conn/status/err zone), but the real wire puts the handle at `body[6..8]` and the op at `body[8]` (see `write_rsp_payload`; native test asserts `0x2000300C == op`). Mock now checks `body[8] === 0x03`. Rust side verified: `complete_gattc_write(conn, handle, op, data)` echoes op/bytes; `resolveJob()` tag-8 passes `(bj[1], bj[3], bj[2], take_data)` in the right order. Full matrix re-green on this tree (see §9).
 
 ## 1. What we did so far (this recovery session)
 
@@ -91,7 +91,7 @@ session, not a real gap:
 ## 6. Verify matrix (run in order, stop on red)
 
 ```
-cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 220 green
+cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 225 green
 cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml --lib -- --list 2>/dev/null | grep -c ": test"
 node demo/parts/handshake.mjs          # 18/18 (rebuild via npm run build:handshake --prefix demo after Rust changes)
 npm run test:parts --prefix demo ; npm run test:mpy --prefix demo
@@ -131,3 +131,6 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
 - 2026-09-18 (P114 out-of-scope blitz, UNCOMMITTED): user verdict "no walls — code through each". NFC NFCPINS gate (UICR 0x20C → GPIO 09/10 + NFCT sense, test); BLE bond store (keys + bridge bond_keys leg, test); BLE TX-flow + periph CONNECTED + param-update (tests + pump/bridge legs); edge-SPI ST7789 part + bench UI (headless-verified); I2S WebAudio sink (gesture-gated); lazy-FPU stale-comment fix (already implemented); sd_evt phase-1 (`sd_evt.rs` + hook + NVMC post + `sd_evt_nrf.s/.bin` proof, id=2 verified live); npm pack dry-run OK (22 files/72.5 kB). Suite 217 green. Docs synced (STATUS/COVERAGE/doc/about/API/plan). NEXT: full matrix + commit decision + push.
 - 2026-09-18 (P117 bench verdict, docs UNCOMMITTED): NO WIRING NEEDED — `lsm303.js poll()` already takes→completes both TWIM directions; starvation was probe-only. Page proof: banner T+15s (104–105 B) + `print(1+2)`→`3` +10s, zero page errors; browser 16/16 re-green. NEXT: commit P115–P117 docs + push (user approval).
 - 2026-09-18 (P118 COMMITTED `e7c28ba`, 15 files): ACL regions + nRF FPU-engine stub + kl27.js + bench panels + docs. 220 green + smoke + handshake 18/18 + browser 16/16, pkg rebuilt. Push pending user approval.
+- 2026-09-19 (P119 in tree, UNCOMMITTED — awaiting user approval to commit): SIGNED/PREP/EXEC write path + driver-posted request/report/timeout/user-mem/authorize legs + TX-power/adv-state store + radio link-budget RSSI + SIGNED-WRITE_RSP mock fix. Suite 223 single green; handshake 18/18 (was 17/18 pre-fix: `SIGNED WRITE_RSP missing`); smoke OK; browser 16/16 re-verified (boot/self-test/depth, zero page errors); both pkgs rebuilt (`demo/pkg` + `demo/parts/pkg-test-handshake`). Docs synced (STATUS §1/§3/§5-LEFT/§8-verify, COVERAGE §1-GAP/GATT/gaps/RADIO/§proofs/§verify, doc.html BLE+RADIO rows + BLE boundary + footer counts, about.html count). NEXT: commit per approval (see §9 for the file list).
+- 2026-09-19 (P120 in tree, UNCOMMITTED): SERVICE_CHANGED gated indication (SC-enable latch at ENABLE + 0x2A05 CCCD indicate gate, tag-16 air job, SC_CONFIRM with conn head — bridge `ble_sc` leg + pump + mock 7e leg) + scan/adv role-slot + whitelist arbitration (SCAN BUSY/INVALID_STATE + S132 param/whitelist validation, ADV CONN_COUNT/IN_USE legs, cross IN_USE test) + SC_CONFIRM conn-head fix (was header-only, broke strict mock asserts). Suite 224 single green; handshake 18/18; browser 16/16 re-verified (self-test needed a SCAN_STOP-tolerant mock: shared core keeps the observer slot live); both pkgs rebuilt. NEXT: commit per approval.
+- 2026-09-19 (P121 in tree, UNCOMMITTED): roles firmware `blinky/ble_fw/ble_roles_fw.c` (xpack GCC + link_c_nrf.ld, bit-identical rebuild, 21 BLER markers: ADV NULL/struct/IN_USE, SCAN NULL/BUSY/param/selective/cross-IN_USE, CONNECT CENTRAL role, SC range leg, DISCONNECT — 2nd-run clean via `nrf_ble_roles_fw_markers`) + MockBleSvc 7f ADV/SCAN legs (real SVC bytes, strict rc asserts: 0x3203/17/7) + depth-probe roles key. Suite 225 single green (= 115 cpu incl. 19 fw proofs); handshake 18/18; smoke OK; browser 16/16 (BLE probe now `pairing×2, roles`). NEXT: commit per approval.

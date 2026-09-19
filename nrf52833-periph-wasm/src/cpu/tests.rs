@@ -452,6 +452,7 @@ fn pump_ble_test_driver(sys: &crate::system::System) -> bool {
             true
         }
         Some(BleJob::GattsHvx { conn, handle, .. }) => { complete_hvx(conn, handle); true }
+        Some(BleJob::GattsServiceChanged { conn, .. }) => { complete_service_changed(conn); true }
         Some(BleJob::L2capTx { conn, cid, data }) => { complete_l2cap_rx(conn, cid, &data); true }
         Some(BleJob::GapAuthenticate { conn }) => { complete_pairing(conn, true); true }
     }
@@ -529,6 +530,60 @@ fn nrf_ble_pairing_fw_markers() {
                   "BLEP:sec-update:OK", "BLEP:conn-sec:OK",
                   "BLEP:disc-stage:OK", "BLEP:disconnected-evt:OK",
                   "BLEP:ALL-OK"] {
+            assert!(out.contains(m), "run {run} missing {m}, got {out:?}");
+        }
+        crate::system::reset_globals();
+    }
+}
+
+#[test]
+fn nrf_ble_roles_fw_markers() {
+    // BLE roles firmware (blinky/ble_fw/ble_roles_fw.c, GCC):
+    // the ADV/SCAN/whitelist/role-slot legs the pairing image never
+    // drives — ENABLE(SC-bit) -> ADV_START(NULL) -> ADV_STOP ->
+    // ADV_START(whitelist) -> IN_USE re-arm refuses -> ADV_STOP ->
+    // SCAN_START(NULL) -> BUSY re-arm refuses -> SCAN_STOP -> SCAN
+    // params (window>interval refuses) -> SCAN selective stages ->
+    // ADV whitelist while scan holds it refuses IN_USE -> SCAN_STOP ->
+    // CONNECT(staged) -> CONNECTED drain (CENTRAL role) ->
+    // SERVICE_CHANGED unsubscribed refuses INVALID_STATE (the CCCD
+    // gate, from real firmware bytes) -> DISCONNECT(staged) ->
+    // DISCONNECTED drain. The native driver resolves every staged job
+    // (take_* -> complete_*), exactly like the JS pump + Bumble bridge
+    // do live. Markers prove each stage; a 2nd consecutive run proves
+    // reset_state leaves no leak.
+    use crate::sd_ble::*;
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    for run in 0..2 {
+        reset_for_test();
+        let _g = lock_boot();
+        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/ble_fw/ble_roles_fw.bin"));
+        let sys = crate::sys();
+        cpu.deliver_irqs = true;
+        // SMALL slices + pump every slice. The firmware spins on evt
+        // arrival inside drain_until (like silicon firmware); the
+        // completion only lands if the driver pumps mid-spin, so 20K
+        // slices would starve it (same lesson as the demo's 5x20K
+        // pumpDma-in-loop, plan P54).
+        for _ in 0..4000 {
+            cpu.run(sys, &mut mem, 500);
+            if cpu.fault.is_some() { break; }
+            let _ = pump_ble_test_driver(sys);
+            let out = crate::system::get_uart_output().lock().unwrap().clone();
+            if out.contains("BLER:ALL-OK") || out.contains("BLER:SOME-FAIL") { break; }
+        }
+        assert!(cpu.fault.is_none(), "roles fw faulted (run {run}): {:?}", cpu.fault);
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        for m in ["BLER:BOOT", "BLER:enable-sc:OK", "BLER:adv-null:OK",
+                  "BLER:adv-stop:OK", "BLER:adv-wl:OK", "BLER:adv-inuse:OK",
+                  "BLER:adv-stop2:OK", "BLER:scan-null:OK", "BLER:scan-busy:OK",
+                  "BLER:scan-stop:OK", "BLER:scan-param:OK", "BLER:scan-sel:OK",
+                  "BLER:adv-scan-inuse:OK", "BLER:scan-stop2:OK",
+                  "BLER:connect-stage:OK", "BLER:connected-evt:OK",
+                  "BLER:role-central:OK", "BLER:sc-gate:OK",
+                  "BLER:disc-stage:OK", "BLER:disconnected-evt:OK",
+                  "BLER:ALL-OK"] {
             assert!(out.contains(m), "run {run} missing {m}, got {out:?}");
         }
         crate::system::reset_globals();

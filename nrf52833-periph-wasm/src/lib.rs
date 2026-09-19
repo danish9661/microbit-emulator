@@ -277,6 +277,42 @@ pub fn radio_inject_rx_to(dab_idx: usize, bytes: &[u8]) {
     crate::peripherals::radio_nrf::inject_rx_to(sys(), dab_idx, bytes.to_vec());
 }
 
+/// Addressed inject with a path-loss in dB (air range model): the RX
+/// completion stamps TXPOWER-minus-loss into the RSSI latch, so a
+/// firmware RSSISTART after RX reads this packet's level like silicon.
+#[wasm_bindgen]
+pub fn radio_inject_rx_to_lossy(dab_idx: usize, bytes: &[u8], path_loss_db: u32) {
+    crate::peripherals::radio_nrf::inject_rx_to_lossy(sys(), dab_idx, bytes.to_vec(), path_loss_db);
+}
+
+/// Plain inject with a path-loss in dB (same RSSI stamp, no address byte).
+#[wasm_bindgen]
+pub fn radio_inject_rx_lossy(bytes: &[u8], path_loss_db: u32) {
+    crate::peripherals::radio_nrf::inject_rx_lossy(sys(), bytes.to_vec(), path_loss_db);
+}
+
+/// Complete RX with an explicit path loss (dB) for this packet's RSSI
+/// stamp. Driver-side air calls this when it knows the range; the
+/// plain complete_rx() keeps the queued/default loss.
+#[wasm_bindgen]
+pub fn radio_complete_rx_with_path_loss(path_loss_db: u32) {
+    crate::peripherals::radio_nrf::complete_rx_with_path_loss(sys(), path_loss_db);
+}
+
+/// nRF52 TXPOWER code (SVD 0x50C) as signed dBm (+8..0, -4..-40).
+/// Pure function for the driver link-budget (shared with the model).
+#[wasm_bindgen]
+pub fn radio_txpower_dbm(code: u32) -> i32 {
+    crate::peripherals::radio_nrf::txpower_dbm(code)
+}
+
+/// Link-budget air level: TX dBm minus path loss, clamped [-127, 0].
+/// Pure function so JS air and the model agree on one honest number.
+#[wasm_bindgen]
+pub fn radio_air_rssi_dbm(tx_code: u32, path_loss_db: u32) -> i32 {
+    crate::peripherals::radio_nrf::air_rssi_dbm(tx_code, path_loss_db)
+}
+
 #[wasm_bindgen]
 pub fn radio_inject_corrupt(bytes: &[u8]) {
     crate::peripherals::radio_nrf::inject_corrupt(sys(), bytes.to_vec());
@@ -523,6 +559,7 @@ pub fn sd_evt_queue_len() -> u32 {
 //   13 GattcAttrInfoDisc [conn, start, end] (table walk)
 //   14 GattcUuidRead [conn, uuid16|0xFFFF, start, end]
 //   15 GattcValsRead [conn, count] + ble_take_data() = handles u16[count]
+//   16 GattsServiceChanged [conn, start, end] (peer confirm -> SC_CONFIRM)
 #[wasm_bindgen]
 pub fn ble_take_job() -> Vec<u32> {
     match crate::sd_ble::take_job() {
@@ -574,6 +611,9 @@ pub fn ble_take_job() -> Vec<u32> {
             let mut v = vec![15u32, conn as u32, handles.len() as u32];
             v.extend(handles.iter().map(|&h| h as u32));
             v
+        }
+        Some(crate::sd_ble::BleJob::GattsServiceChanged { conn, start, end }) => {
+            vec![16, conn as u32, start as u32, end as u32]
         }
         None => Vec::new(),
     }
@@ -847,6 +887,13 @@ pub fn ble_complete_conn_param_update(conn: u16) {
     crate::sd_ble::complete_conn_param_update(conn);
 }
 
+/// Complete a Service Changed indication: the peer confirmed the
+/// 0x2A05 indication over air; posts SC_CONFIRM on the link.
+#[wasm_bindgen]
+pub fn ble_complete_service_changed(conn: u16) {
+    crate::sd_ble::complete_service_changed(conn);
+}
+
 /// Post a peer-initiated SEC_PARAMS_REQUEST: the peer started SMP
 /// with these ble_gap_sec_params_t wire bytes (flags, min/max key
 /// size, kdist_own, kdist_peer); firmware answers SEC_PARAMS_REPLY.
@@ -928,6 +975,105 @@ pub fn ble_conn_handles() -> Vec<u16> {
 #[wasm_bindgen]
 pub fn ble_conn_sec(conn: u16) -> Vec<u8> {
     crate::sd_ble::conn_sec(conn)
+}
+
+/// GAP TX power level in dBm, as stored by TX_POWER_SET (debug/export).
+/// Default 0 (silicon reset); only the S132-legal set is ever stored.
+#[wasm_bindgen]
+pub fn ble_tx_power_dbm() -> i8 {
+    crate::sd_ble::tx_power_dbm()
+}
+
+/// Advertising state: [active, directed, filter_policy, whitelist_addrs].
+/// Armed by ADV_START validation, cleared by ADV_STOP / reset.
+#[wasm_bindgen]
+pub fn ble_adv_state() -> Vec<u8> {
+    let (active, directed, fp, wl) = crate::sd_ble::adv_state();
+    vec![active as u8, directed as u8, fp, wl]
+}
+
+/// Directed-advertising peer address (6 LE bytes; valid when directed).
+#[wasm_bindgen]
+pub fn ble_adv_peer_addr() -> Vec<u8> {
+    crate::sd_ble::adv_peer_addr().to_vec()
+}
+
+/// Post a peer SEC_REQUEST (firmware answers AUTHENTICATE).
+#[wasm_bindgen]
+pub fn ble_post_sec_request(conn: u16, bond: bool, mitm: bool, lesc: bool, keypress: bool) -> bool {
+    crate::sd_ble::post_sec_request(conn, bond, mitm, lesc, keypress)
+}
+
+/// Post a peer CONN_PARAM_UPDATE_REQUEST (firmware answers with the
+/// CONN_PARAM_UPDATE request SVC).
+#[wasm_bindgen]
+pub fn ble_post_conn_param_update_request(conn: u16) -> bool {
+    crate::sd_ble::post_conn_param_update_request(conn)
+}
+
+/// Post a SCAN_REQ_REPORT (a scanner hit our advertisement).
+#[wasm_bindgen]
+pub fn ble_post_scan_req_report(peer: &[u8], rssi: i8) -> bool {
+    let mut p = [0u8; 6];
+    for (i, &b) in peer.iter().take(6).enumerate() {
+        p[i] = b;
+    }
+    crate::sd_ble::post_scan_req_report(p, rssi)
+}
+
+/// Post a GAP TIMEOUT (src 0 adv, 1 sec-req, 2 scan, 3 conn).
+#[wasm_bindgen]
+pub fn ble_post_gap_timeout(conn: u16, src: u8) -> bool {
+    crate::sd_ble::post_gap_timeout(conn, src)
+}
+
+/// Post a GATTC TIMEOUT (ATT protocol).
+#[wasm_bindgen]
+pub fn ble_post_gattc_timeout(conn: u16) -> bool {
+    crate::sd_ble::post_gattc_timeout(conn)
+}
+
+/// Post a GATTS TIMEOUT (ATT protocol).
+#[wasm_bindgen]
+pub fn ble_post_gatts_timeout(conn: u16) -> bool {
+    crate::sd_ble::post_gatts_timeout(conn)
+}
+
+/// Post a USER_MEM_REQUEST (firmware answers USER_MEM_REPLY).
+#[wasm_bindgen]
+pub fn ble_post_user_mem_request(conn: u16, mem_type: u8) -> bool {
+    crate::sd_ble::post_user_mem_request(conn, mem_type)
+}
+
+/// Post a USER_MEM_RELEASE (informational, no reply path).
+#[wasm_bindgen]
+pub fn ble_post_user_mem_release(conn: u16, mem_type: u8) -> bool {
+    crate::sd_ble::post_user_mem_release(conn, mem_type)
+}
+
+/// Post a GATTS RW_AUTHORIZE_REQUEST (firmware answers RW_AUTHORIZE_REPLY).
+#[wasm_bindgen]
+pub fn ble_post_rw_authorize_request(
+    conn: u16,
+    auth_type: u8,
+    handle: u16,
+    offset: u16,
+    op: u8,
+    data: &[u8],
+) -> bool {
+    crate::sd_ble::post_rw_authorize_request(conn, auth_type, handle, offset, op, data)
+}
+
+/// Post a GATTS SYS_ATTR_MISSING (firmware answers SYS_ATTR_SET).
+#[wasm_bindgen]
+pub fn ble_post_sys_attr_missing(conn: u16) -> bool {
+    crate::sd_ble::post_sys_attr_missing(conn)
+}
+
+/// Post a GATTS SC_CONFIRM (header only, no reply path).
+#[wasm_bindgen]
+pub fn ble_post_sc_confirm(conn: u16) -> bool {
+    crate::sd_ble::post_sc_confirm(conn)
 }
 
 #[wasm_bindgen]

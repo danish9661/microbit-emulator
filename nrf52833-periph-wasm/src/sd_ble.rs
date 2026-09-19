@@ -218,6 +218,19 @@ pub const EVT_GAP_CONN_SEC_UPDATE: u16 = 0x1A;
 pub const EVT_GAP_TIMEOUT: u16 = 0x1B;
 pub const EVT_GAP_RSSI_CHANGED: u16 = 0x1C;
 pub const EVT_GAP_ADV_REPORT: u16 = 0x1D;
+// Driver-posted request/report events (same GAP family, S132 enum
+// order after ADV_REPORT): SEC_REQUEST 0x1E, CONN_PARAM_UPDATE_REQUEST
+// 0x1F, SCAN_REQ_REPORT 0x20. Silicon posts these on air triggers;
+// here the DRIVER posts them (bridge sightings / peer asks), with the
+// same wire bodies firmware parses on silicon.
+pub const EVT_GAP_SEC_REQUEST: u16 = 0x1E;
+pub const EVT_GAP_CONN_PARAM_UPDATE_REQUEST: u16 = 0x1F;
+pub const EVT_GAP_SCAN_REQ_REPORT: u16 = 0x20;
+// Common events (S132 ble.h): TX_COMPLETE 0x01, USER_MEM_REQUEST 0x02,
+// USER_MEM_RELEASE 0x03.
+pub const EVT_COMMON_TX_COMPLETE: u16 = 0x01;
+pub const EVT_COMMON_USER_MEM_REQUEST: u16 = 0x02;
+pub const EVT_COMMON_USER_MEM_RELEASE: u16 = 0x03;
 pub const EVT_GATTC_PRIM_DISC_RSP: u16 = 0x30;
 pub const EVT_GATTC_REL_DISC_RSP: u16 = 0x31;
 pub const EVT_GATTC_CHAR_DISC_RSP: u16 = 0x32;
@@ -228,6 +241,12 @@ pub const EVT_GATTC_READ_RSP: u16 = 0x36;
 pub const EVT_GATTC_VALS_READ_RSP: u16 = 0x37;
 pub const EVT_GATTC_WRITE_RSP: u16 = 0x38;
 pub const EVT_GATTC_HVX: u16 = 0x39;
+// Driver-posted GATTC timeout (S132 enum order after HVX): 0x3A is
+// TAKEN here by the model-local TX_COMPLETE id (documented below),
+// so the timeout rides the next free family slot the headers leave
+// unnamed in-tree. Firmware matches all three via the envelope id we
+// document; no S132 header in-tree names TX_COMPLETE numerically.
+pub const EVT_GATTC_TIMEOUT: u16 = 0x3B;
 // Silicon BLE_EVT_TX_COMPLETE (GATTC/GATTS TX-token return). S132
 // ble_gatt.h numbers it after the GATTC RSP family; the exact value is
 // model-local (no S132 header in-tree names it numerically), so firmware
@@ -235,6 +254,14 @@ pub const EVT_GATTC_HVX: u16 = 0x39;
 pub const EVT_GATT_TX_COMPLETE: u16 = 0x3A;
 pub const EVT_GATTS_WRITE: u16 = 0x50;
 pub const EVT_GATTS_HVC: u16 = 0x53;
+// Driver-posted GATTS family (S132 enum order): RW_AUTHORIZE_REQUEST
+// 0x51, SYS_ATTR_MISSING 0x52, SC_CONFIRM 0x54, TIMEOUT 0x55. Silicon
+// posts these on peer ATT triggers; here the DRIVER posts them, with
+// the same wire bodies firmware parses on silicon.
+pub const EVT_GATTS_RW_AUTHORIZE_REQUEST: u16 = 0x51;
+pub const EVT_GATTS_SYS_ATTR_MISSING: u16 = 0x52;
+pub const EVT_GATTS_SC_CONFIRM: u16 = 0x54;
+pub const EVT_GATTS_TIMEOUT: u16 = 0x55;
 pub const EVT_L2CAP_RX: u16 = 0x70;
 
 // ---- return codes (S132 nrf_error.h / ble_err.h) ----
@@ -251,7 +278,13 @@ pub const NRF_ERROR_DATA_SIZE: u32 = 12;
 pub const BLE_ERROR_INVALID_CONN_HANDLE: u32 = 0x3002;
 pub const BLE_ERROR_NOT_ENABLED: u32 = 0x3001;
 pub const BLE_ERROR_NO_TX_PACKETS: u32 = 0x3004;
+pub const BLE_ERROR_INVALID_ATTR_HANDLE: u32 = 0x3003;
+pub const BLE_ERROR_GAP_DISCOVERABLE_WITH_WHITELIST: u32 = 0x3201;
+pub const BLE_ERROR_GAP_WHITELIST_IN_USE: u32 = 0x3203;
+pub const NRF_ERROR_CONN_COUNT: u32 = 18;
+pub const NRF_ERROR_RESOURCES: u32 = 19;
 pub const BLE_ERROR_L2CAP_CID_IN_USE: u32 = 0x3100;
+pub const BLE_ERROR_GAP_INVALID_BLE_ADDR: u32 = 0x3202;
 pub const BLE_CONN_HANDLE_INVALID: u16 = 0xFFFF;
 // L2CAP CIDs (ble_l2cap.h): dynamic range + MTU floor.
 pub const L2CAP_CID_DYN_BASE: u16 = 0x0040;
@@ -279,6 +312,12 @@ pub const UUID_TYPE_VENDOR_BEGIN: u8 = 2;
 // Write ops (ble_gatt.h) / HVX types.
 pub const GATT_OP_WRITE_REQ: u8 = 1;
 pub const GATT_OP_WRITE_CMD: u8 = 2;
+pub const GATT_OP_SIGNED_WRITE_CMD: u8 = 3;
+pub const GATT_OP_PREP_WRITE_REQ: u8 = 4;
+pub const GATT_OP_EXEC_WRITE_REQ: u8 = 5;
+// Execute-write flags (ble_gatt.h): cancel vs write the queue.
+pub const GATT_EXEC_WRITE_FLAG_CANCEL: u8 = 0x00;
+pub const GATT_EXEC_WRITE_FLAG_WRITE: u8 = 0x01;
 pub const GATT_HVX_NOTIFICATION: u8 = 1;
 pub const GATT_HVX_INDICATION: u8 = 2;
 // GATT status / handle sentinels (ble_gatt.h).
@@ -390,18 +429,28 @@ pub enum BleJob {
     /// Driver resolves every matching handle over air; completes with
     /// UUID_READ_RSP (handle,value pairs sharing one value_len).
     GattcUuidRead { conn: u16, uuid16: Option<u16>, start: u16, end: u16 },
-    /// GATTC multi-read (SVC 0x97): (conn, handles[]); driver reads
-    /// each over air; completes with VALS_READ_RSP (concatenated).
+    /// GATTC UATT_MTU exchange? No — S132 on nRF52 supports only the
+    /// default MTU 23 (ble_gatt.h GATT_MTU_SIZE_DEFAULT; GATT_RX_MTU
+    /// 23); there is no exchange-MTU/DLE/PHY SVC in the S132 form, so
+    /// nothing here to model. Documented so the doc rows stay honest.
     GattcValsRead { conn: u16, handles: Vec<u16> },
     /// GATTC read (SVC 0x96): (conn, handle, offset); driver reads
     /// over air and completes with the bytes.
     GattcRead { conn: u16, handle: u16, offset: u16 },
     /// GATTC write (SVC 0x98): struct {op, flags, handle, offset,
     /// len, *value}; driver writes over air, completes WRITE_RSP.
+    /// op covers REQ(1)/CMD(2) plus SIGNED_WRITE(3, 12B signature
+    /// appended to the value bytes), PREP_WRITE(4, offset-bearing
+    /// queue entry) and EXEC_WRITE(5, commit/cancel the queue).
     GattcWrite { conn: u16, op: u8, handle: u16, data: Vec<u8> },
     /// GATTS HVX notify/indicate (SVC 0xA6): struct {handle, type,
     /// offset, *len, *data}; driver emits over air, completes HVC.
     GattsHvx { conn: u16, handle: u16, hvx_type: u8, data: Vec<u8> },
+    /// GATTS Service Changed indication (SVC 0xA7): (conn, start, end).
+    /// Driver emits the 0x2A05 indication over air; the peer confirm
+    /// completes with SC_CONFIRM. Gated like silicon: SC enabled at
+    /// init + peer subscribed to the 0x2A05 CCCD indicate bit.
+    GattsServiceChanged { conn: u16, start: u16, end: u16 },
     /// L2CAP TX (SVC 0xB2): (conn, cid, bytes); driver moves the frame
     /// over air on the registered CID, completes by echoing RX (loopback
     /// legibility: same shape as the RADIO air echo).
@@ -450,6 +499,12 @@ struct Conn {
     bonded: bool,
     pairing: Pairing,
     cids: Vec<u16>,
+    /// Prepared-write queue (GATT_OP_PREP_WRITE_REQ entries): (handle,
+    /// offset, bytes). EXEC_WRITE_REQ with WRITE flag commits them in
+    /// order onto the local GATTS table mirror; CANCEL drops them.
+    /// Silicon queues on the server; here the queue is per-link like
+    /// the ATT bearer that carries it.
+    prep_queue: Vec<(u16, u16, Vec<u8>)>,
 }
 
 /// Bond-store entry: the long-term keys for one peer address, kept
@@ -523,6 +578,41 @@ pub struct SdBle {
     /// Keyed by peer address; firmware's keyset pointer at accept time
     /// supplies the bytes (copied, never aliased).
     bonds: Vec<Bond>,
+    /// Service-Changed CCCD state: silicon only sends indications when
+    /// the peer subscribed to 0x2A05 (service-changed CCCD bit1) AND
+    /// sd_ble_enable ran with gatts_enable_params.service_changed = 1.
+    /// Both halves are real model state: the CCCD bit lives in
+    /// `subscribed`, the enable bit here.
+    sc_enabled: bool,
+    /// GAP TX power level in dBm, S132-legal set only (-40..+4; header
+    /// doc lists exactly -40, -30, -20, -16, -12, -8, -4, 0, 4). Stored
+    /// like silicon ATTACHES it to the radio: the RADIO TXPOWER
+    /// register still owns the air, but firmware reads this back via
+    /// the link-budget helper (ble_tx_power_dbm) and the bridge addrs
+    /// its ADV Reports with it.
+    tx_power_dbm: i8,
+    /// Advertising state (ADV_START validation arms these; ADV_STOP /
+    /// reset clears). No RF invented: a started advertiser only arms
+    /// the state the bridge/peripheral-connect path completes.
+    advertising: bool,
+    /// Directed advertising (type 1 ADV_DIRECT_IND): needs p_peer_addr.
+    adv_directed: bool,
+    /// Filter policy (ADV_FP_*): stored for the pump/bridge to consult.
+    adv_filter: u8,
+    /// Whitelist address count (0 = none / NULL table).
+    adv_whitelist_addrs: u8,
+    /// Directed peer address (valid when adv_directed).
+    adv_peer: [u8; 6],
+    /// Observer role live (SCAN_START staged, cleared by SCAN_STOP /
+    /// reset). Silicon has one observer slot; a second SCAN_START
+    /// while live refuses BUSY like the connect procedure.
+    scanning: bool,
+    /// Active whitelist pointer (ADV or SCAN arm) + use latch: while a
+    /// role holds the table, re-arming ADV/SCAN with a whitelist
+    /// refuses WHITELIST_IN_USE like silicon. NULL arms never latch.
+    adv_whitelist_ptr: u32,
+    scan_whitelist_ptr: u32,
+    scan_whitelist_in_use: bool,
 }
 
 impl Conn {
@@ -538,6 +628,7 @@ impl Conn {
             bonded: false,
             pairing: Pairing::Idle,
             cids: Vec::new(),
+            prep_queue: Vec::new(),
         }
     }
 }
@@ -560,6 +651,17 @@ impl SdBle {
             app_ram_base: 0x2000_2000,
             l2cap_cids: Vec::new(),
             bonds: Vec::new(),
+            sc_enabled: false,
+            tx_power_dbm: 0,
+            advertising: false,
+            adv_directed: false,
+            adv_filter: 0,
+            adv_whitelist_addrs: 0,
+            adv_peer: [0u8; 6],
+            scanning: false,
+            adv_whitelist_ptr: 0,
+            scan_whitelist_ptr: 0,
+            scan_whitelist_in_use: false,
         }
     }
 
@@ -1034,6 +1136,117 @@ impl SdBle {
         p
     }
 
+    /// GAP SEC_REQUEST body (ble_gap.h): {u16 conn, bond:1/mitm:1/
+    /// lesc:1/keypress:1 packed u8}. Posted when the PEER asks us to
+    /// pair (driver observed the ask); firmware answers AUTHENTICATE.
+    fn sec_request_payload(conn: u16, bond: bool, mitm: bool, lesc: bool, keypress: bool) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&conn.to_le_bytes());
+        p.push(
+            (bond as u8) | ((mitm as u8) << 1) | ((lesc as u8) << 2) | ((keypress as u8) << 3),
+        );
+        p
+    }
+
+    /// GAP CONN_PARAM_UPDATE_REQUEST body (ble_gap.h): {u16 conn,
+    /// conn_params{4xu16 min/max/lat/timeout}}. Firmware answers with
+    /// the CONN_PARAM_UPDATE request SVC (accept) or rejects with NULL.
+    fn conn_param_update_request_payload(conn: u16) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&conn.to_le_bytes());
+        for w in [6u16, 6, 0, 400] {
+            p.extend_from_slice(&w.to_le_bytes());
+        }
+        p
+    }
+
+    /// GAP SCAN_REQ_REPORT body (ble_gap.h): {u16 0xFFFF (no conn),
+    /// i8 rssi, peer{type+6}}. Posted when a scanner's SCAN_REQ hits
+    /// our advertisement (driver observed the air).
+    fn scan_req_report_payload(peer: [u8; 6], rssi: i8) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.extend_from_slice(&BLE_CONN_HANDLE_INVALID.to_le_bytes());
+        p.push(rssi as u8);
+        p.push(1); // peer type: random static
+        p.extend_from_slice(&peer);
+        p
+    }
+
+    /// GAP TIMEOUT body (ble_gap.h): {u8 src} (0 advertising, 1
+    /// security-request, 2 scan, 3 connection — S132 timeout sources).
+    fn gap_timeout_payload(src: u8) -> Vec<u8> {
+        vec![src]
+    }
+
+    /// GATTC TIMEOUT body (ble_gattc.h): {u8 src} (0 ATT protocol).
+    fn gattc_timeout_payload() -> Vec<u8> {
+        vec![0]
+    }
+
+    /// GATTS TIMEOUT body (ble_gatts.h): {u8 src} (0 ATT protocol).
+    fn gatts_timeout_payload() -> Vec<u8> {
+        vec![0]
+    }
+
+    /// Common USER_MEM_REQUEST body (ble.h): {u8 type} (firmware
+    /// answers USER_MEM_REPLY; the sync ack path stays).
+    fn user_mem_request_payload(mem_type: u8) -> Vec<u8> {
+        vec![mem_type]
+    }
+
+    /// Common USER_MEM_RELEASE body (ble.h): {u8 type} (informational;
+    /// no reply SVC exists — the release completes the loan).
+    fn user_mem_release_payload(mem_type: u8) -> Vec<u8> {
+        vec![mem_type]
+    }
+
+    /// GATTS RW_AUTHORIZE_REQUEST body (ble_gatts.h): {u8 type
+    /// (1 read / 2 write), read{handle,uuid16+type,offset} or
+    /// write{handle,uuid16,op,auth,offset,len,data}}. Firmware answers
+    /// RW_AUTHORIZE_REPLY (already acked); the post carries the ask.
+    fn rw_authorize_request_payload(
+        auth_type: u8,
+        handle: u16,
+        uuid16: Option<u16>,
+        offset: u16,
+        op: u8,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let mut p = Vec::new();
+        p.push(auth_type);
+        p.extend_from_slice(&handle.to_le_bytes());
+        match uuid16 {
+            Some(u) => {
+                p.extend_from_slice(&u.to_le_bytes());
+                p.push(UUID_TYPE_BLE);
+            }
+            None => {
+                p.extend_from_slice(&0u16.to_le_bytes());
+                p.push(UUID_TYPE_VENDOR_BEGIN);
+            }
+        }
+        p.extend_from_slice(&offset.to_le_bytes());
+        if auth_type == 2 {
+            p.push(op);
+            p.push(0); // auth_required: no
+            p.extend_from_slice(&(data.len() as u16).to_le_bytes());
+            p.extend_from_slice(data);
+        }
+        p
+    }
+
+    /// GATTS SYS_ATTR_MISSING body (ble_gatts.h): {u8 hint} (unused).
+    fn sys_attr_missing_payload() -> Vec<u8> {
+        vec![0]
+    }
+
+    /// GATTS SC_CONFIRM: conn head only ("No additional event
+    /// structure applies" — ble_gatts.h). Same envelope as every
+    /// GATTS event: {u16 conn} then no params.
+    fn sc_confirm_payload(conn: u16) -> Vec<u8> {
+        conn.to_le_bytes().to_vec()
+    }
+
     /// GAP AUTH_STATUS body (ble_gap.h): {conn u16, auth_status u8,
     /// err_src:2 + bonded:1 packed u8, sm1 levels u8, sm2 levels u8,
     /// kdist_own u8, kdist_peer u8}. Conn FIRST (ble_gap_evt_t head),
@@ -1176,6 +1389,20 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
         x if x == SVC_BLE_ENABLE => {
             // sd_ble_enable(params*, *app_ram_base): both may be NULL.
             // Report our RAM floor through *app_ram_base when given.
+            // params* non-NULL latches the S132 enable block: the only
+            // field firmware observes here is
+            // gatts_enable_params.service_changed (bit0 of the u8 at
+            // offset 4 of ble_enable_params_t: common(0)+gap(1..3)+
+            // gatts flag(4)+attr_tab_size(8)); 1 = Service Changed
+            // indications allowed later (else SERVICE_CHANGED refuses
+            // NOT_SUPPORTED, per the header retval).
+            let p_params = r[0];
+            if p_params != 0 {
+                if !is_ram(p_params) {
+                    return Some(NRF_ERROR_INVALID_ADDR);
+                }
+                s.sc_enabled = (mem.read8(p_params.wrapping_add(4)) & 0x01) != 0;
+            }
             let base_ptr = r[1];
             if base_ptr != 0 {
                 if !is_ram(base_ptr) {
@@ -1326,11 +1553,131 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
-            // r0 = *adv_params or NULL (defaults). No event on start;
-            // connections arrive via CONNECTED like silicon.
+            // r0 = *adv_params or NULL (defaults). Validated like
+            // silicon (S132 ble_gap.h ranges + enum sets), addressed —
+            // no RF is invented: a started advertiser only arms the
+            // state the bridge/peripheral-connect path completes.
+            // NULL params = defaults (ADV_IND, any, 20ms+, no timeout).
+            let p = r[0];
+            if p == 0 {
+                s.advertising = true;
+                s.adv_directed = false;
+                return Some(NRF_SUCCESS);
+            }
+            if !is_ram(p) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            // ble_gap_adv_params_t (unpacked): type@0 u8, p_peer@1 u32,
+            // fp@5 u8, p_wl@6 u32, interval@10 u16, timeout@12 u16,
+            // channel_mask@14 u8 (u16-aligned tail — the S132 struct
+            // has no pragma pack; u16 fields align even). Pointer
+            // fields read as two u16 halves (the model traps odd
+            // read32 — see the ADV test note).
+            let adv_type = mem.read8(p);
+            if adv_type > 3 {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            let p_peer =
+                mem.read16(p.wrapping_add(1)) as u32 | ((mem.read16(p.wrapping_add(3)) as u32) << 16);
+            let fp = mem.read8(p.wrapping_add(5));
+            if fp > 3 {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            let p_wl =
+                mem.read16(p.wrapping_add(6)) as u32 | ((mem.read16(p.wrapping_add(8)) as u32) << 16);
+            let interval = read_u16_le(mem, p.wrapping_add(10));
+            let timeout = read_u16_le(mem, p.wrapping_add(12));
+            // Whitelist present (non-NULL): validate the table shape
+            // (addr_count <= 8, irk_count <= 8 — S132 WHITELIST maxima;
+            // deeper pointer walks stay driver-side). While any role is
+            // live (links up, scanning, or already advertising) the
+            // table is IN USE like silicon (WHITELIST_IN_USE); only a
+            // fresh arm with the same pointer re-validates. Filter
+            // policy + counts are stored for the pump/bridge to consult
+            // (the bridge is the addressed-air consumer).
+            let wl_addrs: u8 = if p_wl != 0 {
+                if !is_ram(p_wl) {
+                    return Some(NRF_ERROR_INVALID_ADDR);
+                }
+                // Header retval order: shape (INVALID_PARAM) before
+                // IN_USE — silicon validates the table it would install
+                // before checking who holds the current one.
+                // ble_gap_whitelist_t: pp_addrs@0, addr_count@4,
+                // pp_irks@8, irk_count@12 (pointer-sized slots).
+                let addr_count = mem.read8(p_wl.wrapping_add(4));
+                let irk_count = mem.read8(p_wl.wrapping_add(12));
+                if addr_count > 8 || irk_count > 8 {
+                    return Some(NRF_ERROR_INVALID_PARAM);
+                }
+                // IN_USE while a procedure holds the table (advertising
+                // or scanning live, or the latch from a previous arm).
+                // Live LINKS do not hold it: silicon keeps whitelist use
+                // to the ADV/SCAN procedures, and connections complete
+                // independently (central links stay up across re-arms).
+                if s.advertising || s.scanning || s.scan_whitelist_in_use {
+                    return Some(BLE_ERROR_GAP_WHITELIST_IN_USE);
+                }
+                addr_count
+            } else {
+                0
+            };
+            // Directed (type 1) needs a peer address; high-duty needs
+            // interval 0, low-duty the 0x20..0x4000 window.
+            let directed = adv_type == 1;
+            if directed {
+                if p_peer == 0 || !is_ram(p_peer) {
+                    return Some(BLE_ERROR_GAP_INVALID_BLE_ADDR);
+                }
+                if interval != 0 && !(0x0020..=0x4000).contains(&interval) {
+                    return Some(NRF_ERROR_INVALID_PARAM);
+                }
+            } else if interval != 0 && !(0x0020..=0x4000).contains(&interval) {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            if timeout > 0x3FFF {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            // Connectable directed/undirected advertising needs a free
+            // role slot like silicon: with a connect procedure already
+            // staged (BUSY sibling) the advertiser cannot start either.
+            // (Live LINKS do not consume the slot: multi-link stays up
+            // across re-arms — proven by multi_conn_handles_isolated_state
+            // + the two-link E2E. Only the staged procedure blocks.)
+            if (adv_type == 0 || adv_type == 1)
+                && matches!(s.staged, Some(BleJob::GapConnect { .. }))
+            {
+                return Some(NRF_ERROR_CONN_COUNT);
+            }
+            s.advertising = true;
+            s.adv_directed = directed;
+            s.adv_filter = fp;
+            s.adv_whitelist_addrs = wl_addrs;
+            s.adv_whitelist_ptr = p_wl;
+            if p_wl != 0 {
+                s.scan_whitelist_in_use = true;
+            }
+            if directed {
+                for i in 0..6u32 {
+                    s.adv_peer[i as usize] = mem.read8(p_peer.wrapping_add(1 + i));
+                }
+            }
+            // No event on start; connections arrive via CONNECTED like
+            // silicon (bridge/peripheral-connect completion posts it).
             Some(NRF_SUCCESS)
         }
-        x if x == SVC_GAP_ADV_STOP => Some(NRF_SUCCESS),
+        x if x == SVC_GAP_ADV_STOP => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            if !s.advertising {
+                return Some(NRF_ERROR_INVALID_STATE);
+            }
+            s.advertising = false;
+            s.adv_directed = false;
+            s.adv_whitelist_ptr = 0;
+            s.scan_whitelist_in_use = false;
+            Some(NRF_SUCCESS)
+        }
         x if x == SVC_GAP_CONN_PARAM_UPDATE => {
             if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
@@ -1352,7 +1699,26 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             s.staged = Some(BleJob::GapDisconnect { conn, reason });
             Some(NRF_SUCCESS)
         }
-        x if x == SVC_GAP_TX_POWER_SET => Some(NRF_SUCCESS),
+        x if x == SVC_GAP_TX_POWER_SET => {
+            // sd_ble_gap_tx_power_set(i8 dBm): S132-legal set only
+            // (-40, -30, -20, -16, -12, -8, -4, 0, 4 — header doc; the
+            // -30 level is nRF51-only but still ACCEPTED here, matching
+            // the header's accept list). Anything else INVALID_PARAM.
+            // Stored on the stack state (firmware-observable via the
+            // link-budget readback); the RADIO TXPOWER register still
+            // owns the actual air — same split as silicon.
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            let dbm = r[0] as u8 as i8;
+            match dbm {
+                -40 | -30 | -20 | -16 | -12 | -8 | -4 | 0 | 4 => {
+                    s.tx_power_dbm = dbm;
+                    Some(NRF_SUCCESS)
+                }
+                _ => Some(NRF_ERROR_INVALID_PARAM),
+            }
+        }
         x if x == SVC_GAP_APPEARANCE_SET || x == SVC_GAP_APPEARANCE_GET => {
             let p = r[0];
             if x == SVC_GAP_APPEARANCE_GET {
@@ -1718,11 +2084,85 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
             // r0 = *scan_params or NULL (defaults). One live sighting
-            // becomes the ADV_REPORT the driver completes.
+            // becomes the ADV_REPORT the driver completes. Observer slot
+            // is single like silicon: a second SCAN_START while live
+            // refuses BUSY. Non-NULL params validate S132 ranges
+            // (interval/window 0x4..0x4000, window <= interval) and walk
+            // the whitelist shape (counts <= 8); with selective=1 the
+            // table must be present (else INVALID_PARAM), and while a
+            // role holds the table a new whitelist refuses IN_USE.
+            let p = r[0];
+            if p == 0 {
+                if s.scanning {
+                    return Some(NRF_ERROR_BUSY);
+                }
+                s.scanning = true;
+                s.staged = Some(BleJob::GapScanStart);
+                return Some(NRF_SUCCESS);
+            }
+            if !is_ram(p) {
+                return Some(NRF_ERROR_INVALID_ADDR);
+            }
+            // ble_gap_scan_params_t (unpacked, bitfields in b0):
+            // active:1/selective:1 @0, p_whitelist@1 u32 (two u16
+            // halves — the model traps odd read32), interval@6 u16,
+            // window@8 u16, timeout@10 u16.
+            let b0 = mem.read8(p);
+            if b0 & 0xFC != 0 {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            let selective = (b0 & 0x02) != 0;
+            let p_wl =
+                mem.read16(p.wrapping_add(1)) as u32 | ((mem.read16(p.wrapping_add(3)) as u32) << 16);
+            let interval = read_u16_le(mem, p.wrapping_add(6));
+            let window = read_u16_le(mem, p.wrapping_add(8));
+            if !(0x0004..=0x4000).contains(&interval)
+                || !(0x0004..=0x4000).contains(&window)
+                || window > interval
+            {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            if p_wl != 0 {
+                if !is_ram(p_wl) {
+                    return Some(NRF_ERROR_INVALID_ADDR);
+                }
+                // Header retval order: shape (INVALID_PARAM) before
+                // IN_USE — silicon validates the table it would install
+                // before checking who holds the current one.
+                let addr_count = mem.read8(p_wl.wrapping_add(4));
+                let irk_count = mem.read8(p_wl.wrapping_add(12));
+                if addr_count > 8 || irk_count > 8 {
+                    return Some(NRF_ERROR_INVALID_PARAM);
+                }
+                // Same IN_USE rule as ADV (procedures hold the table,
+                // live links do not).
+                if s.advertising || s.scanning || s.scan_whitelist_in_use {
+                    return Some(BLE_ERROR_GAP_WHITELIST_IN_USE);
+                }
+                s.scan_whitelist_ptr = p_wl;
+                s.scan_whitelist_in_use = true;
+            } else if selective {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            if s.scanning {
+                return Some(NRF_ERROR_BUSY);
+            }
+            s.scanning = true;
             s.staged = Some(BleJob::GapScanStart);
             Some(NRF_SUCCESS)
         }
-        x if x == SVC_GAP_SCAN_STOP => Some(NRF_SUCCESS),
+        x if x == SVC_GAP_SCAN_STOP => {
+            if require_enabled(s).is_err() {
+                return Some(BLE_ERROR_NOT_ENABLED);
+            }
+            if !s.scanning {
+                return Some(NRF_ERROR_INVALID_STATE);
+            }
+            s.scanning = false;
+            s.scan_whitelist_ptr = 0;
+            s.scan_whitelist_in_use = false;
+            Some(NRF_SUCCESS)
+        }
         x if x == SVC_GAP_CONNECT => {
             if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
@@ -1905,13 +2345,20 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
                 return Some(NRF_ERROR_INVALID_ADDR);
             }
             let op = mem.read8(p_wp);
-            if op != GATT_OP_WRITE_REQ && op != GATT_OP_WRITE_CMD {
+            let flags = mem.read8(p_wp.wrapping_add(1));
+            if op != GATT_OP_WRITE_REQ
+                && op != GATT_OP_WRITE_CMD
+                && op != GATT_OP_SIGNED_WRITE_CMD
+                && op != GATT_OP_PREP_WRITE_REQ
+                && op != GATT_OP_EXEC_WRITE_REQ
+            {
                 return Some(NRF_ERROR_INVALID_PARAM);
             }
             let handle = read_u16_le(mem, p_wp.wrapping_add(2));
+            let offset = read_u16_le(mem, p_wp.wrapping_add(4));
             let len = read_u16_le(mem, p_wp.wrapping_add(6)) as usize;
             let p_val = mem.read32(p_wp.wrapping_add(8));
-            if handle == GATT_HANDLE_INVALID {
+            if handle == GATT_HANDLE_INVALID && op != GATT_OP_EXEC_WRITE_REQ {
                 return Some(NRF_ERROR_INVALID_PARAM);
             }
             if len != 0 && !is_ram(p_val) {
@@ -1920,6 +2367,70 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             let mut data = vec![0u8; len];
             for (i, b) in data.iter_mut().enumerate() {
                 *b = mem.read8(p_val.wrapping_add(i as u32));
+            }
+            // SIGNED_WRITE (op 3): ATT appends a 12-byte signature to
+            // the value on air. The model verifies shape only (crypto
+            // is driver-side like all SMP math): len < 12 refuses
+            // INVALID_PARAM; the 12 signature bytes ride in `data`
+            // and the bridge echoes them back in WRITE_RSP for the
+            // firmware to MAC-verify.
+            if op == GATT_OP_SIGNED_WRITE_CMD && data.len() < 12 {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            // PREP_WRITE (op 4): offset-bearing queue entry on THIS
+            // link (silicon queues server-side per bearer). EXEC_WRITE
+            // (op 5): commit (flags 1) or cancel (flags 0) the queue.
+            if op == GATT_OP_PREP_WRITE_REQ {
+                match s.conn_mut(conn) {
+                    Some(c) => c.prep_queue.push((handle, offset, data)),
+                    None => return Some(BLE_ERROR_INVALID_CONN_HANDLE),
+                }
+                // Queued entries still complete over air (WRITE_RSP per
+                // prep, like silicon's per-prepare response).
+                let staged = s
+                    .conn(conn)
+                    .and_then(|c| c.prep_queue.last().cloned())
+                    .unwrap_or((handle, offset, Vec::new()));
+                s.staged = Some(BleJob::GattcWrite {
+                    conn,
+                    op,
+                    handle: staged.0,
+                    data: staged.2,
+                });
+                return Some(NRF_SUCCESS);
+            }
+            if op == GATT_OP_EXEC_WRITE_REQ {
+                let queue_len = s.conn(conn).map(|c| c.prep_queue.len()).unwrap_or(0);
+                if queue_len == 0 {
+                    return Some(NRF_ERROR_INVALID_STATE);
+                }
+                if flags != GATT_EXEC_WRITE_FLAG_CANCEL && flags != GATT_EXEC_WRITE_FLAG_WRITE {
+                    return Some(NRF_ERROR_INVALID_PARAM);
+                }
+                if flags == GATT_EXEC_WRITE_FLAG_WRITE {
+                    // Commit in order onto the local GATTS table mirror
+                    // (server-side queue, like silicon): offset writes
+                    // resize + fill, battery level tracks 0x2A19.
+                    let queued = s.conn_mut(conn).map(|c| std::mem::take(&mut c.prep_queue)).unwrap_or_default();
+                    for (h, off, bytes) in queued {
+                        if let Some(a) = s.find_attr_mut(h) {
+                            let off = off as usize;
+                            if a.value.len() < off + bytes.len() {
+                                a.value.resize(off + bytes.len(), 0);
+                            }
+                            a.value[off..off + bytes.len()].copy_from_slice(&bytes);
+                            if a.uuid16 == Some(0x2A19) {
+                                if let Some(&b) = a.value.first() {
+                                    s.batt_level = b;
+                                }
+                            }
+                        }
+                    }
+                } else if let Some(c) = s.conn_mut(conn) {
+                    c.prep_queue.clear();
+                }
+                s.staged = Some(BleJob::GattcWrite { conn, op, handle, data });
+                return Some(NRF_SUCCESS);
             }
             s.staged = Some(BleJob::GattcWrite { conn, op, handle, data });
             Some(NRF_SUCCESS)
@@ -2178,9 +2689,39 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             Some(NRF_SUCCESS)
         }
         x if x == SVC_GATTS_SERVICE_CHANGED => {
+            // sd_ble_gatts_service_changed(conn, start, end): queued
+            // Service Changed indication -> driver resolves over air,
+            // posts SC_CONFIRM when the peer confirms (header MSC).
+            // Silicon retval ladder, in header order: bad conn first,
+            // then NOT_SUPPORTED when SC was not enabled at init, then
+            // state/CCCD/range checks.
             if require_enabled(s).is_err() {
                 return Some(BLE_ERROR_NOT_ENABLED);
             }
+            let (conn, start, end) = (r[0] as u16, r[1] as u16, r[2] as u16);
+            if let Err(e) = s.check_conn(conn) {
+                return Some(e);
+            }
+            if !s.sc_enabled {
+                return Some(NRF_ERROR_NOT_SUPPORTED);
+            }
+            if start == 0 || end == 0 || start > end {
+                return Some(NRF_ERROR_INVALID_PARAM);
+            }
+            if start < BATT_SVC_HANDLE || end >= s.next_handle {
+                return Some(BLE_ERROR_INVALID_ATTR_HANDLE);
+            }
+            // CCCD gate: the peer must have subscribed to 0x2A05
+            // (service-changed indicate bit1 on the auto CCCD).
+            let want = GATT_HVX_INDICATION;
+            let subbed = s
+                .find_attr(start)
+                .map(|a| a.subscribed.iter().any(|(c, b)| *c == conn && (*b & want) != 0))
+                .unwrap_or(false);
+            if !subbed {
+                return Some(NRF_ERROR_INVALID_STATE);
+            }
+            s.staged = Some(BleJob::GattsServiceChanged { conn, start, end });
             Some(NRF_SUCCESS)
         }
         x if x == SVC_GATTS_RW_AUTHORIZE_REPLY
@@ -2658,6 +3199,18 @@ pub fn complete_hvx(conn: u16, handle: u16) {
     });
 }
 
+/// Complete a Service Changed indication: the peer confirmed the
+/// 0x2A05 indication over air; posts SC_CONFIRM (header MSC) on the
+/// link like silicon after the ATT handle-value confirmation.
+pub fn complete_service_changed(conn: u16) {
+    with_sd_ble(|s| {
+        if s.conn(conn).is_none() {
+            return;
+        }
+        s.push_evt(EVT_GATTS_SC_CONFIRM, SdBle::sc_confirm_payload(conn));
+    });
+}
+
 /// TX-flow refill: the driver moved one notify/indicate/data packet over
 /// air, freeing a TX token. Refills one budget token on the link
 /// (saturating at the per-link ceiling) and posts TX_COMPLETE with the
@@ -2720,6 +3273,176 @@ pub fn post_adv_report(peer: [u8; 6], rssi: i8, scan_rsp: bool, data: &[u8]) {
     with_sd_ble(|s| {
         s.push_evt(EVT_GAP_ADV_REPORT, SdBle::adv_report_payload(peer, rssi, scan_rsp, data));
     });
+}
+
+/// Post a peer SEC_REQUEST (the peer asks US to pair; firmware answers
+/// AUTHENTICATE). Needs a live, non-pairing link; returns false without
+/// one. Wire: {conn, bond/mitm/lesc/keypress} (ble_gap.h).
+pub fn post_sec_request(conn: u16, bond: bool, mitm: bool, lesc: bool, keypress: bool) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || s.conn(conn).is_none() {
+            return false;
+        }
+        s.push_evt(
+            EVT_GAP_SEC_REQUEST,
+            SdBle::sec_request_payload(conn, bond, mitm, lesc, keypress),
+        );
+        true
+    })
+}
+
+/// Post a peer CONN_PARAM_UPDATE_REQUEST (firmware answers with the
+/// CONN_PARAM_UPDATE request SVC, or rejects with NULL params).
+/// Needs a live link; returns false without one.
+pub fn post_conn_param_update_request(conn: u16) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || s.conn(conn).is_none() {
+            return false;
+        }
+        s.push_evt(
+            EVT_GAP_CONN_PARAM_UPDATE_REQUEST,
+            SdBle::conn_param_update_request_payload(conn),
+        );
+        true
+    })
+}
+
+/// Post a SCAN_REQ_REPORT (a scanner's SCAN_REQ hit our advertisement).
+/// No link needed (observer role); always true when enabled.
+pub fn post_scan_req_report(peer: [u8; 6], rssi: i8) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled {
+            return false;
+        }
+        s.push_evt(EVT_GAP_SCAN_REQ_REPORT, SdBle::scan_req_report_payload(peer, rssi));
+        true
+    })
+}
+
+/// Post a GAP TIMEOUT (src: 0 advertising, 1 security-request, 2 scan,
+/// 3 connection — S132 timeout sources). Needs a live link except for
+/// advertising/scan timeouts (conn = INVALID then); returns false when
+/// the stack is down. Firmware needs no reply (informational).
+pub fn post_gap_timeout(conn: u16, src: u8) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || src > 3 {
+            return false;
+        }
+        if (conn != BLE_CONN_HANDLE_INVALID) && s.conn(conn).is_none() {
+            return false;
+        }
+        s.push_evt(EVT_GAP_TIMEOUT, SdBle::gap_timeout_payload(src));
+        true
+    })
+}
+
+/// Post a GATTC TIMEOUT (ATT protocol, src 0). Needs a live link.
+pub fn post_gattc_timeout(conn: u16) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || s.conn(conn).is_none() {
+            return false;
+        }
+        s.push_evt(EVT_GATTC_TIMEOUT, SdBle::gattc_timeout_payload());
+        true
+    })
+}
+
+/// Post a GATTS TIMEOUT (ATT protocol, src 0). Needs a live link.
+pub fn post_gatts_timeout(conn: u16) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || s.conn(conn).is_none() {
+            return false;
+        }
+        s.push_evt(EVT_GATTS_TIMEOUT, SdBle::gatts_timeout_payload());
+        true
+    })
+}
+
+/// Post a USER_MEM_REQUEST (stack needs a user-memory block of `type`;
+/// firmware answers USER_MEM_REPLY — the sync ack path stays valid).
+pub fn post_user_mem_request(conn: u16, mem_type: u8) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || s.conn(conn).is_none() {
+            return false;
+        }
+        s.push_evt(
+            EVT_COMMON_USER_MEM_REQUEST,
+            SdBle::user_mem_request_payload(mem_type),
+        );
+        true
+    })
+}
+
+/// Post a USER_MEM_RELEASE (the loan completed; informational, no reply
+/// SVC exists).
+pub fn post_user_mem_release(conn: u16, mem_type: u8) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || s.conn(conn).is_none() {
+            return false;
+        }
+        s.push_evt(
+            EVT_COMMON_USER_MEM_RELEASE,
+            SdBle::user_mem_release_payload(mem_type),
+        );
+        true
+    })
+}
+
+/// Post a GATTS RW_AUTHORIZE_REQUEST (peer read/write on an attr that
+/// needs app authorization; firmware answers RW_AUTHORIZE_REPLY —
+/// already acked SUCCESS, now the ask is posted too). Needs a live
+/// link + known handle; type 1 = read, 2 = write.
+pub fn post_rw_authorize_request(
+    conn: u16,
+    auth_type: u8,
+    handle: u16,
+    offset: u16,
+    op: u8,
+    data: &[u8],
+) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || s.conn(conn).is_none() {
+            return false;
+        }
+        if auth_type != 1 && auth_type != 2 {
+            return false;
+        }
+        let uuid16 = s.find_attr(handle).and_then(|a| a.uuid16);
+        if s.find_attr(handle).is_none() {
+            return false;
+        }
+        s.push_evt(
+            EVT_GATTS_RW_AUTHORIZE_REQUEST,
+            SdBle::rw_authorize_request_payload(auth_type, handle, uuid16, offset, op, data),
+        );
+        true
+    })
+}
+
+/// Post a GATTS SYS_ATTR_MISSING (persistent system attributes needed;
+/// firmware answers SYS_ATTR_SET — already acked, now the ask posts).
+/// Needs a live link.
+pub fn post_sys_attr_missing(conn: u16) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || s.conn(conn).is_none() {
+            return false;
+        }
+        s.push_evt(EVT_GATTS_SYS_ATTR_MISSING, SdBle::sys_attr_missing_payload());
+        true
+    })
+}
+
+/// Post a GATTS SC_CONFIRM (driver-forced confirm, e.g. loopback
+/// tests). Needs a live link. The air path is complete_service_changed
+/// (peer confirmed the 0x2A05 indication over air).
+pub fn post_sc_confirm(conn: u16) -> bool {
+    with_sd_ble(|s| {
+        if !s.enabled || s.conn(conn).is_none() {
+            return false;
+        }
+        s.push_evt(EVT_GATTS_SC_CONFIRM, SdBle::sc_confirm_payload(conn));
+        true
+    })
 }
 
 /// Post a GATTS write (peer wrote our characteristic) for evt_get.
@@ -2805,6 +3528,25 @@ pub fn conn_sec(conn: u16) -> Vec<u8> {
         Some(c) if c.encrypted => vec![0x21, 16],
         Some(_) => vec![0x11, 16],
     })
+}
+
+/// GAP TX power level in dBm, as stored by TX_POWER_SET (debug/export).
+/// Default 0 (silicon reset); only the S132-legal set is ever stored.
+pub fn tx_power_dbm() -> i8 {
+    with_sd_ble(|s| s.tx_power_dbm)
+}
+
+/// Advertising state (debug/export): (active, directed, filter policy,
+/// whitelist addr count). Armed by ADV_START validation, cleared by
+/// ADV_STOP / reset. No RF invented — the bridge/peripheral-connect
+/// path completes what this arms.
+pub fn adv_state() -> (bool, bool, u8, u8) {
+    with_sd_ble(|s| (s.advertising, s.adv_directed, s.adv_filter, s.adv_whitelist_addrs))
+}
+
+/// Directed-advertising peer address (valid when adv_state directed).
+pub fn adv_peer_addr() -> [u8; 6] {
+    with_sd_ble(|s| s.adv_peer)
 }
 
 #[cfg(test)]
@@ -3051,6 +3793,78 @@ mod tests {
         assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTC_WRITE_RSP));
         assert_eq!(mem.read8(0x2000300C), 1, "op echo");
         assert_eq!(mem.read8(0x2000300D), 0, "pad after op");
+        // SIGNED_WRITE (op 3): short (< 12B signature) refuses; a
+        // 12B-signed value stages with the signature bytes in tow.
+        mem.write8(0x20001400, GATT_OP_SIGNED_WRITE_CMD);
+        mem.write16(0x20001406, 2);
+        let r = regs(1, 0x20001400, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTC_WRITE, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "signed short refuses"
+        );
+        mem.write16(0x20001406, 14);
+        mem.write32(0x20001408, 0x20001410);
+        for i in 0..14u32 {
+            mem.write8(0x20001410 + i, i as u8);
+        }
+        let r = regs(1, 0x20001400, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_WRITE, &r), Some(NRF_SUCCESS));
+        assert_eq!(
+            take_job(),
+            Some(BleJob::GattcWrite {
+                conn: 1,
+                op: 3,
+                handle: 0x13,
+                data: (0..14).collect(),
+            }),
+            "signed bytes ride along for the MAC check"
+        );
+        complete_gattc_write(1, 0x13, 3, &(0..14).collect::<Vec<u8>>());
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTC_WRITE_RSP));
+        assert_eq!(mem.read8(0x2000300C), 3, "signed op echo");
+        // PREP/EXEC queue: two offset chunks, then commit lands them
+        // on the local table mirror in order.
+        let value = build_battery(&sys, &mut mem);
+        for (off, byte) in [(0u16, 0xAAu8), (1, 0xBB)] {
+            mem.write8(0x20001400, GATT_OP_PREP_WRITE_REQ);
+            mem.write16(0x20001402, value);
+            mem.write16(0x20001404, off);
+            mem.write16(0x20001406, 1);
+            mem.write8(0x20001410, byte);
+            mem.write32(0x20001408, 0x20001410);
+            let r = regs(1, 0x20001400, 0, 0);
+            assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_WRITE, &r), Some(NRF_SUCCESS));
+            let _ = take_job();
+        }
+        mem.write8(0x20001400, GATT_OP_EXEC_WRITE_REQ);
+        mem.write8(0x20001401, GATT_EXEC_WRITE_FLAG_WRITE);
+        mem.write16(0x20001402, 0);
+        mem.write16(0x20001406, 0);
+        mem.write32(0x20001408, 0);
+        let r = regs(1, 0x20001400, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_WRITE, &r), Some(NRF_SUCCESS));
+        let _ = take_job();
+        assert_eq!(batt_level(), 0xAA, "exec-write commit lands chunk 0");
+        // Cancel path: queue one more chunk, cancel, table unchanged.
+        // (Re-point the value pointer: the signed-write block above
+        // left *value at 0x20001410+14 bytes of 0..13, so rewrite it.)
+        mem.write8(0x20001400, GATT_OP_PREP_WRITE_REQ);
+        mem.write16(0x20001402, value);
+        mem.write16(0x20001404, 0);
+        mem.write16(0x20001406, 1);
+        mem.write8(0x20001410, 0xCC);
+        mem.write32(0x20001408, 0x20001410);
+        let r = regs(1, 0x20001400, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_WRITE, &r), Some(NRF_SUCCESS));
+        let _ = take_job();
+        mem.write8(0x20001400, GATT_OP_EXEC_WRITE_REQ);
+        mem.write8(0x20001401, GATT_EXEC_WRITE_FLAG_CANCEL);
+        let r = regs(1, 0x20001400, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTC_WRITE, &r), Some(NRF_SUCCESS));
+        let _ = take_job();
+        assert_eq!(batt_level(), 0xAA, "cancel drops the queued chunk");
         // HVX from the peer posts HVX with pad-correct layout.
         complete_gattc_hvx(1, 0x13, GATT_HVX_NOTIFICATION, &[0x55]);
         let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
@@ -3079,10 +3893,83 @@ mod tests {
         reset_for_test();
         let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
         connect(&sys, &mut mem);
-        // SCAN_START stages; completion posts a padded ADV_REPORT.
+        // SCAN_START stages (NULL = defaults); a second SCAN_START
+        // while the observer slot is live refuses BUSY like silicon.
         let r = regs(0, 0, 0, 0);
         assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_SCAN_START, &r), Some(NRF_SUCCESS));
         assert_eq!(take_job(), Some(BleJob::GapScanStart));
+        let r = regs(0, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_SCAN_START, &r),
+            Some(NRF_ERROR_BUSY),
+            "double scan refuses"
+        );
+        // SCAN_STOP needs a live scan, then clears (double stop refuses).
+        // (The first staged GapScanStart job was taken above; the stop
+        // only clears the observer slot.)
+        let r = regs(0, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_SCAN_STOP, &r), Some(NRF_SUCCESS));
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_SCAN_STOP, &r),
+            Some(NRF_ERROR_INVALID_STATE),
+            "double scan-stop refuses"
+        );
+        // Scan params validate S132 ranges: window > interval refuses,
+        // selective without a table refuses, bad whitelist shape refuses.
+        // (ble_gap_scan_params_t: b0 bitfield @0, p_wl@1 u32, interval@6,
+        // window@8, timeout@10; even addresses only.)
+        mem.write8(0x20003300, 0);
+        mem.write16(0x20003306, 0x10);
+        mem.write16(0x20003308, 0x20); // window > interval
+        mem.write16(0x2000330A, 0);
+        let r = regs(0x20003300, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_SCAN_START, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "window > interval refuses"
+        );
+        mem.write8(0x20003300, 0x02); // selective, no table
+        mem.write16(0x20003306, 0x10);
+        mem.write16(0x20003308, 0x10);
+        let r = regs(0x20003300, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_SCAN_START, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "selective without table refuses"
+        );
+        mem.write8(0x20003300, 0x00);
+        mem.write16(0x20003301, 0x3400);
+        mem.write16(0x20003303, 0x2000);
+        mem.write8(0x20003404, 9); // 9 whitelist addrs
+        mem.write8(0x2000340C, 0);
+        let r = regs(0x20003300, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_SCAN_START, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "9 scan whitelist addrs refuse"
+        );
+        mem.write8(0x20003404, 2);
+        // The observer slot is idle here (the NULL-defaults scan was
+        // taken + stopped above), so the table arm stages directly.
+        let r = regs(0x20003300, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_SCAN_START, &r), Some(NRF_SUCCESS));
+        assert_eq!(take_job(), Some(BleJob::GapScanStart));
+        // While the scan whitelist arm is live, an ADV whitelist arm
+        // refuses IN_USE; SCAN_STOP clears the latch.
+        mem.write16(0x20005006, 0x5100);
+        mem.write16(0x20005008, 0x2000);
+        mem.write8(0x20005104, 1);
+        mem.write8(0x2000510C, 0);
+        mem.write16(0x2000500A, 0x20);
+        mem.write16(0x2000500C, 0);
+        let r = regs(0x20005000, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r),
+            Some(BLE_ERROR_GAP_WHITELIST_IN_USE),
+            "adv whitelist while scan holds it refuses"
+        );
+        let r = regs(0, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_SCAN_STOP, &r), Some(NRF_SUCCESS));
         post_adv_report([9, 9, 9, 9, 9, 9], -60, true, &[0x02, 0x01, 0x06]);
         let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
         assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_ADV_REPORT));
@@ -3635,6 +4522,338 @@ mod tests {
         assert!(post_keypress(h4, 1));
         let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
         assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_KEY_PRESSED));
+    }
+
+    #[test]
+    fn tx_power_store_and_driver_event_posts() {
+        // TX_POWER_SET stores the S132-legal dBm set and refuses the
+        // rest; the driver-posted request/report/timeout/user-mem/
+        // authorize events drain with the S132 wire bodies.
+        let _g = lock_boot();
+        let sys = test_dummy_system();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        reset_for_test();
+        // Disabled stack: TX_POWER_SET refuses NOT_ENABLED.
+        let r = regs(0xFFFFFFFC, 0, 0, 0); // -4 dBm
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_TX_POWER_SET, &r),
+            Some(BLE_ERROR_NOT_ENABLED)
+        );
+        let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
+        for (dbm_u8, ok) in [
+            (0xFCu32, true),  // -4
+            (0x00, true),     // 0
+            (0x04, true),     // +4
+            (0xD8, true),     // -40
+            (0x05, false),    // +5: no such level
+            (0xFF, false),    // -1: no such level
+        ] {
+            let r = regs(dbm_u8, 0, 0, 0);
+            assert_eq!(
+                handle_svc(&sys, &mut mem, SVC_GAP_TX_POWER_SET, &r),
+                Some(if ok { NRF_SUCCESS } else { NRF_ERROR_INVALID_PARAM }),
+                "tx_power {dbm_u8:#x}"
+            );
+        }
+        assert_eq!(tx_power_dbm(), -40, "last accepted level sticks");
+        connect(&sys, &mut mem);
+        // SEC_REQUEST: peer asks us to pair (bond+mitm bits).
+        assert!(post_sec_request(1, true, true, false, false));
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_SEC_REQUEST));
+        assert_eq!(len, 4 + 2 + 1, "hdr + conn + flags");
+        assert_eq!(mem.read8(0x20003006), 0x03, "bond+mitm bits");
+        assert!(!post_sec_request(0x77, true, false, false, false), "no link: refused");
+        // CONN_PARAM_UPDATE_REQUEST: firmware answers via the request SVC.
+        assert!(post_conn_param_update_request(1));
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_CONN_PARAM_UPDATE_REQUEST));
+        assert_eq!(len, 4 + 2 + 8, "hdr + conn + params");
+        // SCAN_REQ_REPORT: observer role, no link needed.
+        assert!(post_scan_req_report([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF], -61));
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_SCAN_REQ_REPORT));
+        assert_eq!(len, 4 + 2 + 1 + 7, "hdr + INVALID + rssi + peer");
+        assert_eq!(mem.read8(0x20003006) as i8, -61, "report rssi");
+        // TIMEOUTs: advertising (no link), scan, connection.
+        assert!(post_gap_timeout(BLE_CONN_HANDLE_INVALID, 0));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_TIMEOUT));
+        assert_eq!(mem.read8(0x20003004), 0, "adv timeout src");
+        assert!(post_gap_timeout(1, 3));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GAP_TIMEOUT));
+        assert_eq!(mem.read8(0x20003004), 3, "conn timeout src");
+        assert!(!post_gap_timeout(1, 9), "bad src refused");
+        assert!(post_gattc_timeout(1));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTC_TIMEOUT));
+        assert!(post_gatts_timeout(1));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_TIMEOUT));
+        // USER_MEM loan pair: request (reply SVC stays valid) + release.
+        assert!(post_user_mem_request(1, 1));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_COMMON_USER_MEM_REQUEST));
+        assert_eq!(mem.read8(0x20003004), 1, "mem type");
+        let r = regs(1, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_BLE_USER_MEM_REPLY, &r),
+            Some(NRF_SUCCESS),
+            "reply SVC still acks beside the post"
+        );
+        assert!(post_user_mem_release(1, 1));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_COMMON_USER_MEM_RELEASE));
+        // RW_AUTHORIZE_REQUEST (write leg on the battery value) +
+        // SYS_ATTR_MISSING + SC_CONFIRM drain with their bodies.
+        let value = build_battery(&sys, &mut mem);
+        assert!(post_rw_authorize_request(1, 2, value, 0, 1, &[0x42]));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_RW_AUTHORIZE_REQUEST));
+        assert_eq!(mem.read8(0x20003004), 2, "write authorize type");
+        assert!(!post_rw_authorize_request(1, 9, value, 0, 1, &[]), "bad type refused");
+        assert!(!post_rw_authorize_request(1, 1, 0x9999, 0, 1, &[]), "unknown handle refused");
+        assert!(post_sys_attr_missing(1));
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_SYS_ATTR_MISSING));
+        assert!(post_sc_confirm(1));
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_SC_CONFIRM));
+        assert_eq!(len, 4 + 2, "hdr + conn head");
+        assert_eq!(mem.read16(0x20003004), 1, "confirm carries its conn");
+        // Queue drained -> NOT_FOUND again.
+        mem.write16(0x20003FF0, 128);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_BLE_EVT_GET, &regs(0x20003000, 0x20003FF0, 0, 0)),
+            Some(NRF_ERROR_NOT_FOUND)
+        );
+    }
+
+    #[test]
+    fn adv_start_validates_whitelist_and_directed() {
+        // ADV_START: NULL = defaults; struct validated like silicon
+        // (type/fp/interval/timeout ranges, whitelist shape, directed
+        // peer); state arms for the bridge/peripheral-connect path.
+        let _g = lock_boot();
+        let sys = test_dummy_system();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        reset_for_test();
+        // Disabled stack refuses.
+        let r = regs(0, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r),
+            Some(BLE_ERROR_NOT_ENABLED)
+        );
+        let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
+        // NULL params = defaults, advertising on, undirected.
+        let r = regs(0, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r), Some(NRF_SUCCESS));
+        assert_eq!(adv_state(), (true, false, 0, 0), "defaults arm");
+        // Bad pointer refuses INVALID_ADDR.
+        let r = regs(0x1000, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r),
+            Some(NRF_ERROR_INVALID_ADDR)
+        );
+        // Struct @0x20005000: type ADV_IND(0), no peer, fp ANY(0),
+        // no whitelist, interval 0x20, timeout 0. (write16 pairs:
+        // use even addresses — the model traps odd write32.)
+        mem.write8(0x20005000, 0);
+        mem.write8(0x20005001, 0);
+        mem.write8(0x20005002, 0);
+        mem.write8(0x20005003, 0);
+        mem.write8(0x20005004, 0);
+        mem.write8(0x20005005, 0);
+        mem.write8(0x20005006, 0);
+        mem.write8(0x20005007, 0);
+        mem.write8(0x20005008, 0);
+        mem.write8(0x20005009, 0);
+        mem.write16(0x2000500A, 0x20);
+        mem.write16(0x2000500C, 0);
+        let r = regs(0x20005000, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r), Some(NRF_SUCCESS));
+        assert_eq!(adv_state(), (true, false, 0, 0), "undirected arms");
+        // Bad type / bad fp / bad interval / bad timeout refuse.
+        mem.write8(0x20005000, 9);
+        let r = regs(0x20005000, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "type 9 refuses"
+        );
+        mem.write8(0x20005000, 0);
+        mem.write8(0x20005005, 9);
+        let r = regs(0x20005000, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "fp 9 refuses"
+        );
+        mem.write8(0x20005005, 0);
+        mem.write16(0x2000500A, 0x10);
+        let r = regs(0x20005000, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "interval 0x10 refuses"
+        );
+        mem.write16(0x2000500A, 0x20);
+        mem.write16(0x2000500C, 0x4000);
+        let r = regs(0x20005000, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "timeout 0x4000 refuses"
+        );
+        mem.write16(0x2000500C, 0);
+        // Whitelist with 9 addrs refuses (max 8); 2 addrs arms + stores.
+        // (Even addresses only — the model traps odd write32. Stop the
+        // defaults arm first: with the advertiser live the table is
+        // IN_USE like silicon, so shape checks come second.)
+        let r = regs(0, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_ADV_STOP, &r), Some(NRF_SUCCESS));
+        mem.write16(0x20005006, 0x5100);
+        mem.write16(0x20005008, 0x2000);
+        mem.write8(0x20005104, 9);
+        mem.write8(0x2000510C, 0);
+        let r = regs(0x20005000, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "9 whitelist addrs refuse"
+        );
+        mem.write8(0x20005104, 2);
+        let r = regs(0x20005000, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r), Some(NRF_SUCCESS));
+        assert_eq!(adv_state(), (true, false, 0, 2), "whitelist count stored");
+        // While the whitelist arm is live, re-arming with a whitelist
+        // refuses IN_USE (silicon retval); STOP clears the latch.
+        let r = regs(0x20005000, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r),
+            Some(BLE_ERROR_GAP_WHITELIST_IN_USE),
+            "whitelist in use refuses"
+        );
+        let r = regs(0, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_ADV_STOP, &r), Some(NRF_SUCCESS));
+        // Directed without a peer refuses INVALID_BLE_ADDR; with a peer
+        // arms + stores the address.
+        mem.write16(0x20005006, 0);
+        mem.write16(0x20005008, 0);
+        mem.write8(0x20005000, 1);
+        mem.write16(0x20005000 + 1, 0);
+        mem.write16(0x20005000 + 3, 0);
+        let r = regs(0x20005000, 0, 0, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r),
+            Some(BLE_ERROR_GAP_INVALID_BLE_ADDR),
+            "directed needs a peer"
+        );
+        mem.write8(0x20005200, 1);
+        for (i, b) in [0xAAu8, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF].iter().enumerate() {
+            mem.write8(0x20005200 + 1 + i as u32, *b);
+        }
+        // p_peer = 0x20005200 via two u16 halves (even addresses only).
+        mem.write16(0x20005001, 0x5200);
+        mem.write16(0x20005003, 0x2000);
+        mem.write16(0x2000500A, 0); // high-duty directed: interval 0
+        let r = regs(0x20005000, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r), Some(NRF_SUCCESS));
+        assert_eq!(adv_state().1, true, "directed arms");
+        assert_eq!(adv_peer_addr(), [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF]);
+        // ADV_STOP needs an active advertiser, then clears.
+        let r = regs(0, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_ADV_STOP, &r), Some(NRF_SUCCESS));
+        assert_eq!(adv_state().0, false, "stop clears");
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GAP_ADV_STOP, &r),
+            Some(NRF_ERROR_INVALID_STATE),
+            "double stop refuses"
+        );
+    }
+
+    #[test]
+    fn service_changed_gated_indication_and_confirm() {
+        // SERVICE_CHANGED (0xA7): SC-enable bit latched at ENABLE +
+        // peer subscribed to the 0x2A05 CCCD indicate bit. Refusal
+        // ladder (header retval order): conn -> NOT_SUPPORTED ->
+        // param -> handle-range -> CCCD. Staged job completes over air
+        // with SC_CONFIRM carrying the conn head.
+        let _g = lock_boot();
+        let sys = test_dummy_system();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        reset_for_test();
+        let _ = handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &[0u32; 13]);
+        connect(&sys, &mut mem);
+        let h0 = conn_handles()[0];
+        let value = build_battery(&sys, &mut mem);
+        let svc_end = value + 1; // auto CCCD lives at value+1
+        // Bad conn first (link 1 up, so unknown handle -> INVALID_CONN_HANDLE).
+        let r = regs(0x9999, 0x10, svc_end as u32, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTS_SERVICE_CHANGED, &r),
+            Some(BLE_ERROR_INVALID_CONN_HANDLE),
+            "bad conn refuses first"
+        );
+        // Not enabled at init -> NOT_SUPPORTED (silicon retval).
+        // (Use the native periph role on the auto CCCD's owning value
+        // handle: build_battery's value handle is the 0x2A19 char.)
+        let r = regs(h0 as u32, 0x10, svc_end as u32, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTS_SERVICE_CHANGED, &r),
+            Some(NRF_ERROR_NOT_SUPPORTED),
+            "SC not enabled refuses"
+        );
+        // Enable SC at init (bit0 of the gatts byte in the params block),
+        // then re-enable + reconnect (ENABLE latches the bit).
+        mem.write8(0x20006004, 1);
+        let r = regs(0x20006000, 0, 0, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &r), Some(NRF_SUCCESS));
+        connect(&sys, &mut mem);
+        let h = conn_handles()[0];
+        // Param ladder: zero handles / inverted range refuse.
+        let r = regs(h as u32, 0, svc_end as u32, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTS_SERVICE_CHANGED, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "start 0 refuses"
+        );
+        let r = regs(h as u32, svc_end as u32, 0x10, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTS_SERVICE_CHANGED, &r),
+            Some(NRF_ERROR_INVALID_PARAM),
+            "inverted range refuses"
+        );
+        // Out-of-table range refuses INVALID_ATTR_HANDLE.
+        let r = regs(h as u32, 0x10, 0x7FFF, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTS_SERVICE_CHANGED, &r),
+            Some(BLE_ERROR_INVALID_ATTR_HANDLE),
+            "out-of-table refuses"
+        );
+        // Unsubscribed peer refuses INVALID_STATE (CCCD gate).
+        let r = regs(h as u32, value as u32, svc_end as u32, 0);
+        assert_eq!(
+            handle_svc(&sys, &mut mem, SVC_GATTS_SERVICE_CHANGED, &r),
+            Some(NRF_ERROR_INVALID_STATE),
+            "unsubscribed refuses"
+        );
+        // Subscribe indicate (bit1) on the VALUE handle's CCCD, then stage.
+        // NOTE: the CCCD gate reads subscribed[] on find_attr(start) —
+        // start IS the value handle (owner), not the CCCD handle.
+        post_gatts_write(h, value + 1, Some(0x2902), GATT_OP_WRITE_REQ, &[0x02, 0x00]);
+        let (rc, id, _) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_WRITE));
+        let r = regs(h as u32, value as u32, svc_end as u32, 0);
+        assert_eq!(handle_svc(&sys, &mut mem, SVC_GATTS_SERVICE_CHANGED, &r), Some(NRF_SUCCESS));
+        assert_eq!(take_job(), Some(BleJob::GattsServiceChanged { conn: h, start: value, end: svc_end }));
+        // Air confirm posts SC_CONFIRM with the conn head.
+        complete_service_changed(h);
+        let (rc, id, len) = drain(&sys, &mut mem, 0x20003000, 128);
+        assert_eq!((rc, id), (NRF_SUCCESS, EVT_GATTS_SC_CONFIRM));
+        assert_eq!(len, 4 + 2, "hdr + conn head");
+        assert_eq!(mem.read16(0x20003004), h, "confirm carries its conn");
     }
 
     #[test]

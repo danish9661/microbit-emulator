@@ -183,7 +183,7 @@ export class BleAir {
       case 5: m.t = 'ble_disc'; m.kind = 0; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
       case 6: m.t = 'ble_disc'; m.kind = 2; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
       case 7: m.t = 'ble_disc'; m.kind = 3; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
-      case 8: m.t = 'ble_write'; m.op = job.op ?? 1; m.handle = job.handle ?? 0; m.data = [...(job.data ?? [])]; break;
+      case 8: m.t = 'ble_write'; m.op = job.op ?? 1; m.handle = job.handle ?? 0; m.data = [...(job.data ?? [])]; m.len = job.data?.length ?? 0; break;
       case 9: m.t = 'ble_hvx'; m.handle = job.handle ?? 0; m.type = job.type ?? 1; m.data = [...(job.data ?? [])]; break;
       case 10: m.t = 'ble_l2cap'; m.cid = job.cid ?? 0x40; m.data = [...(job.data ?? [])]; break;
       case 11: m.t = 'ble_pair'; break;
@@ -191,6 +191,7 @@ export class BleAir {
       case 13: m.t = 'ble_disc'; m.kind = 4; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
       case 14: m.t = 'ble_uuid_read'; m.uuid16 = job.uuid16 ?? 0xFFFF; m.start = job.start ?? 1; m.end = job.end ?? 0xFFFF; break;
       case 15: m.t = 'ble_vals_read'; m.handles = [...(job.handles ?? [])]; break;
+      case 16: m.t = 'ble_sc'; m.start = job.start ?? 1; m.end = job.end ?? 1; break;
       default: return false;
     }
     this.ws.send(JSON.stringify(m));

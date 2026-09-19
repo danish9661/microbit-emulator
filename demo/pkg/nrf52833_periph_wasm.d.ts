@@ -54,6 +54,17 @@ export function aar_complete(resolved: boolean): void;
 
 export function aar_take_job(): Uint32Array;
 
+/**
+ * Directed-advertising peer address (6 LE bytes; valid when directed).
+ */
+export function ble_adv_peer_addr(): Uint8Array;
+
+/**
+ * Advertising state: [active, directed, filter_policy, whitelist_addrs].
+ * Armed by ADV_START validation, cleared by ADV_STOP / reset.
+ */
+export function ble_adv_state(): Uint8Array;
+
 export function ble_batt_level(): number;
 
 /**
@@ -160,6 +171,12 @@ export function ble_complete_rel_disc(conn: number, handles: Uint16Array, uuids:
 export function ble_complete_rssi(conn: number, rssi: number): void;
 
 /**
+ * Complete a Service Changed indication: the peer confirmed the
+ * 0x2A05 indication over air; posts SC_CONFIRM on the link.
+ */
+export function ble_complete_service_changed(conn: number): void;
+
+/**
  * TX-flow refill: driver moved one packet over air; refills one TX
  * token on the link and posts TX_COMPLETE with the free count.
  */
@@ -211,6 +228,27 @@ export function ble_post_adv_report(peer: Uint8Array, rssi: number, scan_rsp: bo
 export function ble_post_auth_key_request(conn: number, key_type: number): boolean;
 
 /**
+ * Post a peer CONN_PARAM_UPDATE_REQUEST (firmware answers with the
+ * CONN_PARAM_UPDATE request SVC).
+ */
+export function ble_post_conn_param_update_request(conn: number): boolean;
+
+/**
+ * Post a GAP TIMEOUT (src 0 adv, 1 sec-req, 2 scan, 3 conn).
+ */
+export function ble_post_gap_timeout(conn: number, src: number): boolean;
+
+/**
+ * Post a GATTC TIMEOUT (ATT protocol).
+ */
+export function ble_post_gattc_timeout(conn: number): boolean;
+
+/**
+ * Post a GATTS TIMEOUT (ATT protocol).
+ */
+export function ble_post_gatts_timeout(conn: number): boolean;
+
+/**
  * Post a peer write to our table: conn handle, attr handle,
  * uuid16 (0xFFFF = 128-bit/vendor), op (1 = write request), bytes.
  */
@@ -235,6 +273,21 @@ export function ble_post_lesc_dhkey_request(conn: number, oobd_req: boolean): bo
 export function ble_post_passkey_display(conn: number, passkey: Uint8Array, match_request: boolean): boolean;
 
 /**
+ * Post a GATTS RW_AUTHORIZE_REQUEST (firmware answers RW_AUTHORIZE_REPLY).
+ */
+export function ble_post_rw_authorize_request(conn: number, auth_type: number, handle: number, offset: number, op: number, data: Uint8Array): boolean;
+
+/**
+ * Post a GATTS SC_CONFIRM (header only, no reply path).
+ */
+export function ble_post_sc_confirm(conn: number): boolean;
+
+/**
+ * Post a SCAN_REQ_REPORT (a scanner hit our advertisement).
+ */
+export function ble_post_scan_req_report(peer: Uint8Array, rssi: number): boolean;
+
+/**
  * Post a peer-initiated SEC_INFO_REQUEST: the peer asks to re-encrypt
  * (peer_addr 7B type+6, master_id 10B ediv+rand[8], req bits: bit0
  * enc_info, bit1 id_info, bit2 sign_info). Firmware answers
@@ -250,6 +303,26 @@ export function ble_post_sec_info_request(conn: number, peer_addr: Uint8Array, m
  * Returns false when the link cannot take a request.
  */
 export function ble_post_sec_params_request(conn: number, peer_params: Uint8Array): boolean;
+
+/**
+ * Post a peer SEC_REQUEST (firmware answers AUTHENTICATE).
+ */
+export function ble_post_sec_request(conn: number, bond: boolean, mitm: boolean, lesc: boolean, keypress: boolean): boolean;
+
+/**
+ * Post a GATTS SYS_ATTR_MISSING (firmware answers SYS_ATTR_SET).
+ */
+export function ble_post_sys_attr_missing(conn: number): boolean;
+
+/**
+ * Post a USER_MEM_RELEASE (informational, no reply path).
+ */
+export function ble_post_user_mem_release(conn: number, mem_type: number): boolean;
+
+/**
+ * Post a USER_MEM_REQUEST (firmware answers USER_MEM_REPLY).
+ */
+export function ble_post_user_mem_request(conn: number, mem_type: number): boolean;
 
 export function ble_queue_len(): number;
 
@@ -267,6 +340,12 @@ export function ble_store_bond(peer: Uint8Array, ltk: Uint8Array, irk: Uint8Arra
 export function ble_take_data(): Uint8Array;
 
 export function ble_take_job(): Uint32Array;
+
+/**
+ * GAP TX power level in dBm, as stored by TX_POWER_SET (debug/export).
+ * Default 0 (silicon reset); only the S132-legal set is ever stored.
+ */
+export function ble_tx_power_dbm(): number;
 
 export function ccm_complete(mic_ok: boolean): void;
 
@@ -370,7 +449,20 @@ export function qspi_take_read(): Uint32Array;
 
 export function qspi_take_write(): Uint32Array;
 
+/**
+ * Link-budget air level: TX dBm minus path loss, clamped [-127, 0].
+ * Pure function so JS air and the model agree on one honest number.
+ */
+export function radio_air_rssi_dbm(tx_code: number, path_loss_db: number): number;
+
 export function radio_complete_rx(): void;
+
+/**
+ * Complete RX with an explicit path loss (dB) for this packet's RSSI
+ * stamp. Driver-side air calls this when it knows the range; the
+ * plain complete_rx() keeps the queued/default loss.
+ */
+export function radio_complete_rx_with_path_loss(path_loss_db: number): void;
 
 export function radio_complete_tx(): void;
 
@@ -379,12 +471,24 @@ export function radio_inject_corrupt(bytes: Uint8Array): void;
 export function radio_inject_rx(bytes: Uint8Array): void;
 
 /**
+ * Plain inject with a path-loss in dB (same RSSI stamp, no address byte).
+ */
+export function radio_inject_rx_lossy(bytes: Uint8Array, path_loss_db: number): void;
+
+/**
  * Inject a received packet addressed to a DAB/DAP entry (air peer).
  * Convenience over inject_rx for the two-instance bridge: the first
  * byte is the device-address byte the match unit checks (DEVMATCH
  * when it equals a programmed, listened DAB entry).
  */
 export function radio_inject_rx_to(dab_idx: number, bytes: Uint8Array): void;
+
+/**
+ * Addressed inject with a path-loss in dB (air range model): the RX
+ * completion stamps TXPOWER-minus-loss into the RSSI latch, so a
+ * firmware RSSISTART after RX reads this packet's level like silicon.
+ */
+export function radio_inject_rx_to_lossy(dab_idx: number, bytes: Uint8Array, path_loss_db: number): void;
 
 /**
  * Set the 802.15.4 energy-detect sample level in dBm (negative).
@@ -397,6 +501,12 @@ export function radio_set_rssi_dbm(dbm: number): void;
 export function radio_take_rx(): Uint32Array;
 
 export function radio_take_tx(): Uint32Array;
+
+/**
+ * nRF52 TXPOWER code (SVD 0x50C) as signed dBm (+8..0, -4..-40).
+ * Pure function for the driver link-budget (shared with the model).
+ */
+export function radio_txpower_dbm(code: number): number;
 
 /**
  * Clear all process-lifetime globals so a NEW emulator instance starts clean.
@@ -475,6 +585,8 @@ export interface InitOutput {
     readonly __wbg_wasmcpu_free: (a: number, b: number) => void;
     readonly aar_complete: (a: number) => void;
     readonly aar_take_job: (a: number) => void;
+    readonly ble_adv_peer_addr: (a: number) => void;
+    readonly ble_adv_state: (a: number) => void;
     readonly ble_batt_level: () => number;
     readonly ble_bond_has_keys: (a: number, b: number, c: number, d: number) => number;
     readonly ble_bond_read_keys: (a: number, b: number, c: number) => void;
@@ -495,6 +607,7 @@ export interface InitOutput {
     readonly ble_complete_prim_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly ble_complete_rel_disc: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number) => void;
     readonly ble_complete_rssi: (a: number, b: number) => void;
+    readonly ble_complete_service_changed: (a: number) => void;
     readonly ble_complete_tx_flow: (a: number) => void;
     readonly ble_complete_uuid_read: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly ble_complete_vals_read: (a: number, b: number, c: number) => void;
@@ -505,16 +618,28 @@ export interface InitOutput {
     readonly ble_fail_pairing: (a: number, b: number) => void;
     readonly ble_post_adv_report: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly ble_post_auth_key_request: (a: number, b: number) => number;
+    readonly ble_post_conn_param_update_request: (a: number) => number;
+    readonly ble_post_gap_timeout: (a: number, b: number) => number;
+    readonly ble_post_gattc_timeout: (a: number) => number;
+    readonly ble_post_gatts_timeout: (a: number) => number;
     readonly ble_post_gatts_write: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly ble_post_keypress: (a: number, b: number) => number;
     readonly ble_post_lesc_dhkey_request: (a: number, b: number) => number;
     readonly ble_post_passkey_display: (a: number, b: number, c: number, d: number) => number;
+    readonly ble_post_rw_authorize_request: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => number;
+    readonly ble_post_sc_confirm: (a: number) => number;
+    readonly ble_post_scan_req_report: (a: number, b: number, c: number) => number;
     readonly ble_post_sec_info_request: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly ble_post_sec_params_request: (a: number, b: number, c: number) => number;
+    readonly ble_post_sec_request: (a: number, b: number, c: number, d: number, e: number) => number;
+    readonly ble_post_sys_attr_missing: (a: number) => number;
+    readonly ble_post_user_mem_release: (a: number, b: number) => number;
+    readonly ble_post_user_mem_request: (a: number, b: number) => number;
     readonly ble_queue_len: () => number;
     readonly ble_store_bond: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => void;
     readonly ble_take_data: (a: number) => void;
     readonly ble_take_job: (a: number) => void;
+    readonly ble_tx_power_dbm: () => number;
     readonly ccm_complete: (a: number) => void;
     readonly ccm_take_job: (a: number) => void;
     readonly comp_set_input_mv: (a: number) => void;
@@ -556,15 +681,20 @@ export interface InitOutput {
     readonly qspi_take_erase: (a: number) => void;
     readonly qspi_take_read: (a: number) => void;
     readonly qspi_take_write: (a: number) => void;
+    readonly radio_air_rssi_dbm: (a: number, b: number) => number;
     readonly radio_complete_rx: () => void;
+    readonly radio_complete_rx_with_path_loss: (a: number) => void;
     readonly radio_complete_tx: () => void;
     readonly radio_inject_corrupt: (a: number, b: number) => void;
     readonly radio_inject_rx: (a: number, b: number) => void;
+    readonly radio_inject_rx_lossy: (a: number, b: number, c: number) => void;
     readonly radio_inject_rx_to: (a: number, b: number, c: number) => void;
+    readonly radio_inject_rx_to_lossy: (a: number, b: number, c: number, d: number) => void;
     readonly radio_set_ed_dbm: (a: number) => void;
     readonly radio_set_rssi_dbm: (a: number) => void;
     readonly radio_take_rx: (a: number) => void;
     readonly radio_take_tx: (a: number) => void;
+    readonly radio_txpower_dbm: (a: number) => number;
     readonly reset_state: () => void;
     readonly saadc_check_limits: (a: number, b: number) => void;
     readonly saadc_complete_result: (a: number) => void;

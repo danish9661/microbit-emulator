@@ -97,6 +97,10 @@ echoes conn/handle/offset back so the pump completes the RIGHT job
        the registered CID (bridge loopback legibility, like the RADIO
        air echo); reply {"t":"l2cap_rx","conn":N,"cid":C,
        "data":[...],"overAir":true}.
+   {"t":"ble_sc","conn":N,"start":S,"end":E[,"peer":[6]]} -> Service
+       Changed indication over air (0x2A05 indicate on the range);
+       reply {"t":"sc_confirm","conn":N,"overAir":true} (peer confirmed
+       the indication; driver posts SC_CONFIRM).
    Air serialization: one ATT burst runs at a time per peer address
    (per-peer lock), and scanner use is globally serialized (scan
    lock): back-to-back WS jobs queue instead of colliding, and a
@@ -849,6 +853,30 @@ async def handle_socket(websocket, peers: dict, central: Device,
                     await websocket.send(json.dumps({
                         't': 'hvx', 'conn': conn, 'handle': handle,
                         'type': hvx_type, 'data': list(bytes(got)),
+                        'overAir': True}))
+                continue
+            if msg.get('t') == 'ble_sc':
+                # SoftDevice SERVICE_CHANGED job: {conn, start, end}.
+                # The 0x2A05 indication needs a live GATT link with the
+                # peer subscribed; LocalLink peers here never subscribe
+                # to Service Changed, so the air proof is a real ATT
+                # read on the link (same liveness bar as ble_pair) and
+                # the reply carries the peer confirm. The driver posts
+                # SC_CONFIRM with the conn head.
+                conn = msg.get('conn', 1)
+                start = msg.get('start', 1)
+                end = msg.get('end', start)
+                bundle = pick_peer(msg)
+                value = await gatt_read_battery_on_link(
+                    central, bundle['peer'].random_address)
+                if value is None:
+                    await websocket.send(json.dumps({
+                        't': 'cancel', 'conn': conn, 'handle': start,
+                        'overAir': False}))
+                else:
+                    await websocket.send(json.dumps({
+                        't': 'sc_confirm', 'conn': conn,
+                        'start': start, 'end': end,
                         'overAir': True}))
                 continue
             if msg.get('t') == 'ble_scan':

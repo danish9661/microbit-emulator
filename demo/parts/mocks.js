@@ -659,7 +659,7 @@ export class MockBleSvc {
     else if (tag === 15) {
       const n = bj[2];
       w.ble_complete_vals_read(bj[1], new Array(n).fill(w.ble_batt_level()));
-    }
+    } else if (tag === 16) w.ble_complete_service_changed(bj[1]);
     return true;
   }
   poll(cpu) {
@@ -764,6 +764,35 @@ export class MockBleSvc {
     const wr = this.drainEvt(cpu);
     if (!wr || wr.id !== 0x38) throw new Error('WRITE_RSP missing');
     this.seen.writeRsp = true;
+    // 7a. SIGNED_WRITE (op 3, 12B signature in tow) -> WRITE_RSP op echo.
+    // Shape: value = 2 payload bytes + 12 signature bytes; the MAC check
+    // itself is driver-side (no crypto in the model — documented).
+    cpu.mem_write(0x20001410, [0xAA, 0xBB, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    cpu.mem_write(0x20001400, [0x03, 0x00, valH & 0xFF, (valH >> 8) & 0xFF, 0x00, 0x00, 0x0E, 0x00, 0x10, 0x14, 0x00, 0x20]);
+    ok(this.svc(cpu, BLE_SVC.WRITE, H, 0x20001400), 'signed-write');
+    this.resolveJob();
+    const swr = this.drainEvt(cpu);
+    // WRITE_RSP body = gattc_head{conn,status,err}(6) + handle(2) +
+    // op(1)@body[8] + pad + offset(2) + len(2) + data (see
+    // write_rsp_payload; native test asserts 0x2000300C == op).
+    if (!swr || swr.id !== 0x38 || swr.body[8] !== 0x03) throw new Error('SIGNED WRITE_RSP missing');
+    // 7a2. PREP/EXEC queue: two offset chunks, EXEC-WRITE commits them
+    // onto the local table mirror (battery value tracks 0x2A19).
+    for (const [off, byte] of [[0, 0xAA], [1, 0xBB]]) {
+      cpu.mem_write(0x20001410, [byte]);
+      cpu.mem_write(0x20001400, [0x04, 0x00, valH & 0xFF, (valH >> 8) & 0xFF,
+        off & 0xFF, (off >> 8) & 0xFF, 0x01, 0x00, 0x10, 0x14, 0x00, 0x20]);
+      ok(this.svc(cpu, BLE_SVC.WRITE, H, 0x20001400), 'prep-write');
+      this.resolveJob();
+      const pr = this.drainEvt(cpu);
+      if (!pr || pr.id !== 0x38) throw new Error('PREP WRITE_RSP missing');
+    }
+    cpu.mem_write(0x20001400, [0x05, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    ok(this.svc(cpu, BLE_SVC.WRITE, H, 0x20001400), 'exec-write');
+    this.resolveJob();
+    const ex = this.drainEvt(cpu);
+    if (!ex || ex.id !== 0x38) throw new Error('EXEC WRITE_RSP missing');
+    if (w.ble_batt_level() !== 0xAA) throw new Error('exec-write commit missed the table');
     // 7b. L2CAP: register CID, TX a frame, drain RX echo, unregister.
     // NOTE: the depth-probe run just before this one on the bench
     // registers the same CID on the shared model and never unregisters
@@ -838,12 +867,91 @@ export class MockBleSvc {
     const hvc2 = this.drainEvt(cpu);
     if (!hvc2 || hvc2.id !== 0x53) throw new Error('HVC (confirm) missing');
     this.seen.hvx = true;
-    // 8. SCAN_START -> resolve -> drain ADV_REPORT (padded layout).
-    ok(this.svc(cpu, BLE_SVC.SCAN_START, 0), 'scan');
+    // 7e. SERVICE_CHANGED (0xA7): enable-bit + CCCD-indicate gate, then
+    // the staged job completes over air with SC_CONFIRM (conn head).
+    // (The mock's ENABLE ran with NULL params = SC off; re-enable with
+    // the gatts SC bit set — bit0 of the u8 at params+4 — then the
+    // 0x2A05 CCCD indicate subscription from 7d still holds. The
+    // re-enable keeps the live link (silicon ENABLE is idempotent
+    // once up); the new link-count guards stay multi-link safe.)
+    cpu.mem_write(0x20006004, [1]);
+    ok(this.svc(cpu, BLE_SVC.ENABLE, 0x20006000, 0), 'sc-enable');
+    ok(this.svc(cpu, 0xA7, H, valH, valH + 1), 'service-changed');
     this.resolveJob();
-    const adv = this.drainEvt(cpu);
-    if (!adv || adv.id !== 0x1D) throw new Error('ADV_REPORT missing');
-    if (adv.body[11] !== 0) throw new Error('adv pad byte nonzero');
+    const scc = this.drainEvt(cpu);
+    if (!scc || scc.id !== 0x54) throw new Error('SC_CONFIRM missing');
+    if ((scc.body[0] | (scc.body[1] << 8)) !== H) throw new Error('SC_CONFIRM conn head');
+    // 7f. ADV/SCAN role legs (real SVC bytes, strict rc asserts):
+    // ADV_START(NULL) -> ADV_STOP; ADV_START(whitelist) -> IN_USE
+    // re-arm refuses (0x3203); SCAN_START(NULL) -> BUSY re-arm refuses
+    // (17); SCAN params window>interval refuses (7); selective+table
+    // stages; ADV whitelist while scan holds it refuses IN_USE.
+    ok(this.svc(cpu, 0x73, 0), 'adv-null');
+    ok(this.svc(cpu, 0x74, 0), 'adv-stop');
+    // Whitelist table @0x20005100: counts at +4/+12 (S132 shape).
+    cpu.mem_write(0x20005100, [0, 0, 0, 0, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    // ADV params @0x20005000: type@0, p_peer@1 u32, fp@5, p_wl@6 u32,
+    // interval@10 u16, timeout@12 u16, chmask@14.
+    cpu.mem_write(0x20005000, [0x00, 0, 0, 0, 0, 0x00, 0x00, 0x51, 0x00, 0x20, 0x20, 0x00, 0, 0, 0, 0]);
+    ok(this.svc(cpu, 0x73, 0x20005000), 'adv-wl');
+    if (this.svc(cpu, 0x73, 0x20005000) !== 0x3203) throw new Error('ADV IN_USE missing');
+    ok(this.svc(cpu, 0x74, 0), 'adv-stop2');
+    ok(this.svc(cpu, BLE_SVC.SCAN_START, 0), 'scan-null');
+    if (this.svc(cpu, BLE_SVC.SCAN_START, 0) !== 17) throw new Error('SCAN BUSY missing');
+    ok(this.svc(cpu, 0x8B, 0), 'scan-stop');
+    // SCAN params @0x20003300: b0@0, p_wl@1 u32, interval@6 u16,
+    // window@8 u16, timeout@10 u16. Window > interval refuses (7).
+    cpu.mem_write(0x20003300, [0, 0, 0, 0, 0, 0, 0x10, 0x00, 0x20, 0x00, 0, 0]);
+    if (this.svc(cpu, BLE_SVC.SCAN_START, 0x20003300) !== 7) throw new Error('SCAN param missing');
+    // Selective + 2-addr table stages; drain the staged job via resolve.
+    cpu.mem_write(0x20003300, [0x02, 0x00, 0x51, 0x00, 0x20, 0, 0x10, 0x00, 0x10, 0x00, 0, 0]);
+    ok(this.svc(cpu, BLE_SVC.SCAN_START, 0x20003300), 'scan-sel');
+    this.resolveJob();
+    const advSel = this.drainEvt(cpu);
+    if (!advSel || advSel.id !== 0x1D) throw new Error('ADV_REPORT (sel) missing');
+    // ADV whitelist while the scan holds the table refuses IN_USE;
+    // SCAN_STOP clears.
+    if (this.svc(cpu, 0x73, 0x20005000) !== 0x3203) throw new Error('ADV/SCAN IN_USE missing');
+    ok(this.svc(cpu, 0x8B, 0), 'scan-stop2');
+    this.seen.roles = true;
+    // 8b. Driver-posted request/report/timeout/user-mem/authorize legs:
+    // SEC_REQUEST, CONN_PARAM_UPDATE_REQUEST, SCAN_REQ_REPORT, GAP +
+    // GATTC + GATTS TIMEOUTs, USER_MEM pair, RW_AUTHORIZE_REQUEST,
+    // SYS_ATTR_MISSING, SC_CONFIRM — all drain with S132 wire bodies.
+    w.ble_post_sec_request(H, true, false, false, false);
+    const sr = this.drainEvt(cpu);
+    if (!sr || sr.id !== 0x1E) throw new Error('SEC_REQUEST missing');
+    w.ble_post_conn_param_update_request(H);
+    const pur = this.drainEvt(cpu);
+    if (!pur || pur.id !== 0x1F) throw new Error('CONN_PARAM_UPDATE_REQUEST missing');
+    w.ble_post_scan_req_report([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF], -61);
+    const sq = this.drainEvt(cpu);
+    if (!sq || sq.id !== 0x20) throw new Error('SCAN_REQ_REPORT missing');
+    w.ble_post_gap_timeout(H, 3);
+    const gto = this.drainEvt(cpu);
+    if (!gto || gto.id !== 0x1B) throw new Error('GAP TIMEOUT missing');
+    w.ble_post_gattc_timeout(H);
+    const cto = this.drainEvt(cpu);
+    if (!cto || cto.id !== 0x3B) throw new Error('GATTC TIMEOUT missing');
+    w.ble_post_gatts_timeout(H);
+    const sto = this.drainEvt(cpu);
+    if (!sto || sto.id !== 0x55) throw new Error('GATTS TIMEOUT missing');
+    w.ble_post_user_mem_request(H, 1);
+    const umq = this.drainEvt(cpu);
+    if (!umq || umq.id !== 0x02) throw new Error('USER_MEM_REQUEST missing');
+    w.ble_post_user_mem_release(H, 1);
+    const umr = this.drainEvt(cpu);
+    if (!umr || umr.id !== 0x03) throw new Error('USER_MEM_RELEASE missing');
+    w.ble_post_rw_authorize_request(H, 2, valH, 0, 1, [0x42]);
+    const rw = this.drainEvt(cpu);
+    if (!rw || rw.id !== 0x51) throw new Error('RW_AUTHORIZE_REQUEST missing');
+    w.ble_post_sys_attr_missing(H);
+    const sm = this.drainEvt(cpu);
+    if (!sm || sm.id !== 0x52) throw new Error('SYS_ATTR_MISSING missing');
+    w.ble_post_sc_confirm(H);
+    const sc = this.drainEvt(cpu);
+    if (!sc || sc.id !== 0x54) throw new Error('SC_CONFIRM missing');
+    this.seen.secReq = true;
     // 9. RSSI_GET answers now; completion posts RSSI_CHANGED.
     cpu.mem_write(0x20001500, [0]);
     ok(this.svc(cpu, BLE_SVC.RSSI_GET, H, 0x20001500), 'rssi');
@@ -857,7 +965,7 @@ export class MockBleSvc {
     if (!dc || dc.id !== 0x11 || dc.body[2] !== 19) throw new Error('DISCONNECTED missing');
     if (this.drainEvt(cpu) !== null) throw new Error('queue not drained');
     this.seen.full = true;
-    this.done = this.seen.gatts && this.seen.connected && this.seen.readRsp && this.seen.writeRsp && this.seen.paired && this.seen.peerPair && this.seen.hvx && this.seen.disc2 && this.seen.full;
+    this.done = this.seen.gatts && this.seen.connected && this.seen.readRsp && this.seen.writeRsp && this.seen.paired && this.seen.peerPair && this.seen.hvx && this.seen.disc2 && this.seen.secReq && this.seen.roles && this.seen.full;
     void cpu;
   }
 }

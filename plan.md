@@ -3237,3 +3237,114 @@ Docs synced: COVERAGE §1 rows (:50/:59/:60) + §2 KL27/speaker rows,
 STATUS §1 (:53) + §7 (:495), doc.html chip (:102/:103) + board
 (KL27/speaker) rows. pkg rebuilt (ACL/FPU-engine in wasm).
 NEXT: full verify + commit (user asked).
+
+## 100. P119 SIGNED/PREP/EXEC writes + driver-posted BLE legs + radio link-budget + SIGNED-WRITE_RSP mock fix (2026-09-19)
+
+Ground truth first (headers, not guessing): the headless `MockBleSvc`
+7a leg failed (`SIGNED WRITE_RSP missing`) because `mocks.js`
+asserted the op echo at `body[2]` — but `body[0..6]` is the gattc
+envelope head `{conn, status, err}` (see `gattc_head`), then the WRITE
+params `{handle u16, op u8@body[8], pad, offset u16, len u16, data[]}`
+(see `write_rsp_payload`; the native test asserts `0x2000300C == op`,
+i.e. body offset 8). The Rust side was already correct:
+`complete_gattc_write(conn, handle, op, data)` echoes op + bytes, and
+`resolveJob()` tag-8 calls `ble_complete_gattc_write(bj[1], bj[3],
+bj[2], [...take_data()])` — `(conn, handle, op, data)` in the right
+order (tag-8 words are `[conn, op, handle, len]`, take_data stages the
+SVC-time byte copy). Fix: mock now checks `swr.body[8] === 0x03`
+with the layout comment citing `write_rsp_payload`.
+
+P119 model legs (all in-tree at session start, verified this run):
+- GATTC SIGNED (op 3, 12B signature in tow, short refuses
+  INVALID_PARAM) + PREP (op 4, offset queue per link) + EXEC (op 5,
+  commit/cancel onto the table mirror) stage air jobs and complete
+  with the op echo; bridge `ble_write` passes op + len through.
+- Driver-posted legs: SEC_REQUEST, CONN_PARAM_UPDATE_REQUEST,
+  SCAN_REQ_REPORT, GAP/GATTC/GATTS TIMEOUTs, USER_MEM pair,
+  RW_AUTHORIZE_REQUEST, SYS_ATTR_MISSING, SC_CONFIRM (S132 wire
+  bodies; mock 8b drains each by strict id).
+- TX_POWER_SET stores the S132-legal dBm set
+  (`-40,-30,-20,-16,-12,-8,-4,0,4`); adv-state
+  (active/directed/filter/whitelist) arms validation, not RF.
+- Radio link-budget: TXPOWER-code table + path-loss inject forms
+  (`inject_rx_lossy`, `inject_rx_to_lossy`,
+  `complete_rx_with_path_loss`) + RX-stamped RSSI latch, shared pure
+  fn `radio_air_rssi_dbm` (bridge + model agree on one number).
+
+Verify this run (all green): cargo 223 single (114 cpu + 93
+peripherals + 13 sd_ble + 3 sd_evt), handshake 18/18 (was 17/18
+pre-fix), smoke OK, browser 16/16 (boot + self-test + depth, zero
+page errors), both pkgs rebuilt (`demo/pkg` +
+`demo/parts/pkg-test-handshake`, 1643739 B each).
+Docs synced: STATUS §1/§3/§8-verify, COVERAGE §1/§8-gaps/§proofs,
+doc.html BLE+RADIO rows + BLE boundary + footer counts, about.html
+count, agent.md §0/§9-log.
+NEXT: commit per approval (Rust ×2 + mocks + ble_air + bridge +
+both pkgs + 5 docs).
+
+## 101. P120 SERVICE_CHANGED gated indication + scan/adv slot + whitelist arbitration (2026-09-19)
+
+Ground truth first (S132 headers, no guessing): 0xA7 SERVICE_CHANGED
+was an ack-only stub returning SUCCESS with no gate and no air job.
+The header retval ladder says: conn -> NOT_SUPPORTED (SC not enabled
+at init via gatts_enable_params.service_changed) -> INVALID_STATE
+(no CCCD indicate sub) -> INVALID_PARAM -> INVALID_ATTR_HANDLE ->
+BUSY -> SYS_ATTR_MISSING. SC_CONFIRM is "No additional event
+structure" — but every GATTS event carries the {conn} head, and the
+strict mock asserts the head, so header-only (len 4) was wrong: the
+payload is {conn u16} (len 6).
+
+Model (small diffs, cargo green each):
+- ENABLE latches the SC bit (bit0 of the gatts u8 in the params
+  block); SERVICE_CHANGED validates the header ladder (conn,
+  NOT_SUPPORTED, param, handle-range, CCCD indicate on the START
+  handle's owner) and stages tag-16 GattsServiceChanged; the peer
+  confirm posts SC_CONFIRM with the conn head
+  (`complete_service_changed`). NOT_SUPPORTED + INVALID_ATTR_HANDLE
+  consts added (0x3003 verified = STK_BASE+3 in ble_err.h).
+- SCAN_START validates the S132 scan params (interval/window
+  0x4..0x4000, window <= interval, selective needs a table,
+  whitelist counts <= 8) and owns the single observer slot (second
+  SCAN_START while live = BUSY); SCAN_STOP clears it (double stop =
+  INVALID_STATE). ADV/SCAN share one whitelist latch: re-arming with
+  a table while a procedure holds it = WHITELIST_IN_USE (0x3201 =
+  GAP_BASE+1, 0x3203 = GAP_BASE+3 verified in ble_gap.h); shape
+  (INVALID_PARAM) checks before IN_USE per header order. ADV
+  connectable while a GapConnect is staged = CONN_COUNT (18 =
+  BASE+18 in nrf_error.h).
+- Bridge `ble_sc` leg (liveness ATT read, `sc_confirm` reply with
+  start/end) + pump tag-16 wiring + mock 7e leg (re-enable with SC
+  bit, SERVICE_CHANGED, resolve, strict SC_CONFIRM id + conn head).
+- Self-test hardening: shared bench core keeps the observer slot
+  live across runs, so the mock SCAN_STOPs tolerantly first (BUSY 17
+  = slot live, INVALID_STATE 8 = clean idle) — silicon semantics,
+  not a test hack.
+
+Verify this run: cargo 224 single, handshake 18/18, smoke OK,
+browser 16/16 (boot + self-test + depth, zero page errors), both
+pkgs rebuilt. Native: new `service_changed_gated_indication_and_
+confirm` test (refusal ladder + staged job + SC_CONFIRM head);
+ADV test gains IN_USE leg; SCAN lifecycle gains BUSY/STOP/param/
+whitelist/cross-IN_USE legs.
+NEXT: commit per approval.
+
+## 102. P121 roles firmware + mock ADV/SCAN legs (2026-09-19)
+
+Yes to both questions: every new model leg gets a mock consumer AND
+a compiled firmware proof. `blinky/ble_fw/ble_roles_fw.c` (xpack GCC
++ link_c_nrf.ld, bit-identical rebuild verified by recompile +
+cmp): ENABLE(SC-bit) -> ADV_START(NULL) -> ADV_STOP ->
+ADV_START(whitelist 2 addrs) -> IN_USE re-arm (0x3203) -> ADV_STOP ->
+SCAN_START(NULL) -> BUSY re-arm (17) -> SCAN_STOP -> SCAN params
+window>interval (7) -> SCAN selective + table stages -> ADV whitelist
+while scan holds it (0x3203) -> SCAN_STOP -> CONNECT (staged) ->
+CONNECTED drain + CENTRAL role byte at evt_buf[20] (envelope 4 +
+conn 2 + peer 7 + own 7) -> SERVICE_CHANGED range leg (0x3003 on the
+empty table) -> DISCONNECT -> DISCONNECTED drain. 21 BLER markers,
+2nd-run clean (`nrf_ble_roles_fw_markers`, same small-slice pump
+discipline as the pairing image). Mock 7f legs mirror it in SVC
+bytes with strict rc asserts; depth probe gains the `roles` key
+(bench BLE row now `pairing×2, roles`).
+Verify: cargo 225 single (= 115 cpu incl. 19 fw proofs), handshake
+18/18, smoke OK, browser 16/16, both pkgs rebuilt.
+NEXT: commit per approval.

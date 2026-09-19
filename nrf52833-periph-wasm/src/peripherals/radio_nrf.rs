@@ -139,7 +139,7 @@ pub struct RadioNrf {
     cca_busy: bool,
     tx_pending: Option<(u32, u32)>,
     rx_pending: bool,
-    rx_queue: Vec<(Vec<u8>, bool)>,
+    rx_queue: Vec<(Vec<u8>, bool, Option<u32>)>,
     dab: [u32; 8],
     dap: [u32; 8],
 }
@@ -603,10 +603,22 @@ pub fn complete_tx(sys: &System) {
 }
 
 /// Inject a received packet (air -> RX queue). Stages take_rx when the
-/// receiver is already running.
+/// receiver is already running. No path loss known: the RX completion
+/// stamps TXPOWER-minus-zero (co-located default).
 pub fn inject_rx(sys: &System, pkt: Vec<u8>) {
     with_radio(sys, |r| {
-        r.rx_queue.push((pkt, true));
+        r.rx_queue.push((pkt, true, None));
+        if r.state == 3 && !r.rx_pending {
+            r.rx_pending = true;
+        }
+    });
+}
+
+/// Inject with a known path loss in dB (driver-side air range model):
+/// the RX completion stamps TXPOWER-minus-loss into the RSSI latch.
+pub fn inject_rx_lossy(sys: &System, pkt: Vec<u8>, path_loss_db: u32) {
+    with_radio(sys, |r| {
+        r.rx_queue.push((pkt, true, Some(path_loss_db)));
         if r.state == 3 && !r.rx_pending {
             r.rx_pending = true;
         }
@@ -616,7 +628,7 @@ pub fn inject_rx(sys: &System, pkt: Vec<u8>) {
 /// Inject a CRC-failed packet (drives the CRCERROR path).
 pub fn inject_corrupt(sys: &System, pkt: Vec<u8>) {
     with_radio(sys, |r| {
-        r.rx_queue.push((pkt, false));
+        r.rx_queue.push((pkt, false, None));
         if r.state == 3 && !r.rx_pending {
             r.rx_pending = true;
         }
@@ -641,13 +653,33 @@ pub fn take_rx(sys: &System) -> Option<u32> {
 /// CRCOK/CRCSTATUS (good) or CRCERROR with CRCSTATUS 0 (corrupt).
 /// Also runs the address-match unit (DEVMATCH/DEVMISS + RXMATCH/RXCRC/
 /// PDUSTAT), the MHR matcher, and FRAMESTART (all SVD-grounded).
+/// Air level: the RSSI latch is stamped from TXPOWER minus the queued
+/// packet's path loss (see inject_rx path-loss forms), so a firmware
+/// RSSISTART after RX reads this packet's level like silicon.
 pub fn complete_rx(sys: &System) {
+    complete_rx_with_loss(sys, 0);
+}
+
+/// Same as complete_rx with an explicit path-loss override (dB) for
+/// the RSSI stamp. The queued per-packet loss wins when present (see
+/// inject_rx_lossy); this parameter covers the legacy lossless queue.
+fn complete_rx_with_loss(sys: &System, default_loss_db: u32) {
     with_radio(sys, |r| {
-        let pkt = r.rx_queue.first().map(|(p, _)| p.clone()).unwrap_or_default();
-        let ok = r.rx_queue.first().map(|(_, ok)| *ok).unwrap_or(true);
+        let pkt = r.rx_queue.first().map(|(p, _, _)| p.clone()).unwrap_or_default();
+        let (ok, loss) = r
+            .rx_queue
+            .first()
+            .map(|(_, ok, loss)| (*ok, *loss))
+            .unwrap_or((true, Some(default_loss_db)));
         if !r.rx_queue.is_empty() {
             r.rx_queue.remove(0);
         }
+        // Air-level stamp FIRST (silicon samples the packet on air):
+        // TXPOWER-derived dBm minus this packet's path loss. Queued
+        // per-packet loss wins; the legacy queue carries None and falls
+        // back to the caller's default (0 = co-located loopback).
+        let loss_db = loss.unwrap_or(default_loss_db);
+        r.rssi_dbm = air_rssi_dbm(r.txpower, loss_db);
         r.ev_address = true;
         r.fire(sys, 1 << 1);
         r.ev_framestart = true;
@@ -713,10 +745,60 @@ pub fn complete_rx(sys: &System) {
     });
 }
 
+/// Complete RX with an explicit path loss (dB) for this packet's RSSI
+/// stamp. Driver-side air (bridge/loopback) calls this when it knows
+/// the range; the plain complete_rx() keeps the queued/default loss.
+pub fn complete_rx_with_path_loss(sys: &System, path_loss_db: u32) {
+    complete_rx_with_loss(sys, path_loss_db);
+}
+
 /// Set the RSSI sample level in dBm (negative, e.g. -40). Reported via
 /// RSSISAMPLE as -dBm clamped 0..127.
 pub fn set_rssi_dbm(sys: &System, dbm: i32) {
     with_radio(sys, |r| r.rssi_dbm = dbm.clamp(-127, 0));
+}
+
+/// TXPOWER (SVD 0x50C) as signed dBm: the SVD enumerates the nRF52
+/// radio levels (+8..0, -4, -8, -12, -16, -20, -30, -40); unlisted
+/// codes read back verbatim but contribute 0 dBm (documented: silicon
+/// behavior there is unspecified, and no firmware here depends on it).
+pub fn txpower_dbm(code: u32) -> i32 {
+    match code & 0xFF {
+        0x08 => 8,
+        0x07 => 7,
+        0x06 => 6,
+        0x05 => 5,
+        0x04 => 4,
+        0x03 => 3,
+        0x02 => 2,
+        0x00 => 0,
+        0xFC => -4,
+        0xF8 => -8,
+        0xF4 => -12,
+        0xF0 => -16,
+        0xEC => -20,
+        0xE2 => -30,
+        0xD8 => -40,
+        _ => 0,
+    }
+}
+
+/// Link-budget air level: TX dBm minus path loss, clamped to the
+/// [-127, 0] RSSI window. Pure function so the driver (JS bridge or
+/// bench loopback) and the tests share one honest number instead of
+/// the old fixed -50 dBm constant.
+pub fn air_rssi_dbm(tx_code: u32, path_loss_db: u32) -> i32 {
+    (txpower_dbm(tx_code) - path_loss_db as i32).clamp(-127, 0)
+}
+
+/// Sample the air level for an RX completion: TXPOWER-derived dBm
+/// minus path loss, stamped into the RSSI sample latch so a firmware
+/// RSSISTART right after RX reads the packet's own level (silicon
+/// samples the on-air packet, not a stale register).
+pub fn sample_air_rssi(sys: &System, path_loss_db: u32) {
+    with_radio(sys, |r| {
+        r.rssi_dbm = air_rssi_dbm(r.txpower, path_loss_db);
+    });
 }
 
 /// Set the energy-detect sample level in dBm (negative). Reported via
@@ -732,7 +814,18 @@ pub fn set_ed_dbm(sys: &System, dbm: i32) {
 pub fn inject_rx_to(sys: &System, dab_idx: usize, pkt: Vec<u8>) {
     with_radio(sys, |r| {
         let _ = dab_idx;
-        r.rx_queue.push((pkt, true));
+        r.rx_queue.push((pkt, true, None));
+        if r.state == 3 && !r.rx_pending {
+            r.rx_pending = true;
+        }
+    });
+}
+
+/// Addressed form with path loss (bridge peer at range).
+pub fn inject_rx_to_lossy(sys: &System, dab_idx: usize, pkt: Vec<u8>, path_loss_db: u32) {
+    with_radio(sys, |r| {
+        let _ = dab_idx;
+        r.rx_queue.push((pkt, true, Some(path_loss_db)));
         if r.state == 3 && !r.rx_pending {
             r.rx_pending = true;
         }
@@ -869,6 +962,33 @@ mod tests {
         complete_tx(&sys); // END -> DISABLE chain
         assert_eq!(sys.p.read(&sys, 0x40001550, 4), 0, "disabled by SHORTS");
         assert_eq!(sys.p.read(&sys, 0x40001110, 4), 1, "DISABLED event");
+    }
+    #[test]
+    fn txpower_table_and_air_rssi_link_budget() {
+        // SVD TXPOWER codes -> signed dBm (spot-check the table ends).
+        assert_eq!(txpower_dbm(0x08), 8, "+8 dBm");
+        assert_eq!(txpower_dbm(0x00), 0, "0 dBm");
+        assert_eq!(txpower_dbm(0xFC), -4, "-4 dBm");
+        assert_eq!(txpower_dbm(0xD8), -40, "-40 dBm");
+        // Link budget: TX minus path loss, clamped to the RSSI window.
+        assert_eq!(air_rssi_dbm(0x08, 48), -40, "8-48 = -40");
+        assert_eq!(air_rssi_dbm(0x00, 0), 0, "co-located");
+        assert_eq!(air_rssi_dbm(0xD8, 200), -127, "clamped floor");
+        // RX completion stamps the packet's own level: TXPOWER 0 dBm
+        // with 57 dB loss reads RSSISAMPLE 57 on the next RSSISTART.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x4000150C, 4, 0x00); // TXPOWER 0 dBm
+        sys.p.write(&sys, 0x40001000, 4, 1); // TXEN (radio on)
+        inject_rx_lossy(&sys, vec![0xAA, 0xBB], 57);
+        sys.p.write(&sys, 0x40001004, 4, 1); // RXEN
+        sys.p.write(&sys, 0x40001008, 4, 1); // START (Rx)
+        let _ = take_rx(&sys).expect("rx staged");
+        complete_rx(&sys);
+        sys.p.write(&sys, 0x40001014, 4, 1); // RSSISTART
+        assert_eq!(sys.p.read(&sys, 0x40001548, 4), 57, "RSSISAMPLE = path loss");
+        // 2nd run: fresh default (TXPOWER reset 0, no queue loss).
+        let sys2 = test_dummy_system();
+        assert_eq!(sys2.p.read(&sys2, 0x4000150C, 4), 0, "TXPOWER reset 0");
     }
     #[test]
     fn rssi_sample_reports_host_level() {
