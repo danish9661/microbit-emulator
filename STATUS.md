@@ -67,13 +67,13 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 225 green (`cargo test`)
+## 3. Tests — 226 green (`cargo test`)
 
-- 115 integration tests (`src/cpu/tests.rs`): 19 GCC-built firmware
+- 116 integration tests (`src/cpu/tests.rs`): 20 GCC-built firmware
   proofs (`blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
   `dma_nrf`, `air_nrf`, `c_irq_nrf.c`, `usbep_nrf`, `usbdev_nrf.c`,
   `i2s_nrf`, `wdt_nrf`, `nfct_nrf`, `ble_conformance.c`,
-  `c_ble_face.bin`, `ble_pairing_fw.c`, `ble_roles_fw.c`, `uarte1_nrf`, `spim23_nrf`,
+  `c_ble_face.bin`, `ble_cpp_face.cpp`, `ble_pairing_fw.c`, `ble_roles_fw.c`, `uarte1_nrf`, `spim23_nrf`,
   `sd_evt_nrf`, +2nd-run reset-state checks each).
 - ~89 peripheral + 3 sd_evt + 14 sd_ble + 3 ACL/FPU-engine unit tests (register handshake,
   SHORTS/NACK/OVERRUN/CAPTURE, FIPS-197, reboot latch, TXSTOPPED,
@@ -86,12 +86,12 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   sd_evt queue/order/reset, ACL sticky/block-erase, FPU-engine
   UNUSED/both-maps, +P119 TX-power store, adv validation, SIGNED/PREP/EXEC
   write path, radio link-budget RSSI, +P120 SC-gated indication,
-  scan/adv slot + whitelist arbitration).
+  scan/adv slot + whitelist arbitration, +P122 C++ face).
 - Parallel-test flake (CLOSED P108; open pre-existing before that):
   stock multi-threaded `cargo test` intermittently failed sd_ble/MWU
   tests with `RefCell already borrowed` at `peripherals/mod.rs:457` /
   `mwu_nrf.rs:237` (~1/4 runs pre-P105; ~2/15 post-P105;
-   single-threaded `-- --test-threads=1` always 225/225). Two
+   single-threaded `-- --test-threads=1` always 226/226). Two
   mechanisms, separated by evidence (P105+P108):
   (a) DETERMINISTIC order-dependence (fixed P105): the MPU ENABLE +
   programmed regions live in the INSTALLED model and outlive the test
@@ -463,7 +463,7 @@ beyond proof-level driving remain future work.
      conn_sec/tx_power/adv_state/post_sec_request/post_timeouts/
      post_user_mem/post_rw_authorize/post_sys_attr/post_sc_confirm/
      complete_service_changed` exports; 14 native tests + SVC-hook proof
-     in cpu/tests.rs (225 green); headless `MockBleSvc` executes REAL SVC
+     in cpu/tests.rs (226 green); headless `MockBleSvc` executes REAL SVC
      bytes on a WasmCpu end to end (enable→table→connect→disc×6→read→
      write→L2CAP→pairing→peer-pairing(passkey)→HVX-indicate→
      service-changed→ADV/SCAN roles→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
@@ -512,7 +512,7 @@ beyond proof-level driving remain future work.
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 225 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
+cargo test -- --test-threads=1    # 226 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY-idiom face, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)

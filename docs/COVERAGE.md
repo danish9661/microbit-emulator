@@ -8,7 +8,7 @@ DAPLink/interface MCU (KL27) is NOT emulated (JS loader + UART only).
 Status key: **F** = functional (timed, IRQs, driver take/complete,
 firmware proof) · **H** = handshake (TASKS/EVENTS/INTEN minimum, no
 timed behavior or no consumer) · **–** = missing / deliberately
-omitted. Counts: `cargo test` **225 green**,
+omitted. Counts: `cargo test` **226 green**,
 `node demo/parts/smoke.mjs` green, `node demo/parts/handshake.mjs`
 18/18, `node demo/parts/ble_live_e2e.mjs` 42/42 over air, browser
 16/16 (`python3 tools/browser_verify_16.py`).
@@ -263,7 +263,7 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | `docs/COVERAGE.md` | This file | Table audit (uncommitted, per order). |
 
 ```
-cargo test -- --test-threads=1   # 225 green (parallel ~30/31 on the P114 tree; single-threaded stays the gate by convention)
+cargo test -- --test-threads=1   # 226 green (parallel ~30/31 on the P114 tree; single-threaded stays the gate by convention)
 node demo/parts/smoke.mjs        # parts green
 node demo/parts/handshake.mjs    # 18/18 vs the built pkg
 node demo/parts/ble_live_e2e.mjs # 42/42 over air (bridge on :18771)

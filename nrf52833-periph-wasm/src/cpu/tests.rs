@@ -488,6 +488,37 @@ fn nrf_ble_c_face_markers() {
 }
 
 #[test]
+fn nrf_ble_cpp_face_markers() {
+    // C++-language BLE face (blinky/ble_fw/ble_cpp_face.cpp, xpack g++,
+    // same link_c_nrf.ld as the C images): ENABLE -> CONNECT ->
+    // CONNECTED-drain (CENTRAL) -> READ -> READ_RSP=87 drain. Proves
+    // the SVC face is language-agnostic at the machine level (C++
+    // classes/mangling emit identical SVC bytes). Driver pumps between
+    // small slices (firmware spins on evt arrival like silicon).
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    crate::sd_ble::reset_for_test();
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/ble_fw/ble_cpp_face.bin"));
+    let sys = crate::sys();
+    cpu.deliver_irqs = true;
+    for _ in 0..2000 {
+        cpu.run(sys, &mut mem, 500);
+        if cpu.fault.is_some() { break; }
+        let _ = pump_ble_test_driver(sys);
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        if out.contains("P:ALL-OK") || out.contains("P:SOME-FAIL") { break; }
+    }
+    assert!(cpu.fault.is_none(), "c++ face faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    for m in ["P:BOOT", "P:enable:OK", "P:connect:OK", "P:connected:OK",
+              "P:read:OK", "P:rsp:OK", "P:ALL-OK"] {
+        assert!(out.contains(m), "missing {m}, got {out:?}");
+    }
+    crate::system::reset_globals();
+}
+
+#[test]
 fn nrf_ble_pairing_fw_markers() {
     // BLE pairing firmware (blinky/ble_fw/ble_pairing_fw.c, GCC):
     // CODAL-BLE-shaped JustWorks flow — ENABLE -> GATTS battery

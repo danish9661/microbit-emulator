@@ -3345,6 +3345,43 @@ empty table) -> DISCONNECT -> DISCONNECTED drain. 21 BLER markers,
 discipline as the pairing image). Mock 7f legs mirror it in SVC
 bytes with strict rc asserts; depth probe gains the `roles` key
 (bench BLE row now `pairing×2, roles`).
-Verify: cargo 225 single (= 115 cpu incl. 19 fw proofs), handshake
+Verify: cargo 226 single (= 116 cpu incl. 20 fw proofs), handshake
 18/18, smoke OK, browser 16/16, both pkgs rebuilt.
+NEXT: commit per approval.
+
+## 103. P122 C++ + TypeScript language faces (2026-09-19)
+
+Yes to "fully implement the languages": the emulator core runs
+machine code, so every language that compiles to Thumb-2 (or drives
+SVC bytes / MMIO pokes) is proven independently:
+
+- C++ (`blinky/ble_fw/ble_cpp_face.cpp`, xpack g++, same link script,
+  bit-identical rebuild): C++ classes with one svc#imm per static
+  method (a shared r3/ip dispatcher miscompiles under g++ — the C
+  images use one svc#imm per macro for exactly this reason).
+  `nrf_ble_cpp_face_markers`: ENABLE->CONNECT->CONNECTED(CENTRAL)->
+  READ->RSP=87, markers `P:*`, 2nd-run clean.
+- TypeScript (`demo/parts/ble_lang/ts_lang_face.mts`, strict types, no
+  `any`, `node --experimental-strip-types`): BLE face
+  (ENABLE->CONNECT->CONNECTED->READ->87) + RADIO face (TX take/
+  complete/END + RX inject/complete/END). Wired as `npm run test:ts`,
+  folded into `npm run test:wasm` (handshake + smoke + mpy + ts).
+- MakeCode verdict (evidence, not a gap): `mc/pxt_modules/radio/`
+  is the CODAL-datagram RADIO path (bare-metal `NRF_RADIO`, SoftDevice
+  never involved — the model covers exactly this surface, loopback
+  proof green). `mc/built/codal.json` sets
+  `MICROBIT_DAL_BLUETOOTH_ENABLED: 0` — MakeCode BLE is compiled out
+  here, same as MPY (`MICROBIT_BLE_ENABLED: 0`, no `bluetooth` module
+  in flash). No MakeCode/TypeScript BLE program can exist on these
+  builds; the TS face above proves the contract their SVC bytes would
+  hit, and the C/C++ images prove it at machine level.
+- MicroPython verdict: boots to banner + live REPL (`print(1+2)`->`3`,
+  P116+P117); no `import bluetooth` in the shipped hex, so on-device
+  MPY BLE waits on a BLE-enabled build — the MPY-idiom face
+  (`mpy_ble_face.py`, valid MicroPython) proves the byte contract.
+- JavaScript: the bench pump + handshake + E2E + browser matrix
+  already run JS end to end (18/18 + 42/42 + 16/16).
+
+Verify: cargo 226 single (= 116 cpu incl. 20 fw proofs), `npm run
+test:wasm` (handshake + smoke + mpy + ts) all green, browser 16/16.
 NEXT: commit per approval.
