@@ -51,7 +51,7 @@ driver take/complete, firmware proof), **H** = handshake
 | FICR/UICR | `ficr_uicr.rs` | F | PART=`0x52833`, sizes; UICR RAM store (BOOTLOADERADDR-gated boot depends on it) |
 | P0/P1 | `gpio_nrf.rs` | F | OUT/DIR/CNF, inputs idle-HIGH (active-low buttons), combined `0x50000000` block |
 | NVIC/SCB/SysTick/MPU/FPU/DWT/ITM/STIR/DEMCR | core files | F | MPU enforced w/ MemManage+escalation; FPU SP (CPACR gate, lazy stacking implemented — `fpu_lazy_*` green); nRF FPU engine `0x40026000` minimal stub (`fpu_engine_nrf.rs`: UNUSED reads 0, both maps); CoreSight `0xF0000000` reads 0 |
-| ACL (`0x4001E000`, shares NVMC base) | `nvmc_nrf.rs` | F | 8 regions ADDR/SIZE/PERM (sticky), write-protect enforced at stage (ERASEPAGE/ERASEALL refuse overlap, `acl_regions_sticky_and_block_erase`); read-block stored + queryable, mem-layer hook TODO. No SPU on 833 (70 SVD peripherals, none named SPU). |
+| ACL (`0x4001E000`, shares NVMC base) | `nvmc_nrf.rs` | F | 8 regions ADDR/SIZE/PERM (sticky), write-protect enforced at stage (ERASEPAGE/ERASEALL refuse overlap), read-block enforced in mem.rs via MWU-patterned armed flag (bus fault + 0 on blocked reads, `acl_regions_sticky_and_block_erase` incl. gate asserts). No SPU on 833 (70 SVD peripherals, none named SPU). |
 | SoC event transport (`sd_evt.rs`, SVC 16/82) | service, not peripheral | F | Phase-1 flash events only: NVMC complete posts id 2/3 while SD enabled, `sd_evt_get` answers from model queue else falls through; firmware proof (`sd_evt_nrf.s/.bin`, P114) |
 | BLE bond store / TX-flow / peripheral-role / param-update | `sd_ble.rs` | F | Bonds persist across disconnects (hit/miss/delete + bridge `bond_keys` leg); TX token refill + `TX_COMPLETE`; dial-in CONNECTED (PERIPH role); param-update completion event (P114); SIGNED/PREP/EXEC write path + driver-posted request/report/timeout/user-mem/authorize legs + TX-power/adv-state store + radio link-budget RSSI (P119) |
 
@@ -67,7 +67,7 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 226 green (`cargo test`)
+## 3. Tests — 227 green (`cargo test`)
 
 - 116 integration tests (`src/cpu/tests.rs`): 20 GCC-built firmware
   proofs (`blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
@@ -86,12 +86,12 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   sd_evt queue/order/reset, ACL sticky/block-erase, FPU-engine
   UNUSED/both-maps, +P119 TX-power store, adv validation, SIGNED/PREP/EXEC
   write path, radio link-budget RSSI, +P120 SC-gated indication,
-  scan/adv slot + whitelist arbitration, +P122 C++ face).
+  scan/adv slot + whitelist arbitration, +P122 C++ face, +P124 radio CRC/whiten/interference air, ACL read-gate, S132 NOT_SUPPORTED range rule).
 - Parallel-test flake (CLOSED P108; open pre-existing before that):
   stock multi-threaded `cargo test` intermittently failed sd_ble/MWU
   tests with `RefCell already borrowed` at `peripherals/mod.rs:457` /
   `mwu_nrf.rs:237` (~1/4 runs pre-P105; ~2/15 post-P105;
-   single-threaded `-- --test-threads=1` always 226/226). Two
+   single-threaded `-- --test-threads=1` always 227/227). Two
   mechanisms, separated by evidence (P105+P108):
   (a) DETERMINISTIC order-dependence (fixed P105): the MPU ENABLE +
   programmed regions live in the INSTALLED model and outlive the test
@@ -463,7 +463,7 @@ beyond proof-level driving remain future work.
      conn_sec/tx_power/adv_state/post_sec_request/post_timeouts/
      post_user_mem/post_rw_authorize/post_sys_attr/post_sc_confirm/
      complete_service_changed` exports; 14 native tests + SVC-hook proof
-     in cpu/tests.rs (226 green); headless `MockBleSvc` executes REAL SVC
+     in cpu/tests.rs (227 green); headless `MockBleSvc` executes REAL SVC
      bytes on a WasmCpu end to end (enable→table→connect→disc×6→read→
      write→L2CAP→pairing→peer-pairing(passkey)→HVX-indicate→
      service-changed→ADV/SCAN roles→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
@@ -504,7 +504,7 @@ beyond proof-level driving remain future work.
 | Edge-SPI display | — (closed P114: `demo/parts/spidisplay.js` ST7789 240×240 + bench panel, verified headless) | SPIM2 DMA + tap events + MISO ID; needs no Rust change. |
 | I2S WebAudio sink | — (closed P114: bench `audioPush` 16 kHz mono, silence-skipped) | Capture FIFO already existed; sink is a gesture-gated AudioContext. |
 | NFC antenna model | — (closed P114: NFCPINS gate, not physics) | UICR.PROTECT=1 reserves P0.09/P0.10 (GPIO inert) + NFCT sense gated; no RF emulation. |
-| ACL/SPU protection | ACL owner (done: model) / SPU n/a | ACL modeled + write-enforced (`nvmc_nrf.rs`); read-block queryable, mem hook TODO. No SPU exists on nRF52833 (SVD-verified) — nothing to model. |
+| ACL/SPU protection | ACL owner (done: model + enforcement) / SPU n/a | ACL modeled + write-enforced + read-enforced in mem.rs (MWU-patterned armed flag, no cpu/ edits); borrows via try_borrow_mut (no RefCell panic). No SPU exists on nRF52833 (SVD-verified) — nothing to model. |
 | Publish to npm | Release owner | Blocked: registry 401, no credentials in this environment. |
 | BLE bond store / TX-flow / peripheral-role / param enforcement | — (closed P114: bond store + TX_COMPLETE + dial-in CONNECTED + param-update event) | Keys stored per peer (hit/miss/delete), TX tokens refill on air drain, PERIPH role byte, update completion posted; bridge `bond_keys` leg persists air keys. Crypto itself stays driver-side by design. |
 | sd_evt flash transport | — (closed P114 phase 1: `sd_evt.rs`, SVC 16/82) | NVMC complete posts id 2/3 while SD enabled; `sd_evt_get` answers from model queue else falls through; firmware proof `sd_evt_nrf.s/.bin`. |
@@ -512,7 +512,7 @@ beyond proof-level driving remain future work.
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 226 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
+cargo test -- --test-threads=1    # 227 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY-idiom face, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)

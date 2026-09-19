@@ -4,12 +4,12 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-19, P121 UNCOMMITTED in tree — user approval needed to commit)
+## 0. Snapshot (2026-09-19, P124 UNCOMMITTED in tree — user approval needed to commit)
 
-- HEAD: `d614d38` "P118 ACL regions + nRF FPU-engine stub + KL27/sound/touch JS (220 green: smoke + handshake 18/18 + browser 16/16)".
+- HEAD: `a525dfb` "P123 MPY banner+REPL committed proof".
 - Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`.
-- Suite: **226 single green** (gate re-run), = 116 cpu (incl. 20 firmware proofs) + 93 peripherals + 14 sd_ble + 3 sd_evt. Handshake 18/18, smoke OK, browser 16/16 re-verified, both pkgs rebuilt.
-- Working tree: P119 BLE/Radio legs + SIGNED-WRITE_RSP mock fix + rebuilt pkgs + this doc sync (see §9 log); `?? .openchamber/` stays untracked (never commit).
+- Suite: **227 single green** (gate re-run), = 116 cpu (incl. 20 firmware proofs) + 94 peripherals + 14 sd_ble + 3 sd_evt. Handshake 18/18, smoke OK, browser 16/16 re-verified, both pkgs rebuilt.
+- Working tree: P124 radio air + ACL gate + S132 range rule + mock air stage + rebuilt pkgs + this doc sync (see §9 log); `?? .openchamber/` stays untracked (never commit).
 - Big news: **handshake SIGNED WRITE_RSP path FIXED** — the mock asserted the op echo at `body[2]` (conn/status/err zone), but the real wire puts the handle at `body[6..8]` and the op at `body[8]` (see `write_rsp_payload`; native test asserts `0x2000300C == op`). Mock now checks `body[8] === 0x03`. Rust side verified: `complete_gattc_write(conn, handle, op, data)` echoes op/bytes; `resolveJob()` tag-8 passes `(bj[1], bj[3], bj[2], take_data)` in the right order. Full matrix re-green on this tree (see §9).
 
 ## 1. What we did so far (this recovery session)
@@ -91,7 +91,7 @@ session, not a real gap:
 ## 6. Verify matrix (run in order, stop on red)
 
 ```
-cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 226 green
+cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 227 green
 cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml --lib -- --list 2>/dev/null | grep -c ": test"
 node demo/parts/handshake.mjs          # 18/18 (rebuild via npm run build:handshake --prefix demo after Rust changes)
 npm run test:parts --prefix demo ; npm run test:mpy --prefix demo
@@ -135,5 +135,6 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
 - 2026-09-19 (P120 in tree, UNCOMMITTED): SERVICE_CHANGED gated indication (SC-enable latch at ENABLE + 0x2A05 CCCD indicate gate, tag-16 air job, SC_CONFIRM with conn head — bridge `ble_sc` leg + pump + mock 7e leg) + scan/adv role-slot + whitelist arbitration (SCAN BUSY/INVALID_STATE + S132 param/whitelist validation, ADV CONN_COUNT/IN_USE legs, cross IN_USE test) + SC_CONFIRM conn-head fix (was header-only, broke strict mock asserts). Suite 224 single green; handshake 18/18; browser 16/16 re-verified (self-test needed a SCAN_STOP-tolerant mock: shared core keeps the observer slot live); both pkgs rebuilt. NEXT: commit per approval.
 - 2026-09-19 (P121 in tree, UNCOMMITTED): roles firmware `blinky/ble_fw/ble_roles_fw.c` (xpack GCC + link_c_nrf.ld, bit-identical rebuild, 21 BLER markers: ADV NULL/struct/IN_USE, SCAN NULL/BUSY/param/selective/cross-IN_USE, CONNECT CENTRAL role, SC range leg, DISCONNECT — 2nd-run clean via `nrf_ble_roles_fw_markers`) + MockBleSvc 7f ADV/SCAN legs (real SVC bytes, strict rc asserts: 0x3203/17/7) + depth-probe roles key. Suite 226 single green (= 116 cpu incl. 20 fw proofs); handshake 18/18; smoke OK; browser 16/16 (BLE probe now `pairing×2, roles`). NEXT: commit per approval.
 - 2026-09-19 (P122 COMMITTED `ac8ee38`, 12 files): C++ face + TypeScript face + `test:ts` in `test:wasm`. Suite 226 (= 116 cpu incl. 20 fw proofs); handshake + smoke + mpy + ts all green; browser 16/16.
-- 2026-09-19 (P123 in tree, UNCOMMITTED): MPY banner+REPL committed proof `demo/parts/ble_lang/run_mpy_repl.mjs` (`npm run test:repl` in `test:wasm`): stock-hex boot with bench-exact recipe+pump — 105B banner + `print(1+2)`->`3`, zero faults, ~0.3s. Load-bearing: resets to APP table + TAKE-accumulate UART log. No model change (probe series closed memcpy/FICR/NVMC/NFCPINS/TWIM; wake path was the missing piece). MakeCode re-verified PARKED (0x37F4F/0x37F77, 2995/3000 hits, TIMER4/DIR0 never driven, no faulting config). NEXT: commit per approval.
+- 2026-09-19 (P123 COMMITTED `a525dfb`, 5 files): MPY banner+REPL committed proof (`run_mpy_repl.mjs`, `test:repl` in `test:wasm`): stock-hex boot with bench-exact recipe+pump — 105B banner + `print(1+2)`->`3`, zero faults, ~0.3s. Load-bearing: resets to APP table + TAKE-accumulate UART log. No model change. MakeCode re-verified PARKED.
+- 2026-09-19 (P124 in tree, UNCOMMITTED): no-walls round — radio air (real CRC engine CRCCNF/POLY/INIT + RXCRC latch, nRF LFSR whitening, interference floor heating ED/CCA + RX stamp in log-power; 4 new wasm exports; native `crc_engine_whitening_interference_air` test) + ACL read-gate enforced in mem.rs (MWU-patterned armed flag, try_borrow_mut, bus fault + 0 on blocked reads) + S132 ble_ranges.h range rule (unallocated SVCs in 0x60..=0xBF answer NOT_SUPPORTED/NOT_ENABLED, never fault) + MockRadio154 stage-3 air legs (same surface, strict asserts). Suite 227 single green; handshake 18/18; smoke OK; browser 16/16; both pkgs rebuilt. NEXT: commit per approval.
 - 2026-09-19 (P123 probes only, no code changes): MPY + MakeCode native repro on this tree+pkg with bench-exact pump. MPY: entry memcpy verified, FICR-SD branch correct, NVMC READY passes, NFCPINS skip correct, 0x29CD1 = AIRCR-wait honored with appBoot semantics -> 0x539E7 -> delay-loop park with TWIM flowing (txC=95/rxC=730 at 240M), P116-consistent, no fix indicated. MakeCode: 2 resets honored -> permanent 0x37F4F/0x37F77 park (2995/3000 hits), TIMER4/DIR0 never driven, no faulting config -> stays PARKED. NEXT: commit per approval.

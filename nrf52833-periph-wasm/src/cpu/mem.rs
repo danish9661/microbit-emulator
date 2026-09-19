@@ -266,6 +266,28 @@ impl FlatMemory {
             }
         }
     }
+    /// ACL read gate: one atomic load when disarmed (zero cost, same
+    /// MWU pattern — no src/cpu/ decoder changes, just this layer's
+    /// existing hook shape). While armed, a hit pends a bus fault like
+    /// silicon's read-blocked region (precise fault, dummy 0 return).
+    /// Flash + RAM + extra only (peripheral space is MMIO, never ACL).
+    #[inline]
+    fn acl_deny(&self, addr: u32) -> bool {
+        if !crate::system::acl_armed() {
+            return false;
+        }
+        match crate::try_sys() {
+            Some(sys) => {
+                if crate::peripherals::nvmc_nrf::acl_read_deny(sys, addr) {
+                    crate::system::pend_bus_fault(addr, false);
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        }
+    }
 }
 
 impl Memory for FlatMemory {
@@ -283,8 +305,14 @@ impl Memory for FlatMemory {
         }
         // Unmapped addresses keep the legacy behavior (bad-address latch
         // + 0) and never raise MPU faults; only mapped memory is checked.
+        // ACL read-block sits after MPU (both deny, either faults) and
+        // before the watch (silicon would not put a blocked read on the
+        // bus either).
         if let Some(off) = self.flash_offset(addr) {
             if self.mpu_deny(addr, 1, false) {
+                return 0;
+            }
+            if self.acl_deny(addr) {
                 return 0;
             }
             self.watch(addr, false);
@@ -293,10 +321,16 @@ impl Memory for FlatMemory {
             if self.mpu_deny(addr, 1, false) {
                 return 0;
             }
+            if self.acl_deny(addr) {
+                return 0;
+            }
             self.watch(addr, false);
             self.ram[(addr - self.ram_base) as usize]
         } else if let Some(idx) = self.extra_idx(addr) {
             if self.mpu_deny(addr, 1, false) {
+                return 0;
+            }
+            if self.acl_deny(addr) {
                 return 0;
             }
             self.watch(addr, false);

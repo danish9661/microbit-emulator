@@ -72,6 +72,19 @@ pub fn mwu_armed() -> bool {
 pub fn mwu_set_armed(v: bool) {
     MWU_ARMED.store(v, Ordering::Relaxed)
 }
+// ACL read gate: set while any ACL region carries READ-disable (PERM
+// bit 2, SIZE nonzero). Same MWU pattern — one atomic per access, zero
+// cost when disarmed — so the memory layer can enforce read protection
+// without touching src/cpu/ (the layer already calls out for MWU; ACL
+// rides the same hook, published by the NVMC/ACL model on every PERM
+// write). No SPU exists on nRF52833, so this is the whole story.
+static ACL_ARMED: AtomicBool = AtomicBool::new(false);
+pub fn acl_armed() -> bool {
+    ACL_ARMED.load(Ordering::Relaxed)
+}
+pub fn acl_set_armed(v: bool) {
+    ACL_ARMED.store(v, Ordering::Relaxed)
+}
 // MPU master-enable latch (MPU_CTRL.ENABLE write). Level semantics follow
 // the register: clearing ENABLE clears this. The driver halts while set —
 // protection is not enforced, so running on would be silently wrong.
@@ -436,6 +449,8 @@ pub fn reset_globals() {
     WATCHDOG_RESET_EVENT.store(false, Relaxed);
     RESETREAS_LATCH.store(0, Relaxed);
     MPU_ENABLED.store(false, Relaxed);
+    MWU_ARMED.store(false, Relaxed);
+    ACL_ARMED.store(false, Relaxed);
     MPU_FAULT_VALID.store(false, Relaxed);
     ALIGN_FAULT_VALID.store(false, Relaxed);
     BUS_FAULT_VALID.store(false, Relaxed);

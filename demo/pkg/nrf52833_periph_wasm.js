@@ -1566,6 +1566,13 @@ export function radio_air_rssi_dbm(tx_code, path_loss_db) {
     return ret;
 }
 
+/**
+ * Clear the ambient floor (quiet air again).
+ */
+export function radio_clear_interference() {
+    wasm.radio_clear_interference();
+}
+
 export function radio_complete_rx() {
     wasm.radio_complete_rx();
 }
@@ -1582,6 +1589,22 @@ export function radio_complete_rx_with_path_loss(path_loss_db) {
 
 export function radio_complete_tx() {
     wasm.radio_complete_tx();
+}
+
+/**
+ * CRC over body with the RADIO engine shape (len 1..3, poly, init).
+ * Pure function: the same wire algorithm the RX completion runs.
+ * @param {Uint8Array} body
+ * @param {number} poly
+ * @param {number} init
+ * @param {number} len
+ * @returns {number}
+ */
+export function radio_crc32(body, poly, init, len) {
+    const ptr0 = passArray8ToWasm0(body, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.radio_crc32(ptr0, len0, poly, init, len);
+    return ret >>> 0;
 }
 
 /**
@@ -1651,6 +1674,15 @@ export function radio_set_ed_dbm(dbm) {
 }
 
 /**
+ * Ambient RF floor in dBm (negative) for the interference model:
+ * ED/CCA add it in log-power and RX completions heat toward it.
+ * @param {number} dbm
+ */
+export function radio_set_interference_dbm(dbm) {
+    wasm.radio_set_interference_dbm(dbm);
+}
+
+/**
  * @param {number} dbm
  */
 export function radio_set_rssi_dbm(dbm) {
@@ -1700,6 +1732,29 @@ export function radio_take_tx() {
 export function radio_txpower_dbm(code) {
     const ret = wasm.radio_txpower_dbm(code);
     return ret;
+}
+
+/**
+ * Whiten (de-whiten — same operation) bytes in place with the nRF
+ * 7-bit LFSR + DATAWHITEIV seed. Pure function for driver-side air.
+ * @param {Uint8Array} bytes
+ * @param {number} iv
+ * @returns {Uint8Array}
+ */
+export function radio_whiten(bytes, iv) {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
+        const len0 = WASM_VECTOR_LEN;
+        wasm.radio_whiten(retptr, ptr0, len0, iv);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v2 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v2;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
 }
 
 /**

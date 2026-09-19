@@ -455,6 +455,11 @@ export function qspi_take_write(): Uint32Array;
  */
 export function radio_air_rssi_dbm(tx_code: number, path_loss_db: number): number;
 
+/**
+ * Clear the ambient floor (quiet air again).
+ */
+export function radio_clear_interference(): void;
+
 export function radio_complete_rx(): void;
 
 /**
@@ -465,6 +470,12 @@ export function radio_complete_rx(): void;
 export function radio_complete_rx_with_path_loss(path_loss_db: number): void;
 
 export function radio_complete_tx(): void;
+
+/**
+ * CRC over body with the RADIO engine shape (len 1..3, poly, init).
+ * Pure function: the same wire algorithm the RX completion runs.
+ */
+export function radio_crc32(body: Uint8Array, poly: number, init: number, len: number): number;
 
 export function radio_inject_corrupt(bytes: Uint8Array): void;
 
@@ -496,6 +507,12 @@ export function radio_inject_rx_to_lossy(dab_idx: number, bytes: Uint8Array, pat
  */
 export function radio_set_ed_dbm(dbm: number): void;
 
+/**
+ * Ambient RF floor in dBm (negative) for the interference model:
+ * ED/CCA add it in log-power and RX completions heat toward it.
+ */
+export function radio_set_interference_dbm(dbm: number): void;
+
 export function radio_set_rssi_dbm(dbm: number): void;
 
 export function radio_take_rx(): Uint32Array;
@@ -507,6 +524,12 @@ export function radio_take_tx(): Uint32Array;
  * Pure function for the driver link-budget (shared with the model).
  */
 export function radio_txpower_dbm(code: number): number;
+
+/**
+ * Whiten (de-whiten — same operation) bytes in place with the nRF
+ * 7-bit LFSR + DATAWHITEIV seed. Pure function for driver-side air.
+ */
+export function radio_whiten(bytes: Uint8Array, iv: number): Uint8Array;
 
 /**
  * Clear all process-lifetime globals so a NEW emulator instance starts clean.
@@ -682,19 +705,23 @@ export interface InitOutput {
     readonly qspi_take_read: (a: number) => void;
     readonly qspi_take_write: (a: number) => void;
     readonly radio_air_rssi_dbm: (a: number, b: number) => number;
+    readonly radio_clear_interference: () => void;
     readonly radio_complete_rx: () => void;
     readonly radio_complete_rx_with_path_loss: (a: number) => void;
     readonly radio_complete_tx: () => void;
+    readonly radio_crc32: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly radio_inject_corrupt: (a: number, b: number) => void;
     readonly radio_inject_rx: (a: number, b: number) => void;
     readonly radio_inject_rx_lossy: (a: number, b: number, c: number) => void;
     readonly radio_inject_rx_to: (a: number, b: number, c: number) => void;
     readonly radio_inject_rx_to_lossy: (a: number, b: number, c: number, d: number) => void;
     readonly radio_set_ed_dbm: (a: number) => void;
+    readonly radio_set_interference_dbm: (a: number) => void;
     readonly radio_set_rssi_dbm: (a: number) => void;
     readonly radio_take_rx: (a: number) => void;
     readonly radio_take_tx: (a: number) => void;
     readonly radio_txpower_dbm: (a: number) => number;
+    readonly radio_whiten: (a: number, b: number, c: number, d: number) => void;
     readonly reset_state: () => void;
     readonly saadc_check_limits: (a: number, b: number) => void;
     readonly saadc_complete_result: (a: number) => void;

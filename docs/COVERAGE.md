@@ -8,7 +8,7 @@ DAPLink/interface MCU (KL27) is NOT emulated (JS loader + UART only).
 Status key: **F** = functional (timed, IRQs, driver take/complete,
 firmware proof) · **H** = handshake (TASKS/EVENTS/INTEN minimum, no
 timed behavior or no consumer) · **–** = missing / deliberately
-omitted. Counts: `cargo test` **226 green**,
+omitted. Counts: `cargo test` **227 green**,
 `node demo/parts/smoke.mjs` green, `node demo/parts/handshake.mjs`
 18/18, `node demo/parts/ble_live_e2e.mjs` 42/42 over air, browser
 16/16 (`python3 tools/browser_verify_16.py`).
@@ -220,7 +220,7 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | Pairing legs | AUTHENTICATE stages the handshake; all six peer-initiated request events (SEC_PARAMS_REQUEST 0x13 / SEC_INFO_REQUEST 0x14 / PASSKEY_DISPLAY 0x15 / KEY_PRESSED 0x16 / AUTH_KEY_REQUEST 0x17 / LESC_DHKEY_REQUEST 0x18, conn-first bodies); per-link state machine (Idle/Requested/PeerRequested/Accepted/KeyEntry/LescDhkey/EncryptPending); every reply SVC validated (accept needs a request, passkey shape-checked, OOB/DHKEY/keypress/encrypt/SEC_INFO each gated); S132 SEC_STATUS codes incl. the 0x29→0x85 fix; AUTH_STATUS conn-first; complete/fail post AUTH_STATUS (+CONN_SEC_UPDATE) with bonded/encrypted state feeding CONN_SEC_GET. Key bytes persist per peer in the bond store (hit/miss/delete); crypto math itself stays driver-side — documented. |
 | L2CAP | Dynamic-CID register/unregister (range + capacity checks), TX staging with SVC-time byte copy, RX echo completion. |
 | Multi-link + air | Per-link handles/RSSI/TX/security/pairing/CIDs; events carry their conn; pump + bridge + E2E prove two live links. Bridge (`tools/ble_air_bridge.py`): two Bumble peers on one LocalLink (battery 87 `PeerBatt` + twin 64 `PeerHR`, distinct addresses), per-job `peer` routing, `peer` echo on disc RSPs, per-peer ATT locks + global scan lock (no timeouts under load). |
-| Proofs | 14 native sd_ble tests (byte-offset asserts) + SVC-hook proof in cpu/tests.rs; GCC `ble_conformance.c` + C face + `ble_pairing_fw.c` (CODAL-BLE-shaped JustWorks flow, 17 `BLEP:*` markers, 2nd-run clean) + `ble_roles_fw.c` (ADV/SCAN/whitelist/role-slot legs, 21 `BLER:*` markers, 2nd-run clean, bit-identical rebuild); headless MockBleSvc real-SVC flow 18/18 (incl. SIGNED/PREP/EXEC write legs + 8b driver-posted request/report/timeout legs + strict WRITE_RSP op echo at wire offset 8 + SERVICE_CHANGED/SC_CONFIRM leg + 7f ADV/SCAN roles legs); live E2E 42/42 over air (two links, 87-vs-64 reads); browser 16/16 (blinky + self-test pairing×2 + probes, zero page errors). |
+| Proofs | 14 native sd_ble tests (byte-offset asserts, incl. unallocated-SVC NOT_SUPPORTED range rule) + SVC-hook proof in cpu/tests.rs; GCC `ble_conformance.c` + C face + `ble_pairing_fw.c` (CODAL-BLE-shaped JustWorks flow, 17 `BLEP:*` markers, 2nd-run clean) + `ble_roles_fw.c` (ADV/SCAN/whitelist/role-slot legs, 21 `BLER:*` markers, 2nd-run clean, bit-identical rebuild); headless MockBleSvc real-SVC flow 18/18 (incl. SIGNED/PREP/EXEC write legs + 8b driver-posted request/report/timeout legs + strict WRITE_RSP op echo at wire offset 8 + SERVICE_CHANGED/SC_CONFIRM leg + 7f ADV/SCAN roles legs); radio air mock stage 3 (CRC engine + whitening + interference, same surface as the native `crc_engine_whitening_interference_air` test); live E2E 42/42 over air (two links, 87-vs-64 reads); browser 16/16 (blinky + self-test pairing×2 + probes, zero page errors). |
 
 ### Left: the named, bounded gaps (none is a hidden fault)
 
@@ -228,13 +228,13 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 |---|---|
 | No SMP crypto (LESC confirm/key math) | Crypto runs driver-side by design (bridge confirms air handshake); handshake legs + status codes + key-shape validation are real. |
 | Key / bond storage | CLOSED P114: per-peer LTK/IRK/CSRK/master-id store (hit/miss/delete + bridge `bond_keys` leg); SEC_INFO_REQUEST re-encrypts hit from store. |
-| Central role only | CLOSED P114 (dial-in): `complete_peripheral_connect` posts CONNECTED with PERIPH role; bridge/pump `periph_connected` leg. ADV_START still emits no air; no whitelist/directed advertising. |
+| Central role only | CLOSED P114 (dial-in): `complete_peripheral_connect` posts CONNECTED with PERIPH role; bridge/pump `periph_connected` leg. ADV_START arms validation + whitelist/directed state (P119–P121: shape/IN_USE/CONN_COUNT legs, `ble_adv_state`); the bridge `periph_connected` leg completes dial-in over air. |
 | No parameter enforcement | CLOSED P114 (events): request SVC validates; driver completion posts CONN_PARAM_UPDATE. No MTU/DLE/PHY SVCs exist in S132 form and none are synthesized. |
 | No TX flow events | CLOSED P114: TX tokens refill per air packet + TX_COMPLETE posted with free count (pump `tx_complete` leg); NO_TX_PACKETS still gates staging. CLOSED P119: driver-posted completions for every previously never-posted leg — SEC_REQUEST, CONN_PARAM_UPDATE_REQUEST, SCAN_REQ_REPORT, GAP/GATTC/GATTS TIMEOUT, USER_MEM_REQUEST/RELEASE, RW_AUTHORIZE_REQUEST, SYS_ATTR_MISSING, SC_CONFIRM (proven by the mock's 8b strict-id drain). |
 | GATTC write REQ/CMD only | CLOSED P119: SIGNED_WRITE (op 3, 12B signature in tow, short refuses INVALID_PARAM) + PREP_WRITE (op 4, offset queue per link) + EXEC_WRITE (op 5, commit/cancel onto the table mirror) all stage air jobs and complete with the op echo (mock's signed/prep/exec WRITE_RSP legs). Crypto MAC stays firmware-side — documented. |
 | SoC/MBR SVCs unmodeled | Mutex/rand-pool/power/clock/PPI sd_ calls are out of scope for the BLE face; on-chip crypto keeps its own take/complete models. EXCEPTION: SoC flash events closed P114 (`sd_evt.rs` phase 1: SVC 16/82, NVMC-posted id 2/3, firmware proof). |
 | No BLE-enabled stock image | MPY ships `MICROBIT_BLE_ENABLED: 0`; no shipped firmware exercises this face (proven by conformance fw + mock + E2E instead). |
-| Virtual air, not RF | LocalLink peers, not spectrum; link-budget RSSI (P119: TX dBm minus path-loss, clamped [-127, 0], shared pure fn `radio_air_rssi_dbm`; RX completion stamps the packet's own level) with adv fallback; no interference/whitening. |
+| Virtual air, not RF | LocalLink peers, not spectrum; link-budget RSSI (P119: TX dBm minus path-loss, clamped [-127, 0], shared pure fn `radio_air_rssi_dbm`; RX completion stamps the packet's own level) with adv fallback; P124 interference floor (ambient dBm heats ED/CCA + RX stamp in log-power) + real CRC engine (CRCCNF/POLY/INIT, RXCRC latch) + nRF LFSR whitening (PCNF1.WHITEEN + DATAWHITEIV). No multipath/fading model. |
 
 ### Original P58 verdict (kept for the record)
 
@@ -263,7 +263,7 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | `docs/COVERAGE.md` | This file | Table audit (uncommitted, per order). |
 
 ```
-cargo test -- --test-threads=1   # 226 green (parallel ~30/31 on the P114 tree; single-threaded stays the gate by convention)
+cargo test -- --test-threads=1   # 227 green (parallel ~30/31 on the P114 tree; single-threaded stays the gate by convention)
 node demo/parts/smoke.mjs        # parts green
 node demo/parts/handshake.mjs    # 18/18 vs the built pkg
 node demo/parts/ble_live_e2e.mjs # 42/42 over air (bridge on :18771)

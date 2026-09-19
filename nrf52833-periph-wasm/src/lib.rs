@@ -313,6 +313,35 @@ pub fn radio_air_rssi_dbm(tx_code: u32, path_loss_db: u32) -> i32 {
     crate::peripherals::radio_nrf::air_rssi_dbm(tx_code, path_loss_db)
 }
 
+/// Ambient RF floor in dBm (negative) for the interference model:
+/// ED/CCA add it in log-power and RX completions heat toward it.
+#[wasm_bindgen]
+pub fn radio_set_interference_dbm(dbm: i32) {
+    crate::peripherals::radio_nrf::set_interference_dbm(sys(), dbm);
+}
+
+/// Clear the ambient floor (quiet air again).
+#[wasm_bindgen]
+pub fn radio_clear_interference() {
+    crate::peripherals::radio_nrf::clear_interference(sys());
+}
+
+/// CRC over body with the RADIO engine shape (len 1..3, poly, init).
+/// Pure function: the same wire algorithm the RX completion runs.
+#[wasm_bindgen]
+pub fn radio_crc32(body: &[u8], poly: u32, init: u32, len: u32) -> u32 {
+    crate::peripherals::radio_nrf::radio_crc(body, poly, init, len as usize)
+}
+
+/// Whiten (de-whiten — same operation) bytes in place with the nRF
+/// 7-bit LFSR + DATAWHITEIV seed. Pure function for driver-side air.
+#[wasm_bindgen]
+pub fn radio_whiten(bytes: &[u8], iv: u32) -> Vec<u8> {
+    let mut b = bytes.to_vec();
+    crate::peripherals::radio_nrf::whiten_in_place(&mut b, iv);
+    b
+}
+
 #[wasm_bindgen]
 pub fn radio_inject_corrupt(bytes: &[u8]) {
     crate::peripherals::radio_nrf::inject_corrupt(sys(), bytes.to_vec());

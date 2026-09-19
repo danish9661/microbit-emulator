@@ -44,6 +44,23 @@ use super::Peripheral;
 /// TASKS_RSSISTART (->RSSIEND + sample, host-set dBm, default -40).
 /// SHORTS chains READY_START / END_DISABLE / DISABLED_TXEN /
 /// DISABLED_RXEN / ADDRESS_RSSISTART / END_START (step-capped).
+/// CRC engine (CRCCNF/CRCPOLY/CRCINIT, all SVD-grounded): when LEN != 0
+/// the RX completion runs the real CRC over the packet (address field
+/// included unless SKIPADDR skips it) with the programmed polynomial
+/// and init value; mismatch -> CRCERROR + CRCSTATUS 0 exactly like
+/// silicon, and RXCRC latches the received wire CRC. LEN == 0 disables
+/// the check (always CRCOK). inject_corrupt() still forces the error
+/// path regardless of the registers.
+/// Whitening (PCNF1.WHITEEN + DATAWHITEIV, SVD-grounded): RX bytes are
+/// de-whitened with the nRF 7-bit LFSR (x^7+x^4+1, IV bit 6 hardwired
+/// 1) before the CRC + delivery; TX-side whitening stays driver-side
+/// (the driver hands us post-air bytes, like every take/complete pump).
+/// Interference (host-set ambient level): ED/CCA read packet power +
+/// ambient in log-power, and each RX completion jitters the RSSI stamp
+/// by the ambient floor, so loaded spectrum reads busy/hot like real
+/// air instead of a constant -40 dBm room.
+/// SHORTS chains READY_START / END_DISABLE / DISABLED_TXEN /
+/// DISABLED_RXEN / ADDRESS_RSSISTART / END_START (step-capped).
 /// Stored-but-unmodeled: TXREADY/RXREADY fire alongside READY
 /// (documented generosity: silicon splits ramp vs on-air ready);
 /// RATEBOOST/SYNC/PHYEND/CTEPRESENT/BC tasks+events are BLE-test/
@@ -136,6 +153,11 @@ pub struct RadioNrf {
     powered: bool,
     rssi_dbm: i32,
     ed_dbm: Option<i32>,
+    /// Ambient RF level in dBm for the interference model (host-set via
+    /// `set_interference_dbm`, default None = quiet air). Adds
+    /// log-power into the ED/CCA front end and jitters the per-packet
+    /// RSSI stamp, like real spectrum under load.
+    interference_dbm: Option<i32>,
     cca_busy: bool,
     tx_pending: Option<(u32, u32)>,
     rx_pending: bool,
@@ -162,7 +184,7 @@ impl Default for RadioNrf {
             rxaddresses: 0, crccnf: 0, crcpoly: 0, crcinit: 0,
             tifs: 0, bcc: 0, mhrmatchconf: 0, mhrmatchmas: 0,
             modecnf0: 0, sfd: 0, edcnt: 0, edsample: 0, ccactrl: 0,
-            powered: true, rssi_dbm: -40, ed_dbm: None, cca_busy: false,
+            powered: true, rssi_dbm: -40, ed_dbm: None, interference_dbm: None, cca_busy: false,
             tx_pending: None, rx_pending: false,
             rx_queue: Vec::new(), dab: [0; 8], dap: [0; 8],
         }
@@ -240,9 +262,15 @@ impl RadioNrf {
         self.ev_rssiend = true;
         self.fire(sys, 1 << 7);
     }
-    /// Energy-detect level source: host ED level when set, else RSSI.
+    /// Energy-detect level source: host ED level when set, else RSSI,
+    /// plus the ambient interference floor in log-power (loaded
+    /// spectrum reads hotter than the link budget alone).
     fn ed_level(&self) -> i32 {
-        self.ed_dbm.unwrap_or(self.rssi_dbm)
+        let base = self.ed_dbm.unwrap_or(self.rssi_dbm);
+        match self.interference_dbm {
+            Some(amb) => add_interference_dbm(base, amb),
+            None => base,
+        }
     }
     fn do_edstart(&mut self, sys: &System) {
         // Silicon counts ED iterations in EDCNT; EDSAMPLE latches the
@@ -656,6 +684,11 @@ pub fn take_rx(sys: &System) -> Option<u32> {
 /// Air level: the RSSI latch is stamped from TXPOWER minus the queued
 /// packet's path loss (see inject_rx path-loss forms), so a firmware
 /// RSSISTART after RX reads this packet's level like silicon.
+/// CRC engine: with CRCCNF.LEN != 0 the packet's trailing LEN bytes are
+/// checked against a real CRC (CRCPOLY/CRCINIT, SKIPADDR honored);
+/// mismatch forces the CRCERROR path exactly like silicon. With LEN ==
+/// 0 the check is disabled (always CRCOK). Whitening (PCNF1.WHITEEN)
+/// de-whitens with DATAWHITEIV before the check.
 pub fn complete_rx(sys: &System) {
     complete_rx_with_loss(sys, 0);
 }
@@ -665,8 +698,8 @@ pub fn complete_rx(sys: &System) {
 /// inject_rx_lossy); this parameter covers the legacy lossless queue.
 fn complete_rx_with_loss(sys: &System, default_loss_db: u32) {
     with_radio(sys, |r| {
-        let pkt = r.rx_queue.first().map(|(p, _, _)| p.clone()).unwrap_or_default();
-        let (ok, loss) = r
+        let mut pkt = r.rx_queue.first().map(|(p, _, _)| p.clone()).unwrap_or_default();
+        let (mut ok, loss) = r
             .rx_queue
             .first()
             .map(|(_, ok, loss)| (*ok, *loss))
@@ -678,8 +711,48 @@ fn complete_rx_with_loss(sys: &System, default_loss_db: u32) {
         // TXPOWER-derived dBm minus this packet's path loss. Queued
         // per-packet loss wins; the legacy queue carries None and falls
         // back to the caller's default (0 = co-located loopback).
+        // Interference floor: ambient RF adds log-power heat so loaded
+        // spectrum reads hotter than the link budget alone.
         let loss_db = loss.unwrap_or(default_loss_db);
         r.rssi_dbm = air_rssi_dbm(r.txpower, loss_db);
+        if let Some(amb) = r.interference_dbm {
+            r.rssi_dbm = add_interference_dbm(r.rssi_dbm, amb);
+        }
+        // Whitening (PCNF1.WHITEEN bit 25, DATAWHITEIV 6-bit LFSR seed
+        // with bit 6 hardwired 1): de-whiten the air bytes before the
+        // CRC + match units see them, like silicon's baseband.
+        if (r.pcnf1 >> 25) & 1 == 1 && !pkt.is_empty() {
+            whiten_in_place(&mut pkt, r.datawhiteiv);
+        }
+        // CRC engine (CRCCNF 0x534: LEN[1:0], SKIPADDR[9:8]; CRCPOLY
+        // 0x538 up to 24-bit; CRCINIT 0x53C seed, LEN bytes wide).
+        // LEN == 0 disables (always CRCOK). Otherwise the trailing LEN
+        // bytes are the wire CRC over [address-skipped] payload; SKIPADDR
+        // == 1 (Skip) drops byte 0 from the computation, == 2 is the
+        // 802.15.4 variant (same skip-one shape here). inject_corrupt's
+        // forced error still wins regardless of the registers.
+        let crc_len = (r.crccnf & 0x03) as usize;
+        let skip = (r.crccnf >> 8) & 0x03;
+        if ok && crc_len != 0 && pkt.len() >= crc_len {
+            let body_end = pkt.len() - crc_len;
+            let body_start = if skip == 0 { 0 } else { body_end.min(1) };
+            let expect = radio_crc(
+                &pkt[body_start..body_end],
+                r.crcpoly,
+                r.crcinit,
+                crc_len,
+            );
+            let mut wire: u32 = 0;
+            for (i, &b) in pkt[body_end..].iter().enumerate() {
+                wire |= (b as u32) << (8 * i);
+            }
+            // RXCRC always latches the received wire CRC (silicon does,
+            // even on mismatch — firmware reads it to diagnose).
+            r.rxcrc = wire;
+            if expect != wire {
+                ok = false;
+            }
+        }
         r.ev_address = true;
         r.fire(sys, 1 << 1);
         r.ev_framestart = true;
@@ -713,11 +786,16 @@ fn complete_rx_with_loss(sys: &System, default_loss_db: u32) {
             r.fire(sys, 1 << 6);
         }
         r.rxmatch = match_idx;
-        r.rxcrc = if pkt.len() >= 2 {
-            (pkt[pkt.len() - 2] as u32) | ((pkt[pkt.len() - 1] as u32) << 8)
-        } else {
-            0
-        };
+        // RXCRC: the CRC engine arm above already latched the wire CRC
+        // when LEN != 0; with the engine disabled keep the legacy tail
+        // echo (last two bytes) so old firmware still sees *something*.
+        if crc_len == 0 {
+            r.rxcrc = if pkt.len() >= 2 {
+                (pkt[pkt.len() - 2] as u32) | ((pkt[pkt.len() - 1] as u32) << 8)
+            } else {
+                0
+            };
+        }
         // PDUSTAT: bit0 = CRC ok, bit1 = address matched (local layout,
         // documented here; silicon PDUSTAT packs PHY/CI flags we don't
         // model — only these two bits are ever nonzero).
@@ -806,6 +884,85 @@ pub fn sample_air_rssi(sys: &System, path_loss_db: u32) {
 /// the RSSI level (shared front end).
 pub fn set_ed_dbm(sys: &System, dbm: i32) {
     with_radio(sys, |r| r.ed_dbm = Some(dbm.clamp(-127, 0)));
+}
+
+/// Set the ambient RF floor in dBm for the interference model
+/// (negative, e.g. -70 for a busy room; None-equivalent clears via
+/// `clear_interference`). ED/CCA add it in log-power to the packet
+/// level, and each RX completion heats the RSSI stamp toward it, so
+/// loaded spectrum reads busy/hot instead of a constant quiet room.
+/// Pure host-side air state — no SVD register, documented here.
+pub fn set_interference_dbm(sys: &System, dbm: i32) {
+    with_radio(sys, |r| r.interference_dbm = Some(dbm.clamp(-127, 0)));
+}
+
+/// Clear the ambient floor (quiet air again).
+pub fn clear_interference(sys: &System) {
+    with_radio(sys, |r| r.interference_dbm = None);
+}
+
+/// Log-power add of an ambient floor onto a packet level (both dBm,
+/// negative): P_total = 10*log10(10^(a/10) + 10^(b/10)), clamped to
+/// the [-127, 0] RSSI window. Pure function so the ED/CCA path and
+/// the RX-stamp path share one honest number.
+pub fn add_interference_dbm(packet_dbm: i32, ambient_dbm: i32) -> i32 {
+    let pa = 10f64.powf(packet_dbm as f64 / 10.0);
+    let pb = 10f64.powf(ambient_dbm as f64 / 10.0);
+    let total = (10.0 * (pa + pb).log10()).round() as i32;
+    total.clamp(-127, 0)
+}
+
+/// nRF data-whitening LFSR (polynomial x^7 + x^4 + 1, 7-bit state):
+/// de-whiten (or whiten — the operation is its own inverse) `buf` in
+/// place with the DATAWHITEIV seed (bit 6 hardwired 1 per the SVD:
+/// writing 0 there has no effect). One keystream bit per payload bit,
+/// MSB-first per byte, LFSR advanced per bit like silicon's baseband.
+pub fn whiten_in_place(buf: &mut [u8], iv: u32) {
+    let mut lfsr = ((iv & 0x3F) | 0x40) as u8; // 7 bits, bit6 forced 1
+    for b in buf.iter_mut() {
+        let mut out = 0u8;
+        for i in (0..8).rev() {
+            // Keystream bit = bit6 ^ bit3 of the current state.
+            let ks = ((lfsr >> 6) ^ (lfsr >> 3)) & 1;
+            out |= (((*b >> i) & 1) ^ ks) << i;
+            // Advance: shift left, new LSB = old bit6.
+            let nb = (lfsr >> 6) & 1;
+            lfsr = ((lfsr << 1) & 0x7F) | nb;
+        }
+        *b = out;
+    }
+}
+
+/// CRC over `body` with the RADIO engine shape: `len` bytes wide
+/// (1..3 from CRCCNF.LEN), polynomial `poly` (up to 24 bits from
+/// CRCPOLY), seed `init` (LEN bytes from CRCINIT), MSB-first
+/// shift-register like silicon's baseband CRC. Pure function so the
+/// RX check and the tests share the exact wire algorithm.
+pub fn radio_crc(body: &[u8], poly: u32, init: u32, len: usize) -> u32 {
+    let len = len.clamp(1, 3);
+    let mask: u32 = if len >= 3 { 0xFF_FFFF } else { (1 << (8 * len)) - 1 };
+    let mut crc = init & mask;
+    let top = 1 << (8 * len - 1);
+    let poly = poly & mask;
+    for &b in body {
+        for i in (0..8).rev() {
+            let bit = ((b >> i) & 1) as u32;
+            let msb = (crc & top) != 0;
+            crc = ((crc << 1) & mask) | bit;
+            if (msb) {
+                crc ^= poly;
+            }
+        }
+    }
+    // Flush LEN*8 zero bits through (silicon clocks the register out).
+    for _ in 0..8 * len {
+        let msb = (crc & top) != 0;
+        crc = (crc << 1) & mask;
+        if (msb) {
+            crc ^= poly;
+        }
+    }
+    crc & mask
 }
 
 /// Inject a received packet addressed to a DAB/DAP entry (air peer).
@@ -950,6 +1107,99 @@ mod tests {
         assert_eq!(sys.p.read(&sys, 0x40001134, 4), 1, "CRCERROR");
         assert_eq!(sys.p.read(&sys, 0x40001400, 4), 0, "CRCSTATUS clear");
         assert_eq!(sys.p.read(&sys, 0x4000110C, 4), 1, "END still fires");
+    }
+    #[test]
+    fn crc_engine_whitening_interference_air() {
+        // CRC engine (CRCCNF/CRCPOLY/CRCINIT, SVD-grounded): LEN=2 with
+        // the BLE poly derives the wire CRC; a good packet passes CRCOK
+        // and latches RXCRC, a flipped bit fails CRCERROR + CRCSTATUS 0.
+        // LEN=0 disables (tail echo preserved). Whitening roundtrips
+        // through the nRF LFSR. Interference heats ED + RSSI in
+        // log-power. Each leg asserts real register effects.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x40001534, 4, 2); // CRCCNF.LEN=2
+        sys.p.write(&sys, 0x40001538, 4, 0x010065); // CRCPOLY (BLE-ish)
+        sys.p.write(&sys, 0x4000153C, 4, 0x00BEEF); // CRCINIT seed
+        let body = vec![0xEF, 0xBE, 0x01];
+        let crc = radio_crc(&body, 0x010065, 0x00BEEF, 2);
+        let mut good = body.clone();
+        good.push((crc & 0xFF) as u8);
+        good.push(((crc >> 8) & 0xFF) as u8);
+        inject_rx(&sys, good);
+        sys.p.write(&sys, 0x40001004, 4, 1); // RXEN
+        sys.p.write(&sys, 0x40001008, 4, 1); // START
+        let _ = take_rx(&sys).expect("rx staged");
+        complete_rx(&sys);
+        assert_eq!(sys.p.read(&sys, 0x40001130, 4), 1, "engine CRCOK");
+        assert_eq!(sys.p.read(&sys, 0x40001400, 4), 1, "CRCSTATUS set");
+        assert_eq!(sys.p.read(&sys, 0x4000140C, 4), crc, "RXCRC latches wire");
+        // Flip one payload bit: same registers now fail.
+        let mut bad = body.clone();
+        bad[0] ^= 0x01;
+        bad.push((crc & 0xFF) as u8);
+        bad.push(((crc >> 8) & 0xFF) as u8);
+        inject_rx(&sys, bad);
+        sys.p.write(&sys, 0x40001008, 4, 1); // START again
+        let _ = take_rx(&sys).expect("rx staged again");
+        complete_rx(&sys);
+        assert_eq!(sys.p.read(&sys, 0x40001134, 4), 1, "engine CRCERROR");
+        assert_eq!(sys.p.read(&sys, 0x40001400, 4), 0, "CRCSTATUS clear");
+        // SKIPADDR=1 drops byte 0: recompute without it, passes again.
+        sys.p.write(&sys, 0x40001534, 4, 2 | (1 << 8));
+        let crc2 = radio_crc(&body[1..], 0x010065, 0x00BEEF, 2);
+        let mut sk = body.clone();
+        sk.push((crc2 & 0xFF) as u8);
+        sk.push(((crc2 >> 8) & 0xFF) as u8);
+        inject_rx(&sys, sk);
+        sys.p.write(&sys, 0x40001008, 4, 1);
+        let _ = take_rx(&sys).expect("rx staged skip");
+        complete_rx(&sys);
+        assert_eq!(sys.p.read(&sys, 0x40001130, 4), 1, "skipaddr CRCOK");
+        // Whitening: LFSR is its own inverse + IV bit6 forced.
+        let mut w = vec![0xAA, 0x55, 0x00, 0xFF];
+        let orig = w.clone();
+        whiten_in_place(&mut w, 0x12);
+        assert_ne!(w, orig, "whitened differs");
+        whiten_in_place(&mut w, 0x12);
+        assert_eq!(w, orig, "double whiten roundtrips");
+        let mut z = vec![0x11];
+        whiten_in_place(&mut z, 0x00); // bit6 forced: same as IV 0x40
+        let mut z2 = vec![0x11];
+        whiten_in_place(&mut z2, 0x40);
+        assert_eq!(z, z2, "IV bit6 hardwired");
+        // Interference: -40 packet + -40 ambient ~= -37 (log-power).
+        assert_eq!(add_interference_dbm(-40, -40), -37, "3dB heat");
+        assert_eq!(add_interference_dbm(-127, -127), -124, "floor heat");
+        // ED reads the heat: quiet -40 vs ambient -40 -> hotter sample.
+        set_rssi_dbm(&sys, -80);
+        sys.p.write(&sys, 0x40001004, 4, 1); // RXEN (ED needs Rx/TxRu)
+        sys.p.write(&sys, 0x40001024, 4, 1); // EDSTART
+        let quiet = sys.p.read(&sys, 0x40001668, 4);
+        set_interference_dbm(&sys, -70);
+        sys.p.write(&sys, 0x40001024, 4, 1); // EDSTART again
+        let hot = sys.p.read(&sys, 0x40001668, 4);
+        assert!(hot < quiet, "interference heats ED (sample {hot} < {quiet})");
+        clear_interference(&sys);
+        // RX stamp heats too: same loss, ambient on -> hotter latch.
+        // (Re-arm Rx first: the earlier completions consumed the queue.)
+        sys.p.write(&sys, 0x40001004, 4, 1); // RXEN
+        sys.p.write(&sys, 0x40001008, 4, 1); // START (Rx)
+        inject_rx_lossy(&sys, vec![0x01], 40);
+        let _ = take_rx(&sys).expect("rx staged heat");
+        set_interference_dbm(&sys, -40);
+        complete_rx(&sys);
+        sys.p.write(&sys, 0x40001014, 4, 1); // RSSISTART
+        let hot_rssi = sys.p.read(&sys, 0x40001548, 4);
+        clear_interference(&sys);
+        assert!(hot_rssi < 80, "RSSI latch heated (sample {hot_rssi} < 80)");
+        // 2nd run: engine off (LEN 0), no whitening, quiet air.
+        let sys2 = test_dummy_system();
+        inject_rx(&sys2, vec![0xAA, 0xBB]);
+        sys2.p.write(&sys2, 0x40001004, 4, 1);
+        sys2.p.write(&sys2, 0x40001008, 4, 1);
+        let _ = take_rx(&sys2).expect("rx staged clean");
+        complete_rx(&sys2);
+        assert_eq!(sys2.p.read(&sys2, 0x40001130, 4), 1, "LEN=0 CRCOK");
     }
     #[test]
     fn shorts_end_disable_chain() {

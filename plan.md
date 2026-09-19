@@ -3415,6 +3415,10 @@ rebuilt pkg, bench-exact pump): entry memcpy at 0x29C51 verified
 branches correctly on FICR SOFTDEVICE (0x0D != 13 -> 0x29D96 path);
 NVMC READY poll at 0x29DC0 passes (model READY=1); UICR NFCPINS reads
 0xFFFFFFFF (unprogrammed) -> reservation skipped correctly.
+(src `[0x6785C]` == dst `[0x20002030]` after the loop); bl 0x29CDC
+branches correctly on FICR SOFTDEVICE (0x0D != 13 -> 0x29D96 path);
+NVMC READY poll at 0x29DC0 passes (model READY=1); UICR NFCPINS reads
+0xFFFFFFFF (unprogrammed) -> reservation skipped correctly.
 0x29CD1 is the post-SYSRESETREQ `dsb;nop;b .` wait (same AIRCR-wait
 family as MC's 0x37F77): the model latches the reset
 (`is_watchdog_reset_requested` true at slice 0); honoring it with
@@ -3440,3 +3444,44 @@ JS proven end to end (18/18 + 42/42 + 16/16); MPY runtime proven
 (banner + REPL P116+P117, BLE module absent by build config);
 MakeCode boots to idle, display content parked firmware-side, BLE
 compiled out (`MICROBIT_DAL_BLUETOOTH_ENABLED: 0`).
+
+## 106. P124 no-walls round: radio air, ACL gate, S132 range rule (2026-09-19)
+
+No walls, no limitations talk — code through each one. All three are
+SVD/header-grounded model work (never a second clock, never src/cpu/
+for board issues, small diffs, cargo green each step):
+
+- Radio air (radio_nrf.rs): real CRC engine (CRCCNF.LEN/SKIPADDR +
+  CRCPOLY + CRCINIT, LEN bytes checked, RXCRC latches the wire CRC
+  even on mismatch, LEN=0 disables with legacy tail echo preserved),
+  nRF 7-bit LFSR whitening (PCNF1.WHITEEN bit 25 + DATAWHITEIV with
+  bit 6 hardwired 1, own-inverse roundtrip), interference floor
+  (host-set ambient dBm; ED/CCA add it in log-power via the shared
+  pure fn `add_interference_dbm`; RX completions heat the RSSI stamp
+  toward it). Native `crc_engine_whitening_interference_air` test
+  (CRCOK/RXCRC latch, flipped-bit CRCERROR, SKIPADDR pass, whiten
+  roundtrip + IV-bit6, 3dB heat asserts, ED heat, RSSI heat, LEN=0
+  clean). 4 new wasm exports (`radio_set/clear_interference_dbm`,
+  `radio_crc32`, `radio_whiten`). Mock stage-3 air legs prove the
+  same surface headless (strict CRCOK/RXCRC/CRCERROR/roundtrip/heat
+  asserts).
+- ACL read-gate (nvmc_nrf.rs + system.rs + cpu/mem.rs, ZERO src/cpu/
+  decoder edits): MWU-patterned `ACL_ARMED` atomic published on every
+  ACL PERM write; mem.rs `acl_deny` consults it per flash/RAM/extra
+  read (one atomic when disarmed) and pends a precise bus fault + 0
+  on blocked reads. `with_nvmc` hardened to try_borrow_mut (the old
+  borrow_mut re-panicked under the P108 SYS-swap family; single-thread
+  gate still passes 227/227, parallel stays best-effort per §3).
+  Test asserts armed/disarmed + blocked-0 + fault + clean-outside.
+- S132 ble_ranges.h range rule ("each module receives its entire
+  allocated range ... return BLE_ERROR_NOT_SUPPORTED for
+  unimplemented calls"): every number in 0x60..=0xBF is now CLAIMED —
+  known SVCs dispatch, unallocated tails (reserved 0x6C, GAP 0x8F,
+  GATTC 0x9A, GATTS 0xAD, L2CAP 0xB3 spot-checked) answer
+  NOT_SUPPORTED when up / NOT_ENABLED when down. Only numbers outside
+  the ranges fall through to raise_sync. Native asserts both gates.
+
+Verify: cargo 227 single (= 116 cpu incl. 20 fw proofs + 94
+peripherals + 14 sd_ble + 3 sd_evt), handshake 18/18 (radio row now
+carries the `air` leg), smoke OK, browser 16/16, both pkgs rebuilt.
+NEXT: commit per approval.

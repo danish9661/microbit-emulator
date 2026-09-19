@@ -1346,6 +1346,17 @@ impl SdBle {
 /// `sys` is unused today (state is the process-wide singleton suivant
 /// the INSTRUCTION_COUNT/tap pattern); it is threaded through so the
 /// thumb.rs hook + future per-instance state share one call shape.
+///
+/// ble_ranges.h rule (S132 ground truth): each module owns its whole
+/// allocated range "whether implemented or not", and unimplemented or
+/// undefined calls in the range return BLE_ERROR_NOT_SUPPORTED — they
+/// do NOT fault. So every number in 0x60..=0xBF is CLAIMED here: known
+/// SVCs dispatch, unallocated numbers in the ranges (reserved 0x6C..,
+/// GAP 0x8F, GATTC 0x9A.., GATTS 0xAD.., L2CAP 0xB3..) answer
+/// NOT_SUPPORTED when the stack is up (NOT_ENABLED when down, like
+/// every other gate). Only numbers OUTSIDE 0x60..=0xBF fall through to
+/// raise_sync. Zero behavior change when BLE is idle (one range
+/// compare + one enable check per SVC).
 pub fn handle_svc(
     _sys: &System,
     mem: &mut dyn Memory,
@@ -1355,7 +1366,21 @@ pub fn handle_svc(
     if !(0x60..=0xBF).contains(&svc) {
         return None;
     }
-    with_sd_ble(|s| dispatch(mem, s, svc, r))
+    with_sd_ble(|s| {
+        match dispatch(mem, s, svc, r) {
+            Some(rc) => Some(rc),
+            None => {
+                // Unallocated number inside the BLE ranges: silicon
+                // answers NOT_SUPPORTED (never a fault). Gate on enable
+                // like every other SVC arm.
+                if s.enabled {
+                    Some(NRF_ERROR_NOT_SUPPORTED)
+                } else {
+                    Some(BLE_ERROR_NOT_ENABLED)
+                }
+            }
+        }
+    })
 }
 
 fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Option<u32> {
@@ -3639,6 +3664,17 @@ mod tests {
         let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
         reset_for_test();
         assert_eq!(handle_svc(&sys, &mut mem, 0x59, &[0u32; 13]), None, "outside BLE range");
+        // ble_ranges.h rule: unallocated numbers INSIDE the ranges are
+        // claimed, not faulted — NOT_ENABLED while down, NOT_SUPPORTED
+        // once up (reserved 0x6C, GAP tail 0x8F, GATTC tail 0x9A,
+        // GATTS tail 0xAD, L2CAP tail 0xB3).
+        for svc in [0x6Cu8, 0x8F, 0x9A, 0xAD, 0xB3] {
+            assert_eq!(
+                handle_svc(&sys, &mut mem, svc, &[0u32; 13]),
+                Some(BLE_ERROR_NOT_ENABLED),
+                "unallocated {svc:#x} gated while down"
+            );
+        }
         // Empty queue, one-arg legacy shape: still NOT_FOUND (p_len NULL
         // is not an address error — there is no contract to violate).
         assert_eq!(
@@ -3657,6 +3693,14 @@ mod tests {
         assert_eq!(handle_svc(&sys, &mut mem, SVC_BLE_ENABLE, &r), Some(NRF_SUCCESS));
         assert!(is_enabled());
         assert_eq!(mem.read32(0x20001000), 0x2000_2000, "app RAM floor");
+        // Same unallocated numbers now answer NOT_SUPPORTED (up).
+        for svc in [0x6Cu8, 0x8F, 0x9A, 0xAD, 0xB3] {
+            assert_eq!(
+                handle_svc(&sys, &mut mem, svc, &[0u32; 13]),
+                Some(NRF_ERROR_NOT_SUPPORTED),
+                "unallocated {svc:#x} supported-never"
+            );
+        }
         // Queue one event, query length with dest NULL (no pop)...
         post_adv_report([1, 2, 3, 4, 5, 6], -50, false, &[1, 2, 3]);
         mem.write16(0x20003FF0, 0);

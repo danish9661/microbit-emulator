@@ -435,6 +435,8 @@ export class MockRadio154 {
     // Inject-then-ramp: the queue must be non-empty when START runs,
     // because do_start only stages take_rx from a non-empty queue
     // (silicon ramps first, air arrives later — same net effect here).
+    // take_rx returns a 1-word array [ptr] (wasm-bindgen Vec<u32>);
+    // empty array = idle. Index [0] for the address.
     if (corrupt) w.radio_inject_corrupt(packet); else w.radio_inject_rx(packet);
     w32(w, RADIO_BASE, 0x504, 0x20001000); // PACKETPTR
     w32(w, RADIO_BASE, 0x004, 1); // RXEN
@@ -506,7 +508,60 @@ export class MockRadio154 {
       const crcst = r32(w, RADIO_BASE, 0x400) === 0;
       if (!crcerr || !end || !crcst) return;
       this.seen.corrupt = true;
-      this.done = this.seen.edCca && this.seen.match && this.seen.miss && this.seen.corrupt;
+      this.stage = 3;
+    }
+    // Stage 3: CRC engine + whitening + interference air (real register
+    // effects, same surface the native crc_engine test proves): derive
+    // the wire CRC with the pure fn, pass CRCOK + RXCRC latch, flip one
+    // bit for CRCERROR, whiten roundtrip, heat ED + RSSI with ambient.
+    if (this.stage === 3) {
+      // NOTE: CRCCNF/POLY/INIT must ALL be programmed — the engine
+      // reads all three (an earlier revision set LEN only and the
+      // default poly/init mismatched the pure-fn CRC).
+      w32(w, RADIO_BASE, 0x534, 2); // CRCCNF.LEN=2
+      w32(w, RADIO_BASE, 0x538, 0x010065); // CRCPOLY
+      w32(w, RADIO_BASE, 0x53C, 0x00BEEF); // CRCINIT
+      const body = [0xEF, 0xBE, 0x01];
+      const crc = w.radio_crc32(body, 0x010065, 0x00BEEF, 2) >>> 0;
+      const good = [...body, crc & 0xFF, (crc >> 8) & 0xFF];
+      const ptr = this.oneRx(good, false);
+      if (ptr == null) return;
+      cpu.mem_write(ptr, good);
+      w.radio_complete_rx();
+      if (r32(w, RADIO_BASE, 0x130) !== 1) return; // CRCOK
+      if (r32(w, RADIO_BASE, 0x40C) !== crc) return; // RXCRC latch
+      const bad = [...body];
+      bad[0] ^= 0x01;
+      const badPkt = [...bad, crc & 0xFF, (crc >> 8) & 0xFF];
+      const ptr2 = this.oneRx(badPkt, false);
+      if (ptr2 == null) return;
+      cpu.mem_write(ptr2, badPkt);
+      w.radio_complete_rx();
+      if (r32(w, RADIO_BASE, 0x134) !== 1) return; // CRCERROR
+      if (r32(w, RADIO_BASE, 0x400) !== 0) return; // CRCSTATUS clear
+      // Whitening roundtrip through the exported pure fn.
+      const w1 = [...w.radio_whiten([0xAA, 0x55, 0x00, 0xFF], 0x12)];
+      const w2 = [...w.radio_whiten(w1, 0x12)];
+      if (w2.join() !== [0xAA, 0x55, 0, 0xFF].join()) return;
+      // Interference heats ED: quiet -80 vs ambient -70.
+      // (Lower EDSAMPLE magnitude = hotter air: -70 reads 70.)
+      // Re-ramp Rx first: earlier completions + EDSTOP left the radio
+      // in ramp-down (state 1), and EDSTART only samples in Rx/TxRu.
+      // Clear the ED override too: set_ed_dbm(-50) in stage 0 would
+      // otherwise mask the RSSI/interference path under test.
+      w.radio_set_ed_dbm(-80);
+      w.radio_clear_interference();
+      w32(w, RADIO_BASE, 0x004, 1); // RXEN (ED needs Rx)
+      w32(w, RADIO_BASE, 0x008, 1); // START (Rx)
+      w32(w, RADIO_BASE, 0x024, 1); // EDSTART
+      const quiet = r32(w, RADIO_BASE, 0x668);
+      w.radio_set_interference_dbm(-70);
+      w32(w, RADIO_BASE, 0x024, 1); // EDSTART again
+      const hot = r32(w, RADIO_BASE, 0x668);
+      w.radio_clear_interference();
+      if (!(hot < quiet)) return;
+      this.seen.air = true;
+      this.done = this.seen.edCca && this.seen.match && this.seen.miss && this.seen.corrupt && this.seen.air;
     }
     void cpu;
   }
