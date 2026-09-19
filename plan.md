@@ -3485,3 +3485,67 @@ Verify: cargo 227 single (= 116 cpu incl. 20 fw proofs + 94
 peripherals + 14 sd_ble + 3 sd_evt), handshake 18/18 (radio row now
 carries the `air` leg), smoke OK, browser 16/16, both pkgs rebuilt.
 NEXT: commit per approval.
+
+## 107. P125 SMP LESC crypto + P126 MakeCode bench preset (2026-09-19)
+
+P125 (committed `340b490`): LE Secure Connections crypto toolbox
+(`smp_crypto.rs`: P-256 ECDH via p256+`ecdh`, AES-CMAC via cmac/aes-0.9,
+f4/f5/f6/g2 per Core Spec Vol 3 Part H, bumble-frozen vectors) wired
+into the sd_ble LESC path (DHKEY_REPLY validates 96B peer-key buffers
+through real ECDH, OOB_DATA_GET derives f4 confirms, 7 wasm exports)
++ cipher-0.5 migration + 13-warning cleanup (zero warnings) + pkg
+rebuild. 231 green single-thread.
+
+P126 (this note, bench-only, no model change): MakeCode gets the same
+first-class bench path MicroPython has — a `makecode` preset that
+fetches `../mc/built/mbcodal-binary.hex` and a shared `bootDirectApp`
+(label-parameterized; `bootMicroPythonApp`/`bootMakeCodeApp` are thin
+wrappers). Run continues into the direct-app boot at 0x1C000 with MBR
+params hand-installed (the recipe every native probe uses). Verified
+bench-parity headless: vectors gate PASS, park 0x37afb, zero faults,
+P0DIR=0x1788000 (sticky rows), T4CC0=0x3e80/INTEN=0x10000 armed.
+Display content still parks firmware-side pre-scroll (STATUS §6.4):
+the scroll fiber is never created — main parks in the 0x2e410
+pump-entry waiter with runQ holding only its own re-queue node, waitQ
+empty, sleepQ garbage (0x30353030 = ASCII "0005", never a pointer).
+TIMER4 IRQ chain itself is healthy (COMPARE0 fires, ISPR27 sets,
+IPS42/TIMER1 system-tick dispatch runs, TWB UICR/NVMC/TWIM all flow).
+Per the reopen rule (faulting config required, none exists) no model
+change ships with this note; the bench preset exists so the parked
+state is one click away when a faulting config appears.
+
+## 108. P127 GPIOTE SET/CLR polarity gate removed + MakeCode strobe-chain verdict (2026-09-20)
+
+Online CODAL sources fetched (codal-core CodalFiber.h/.cpp,
+codal-microbit-v2 MicroBit.cpp + NRF52LedMatrix.cpp, codal-nrf52
+NRFLowLevelTimer.cpp/.h — all raw.githubusercontent, quoted below).
+
+Real model bug fixed (`gpiote_nrf.rs::drive_task`): TASKS_SET/CLR/OUT
+were gated on CONFIG POLARITY==Toggle (event-mode edge semantics
+applied to task mode). On silicon POLARITY selects the *event* edge
+and is inert for tasks (SVD MODE=Task vs Event are disjoint values
+0/1/3). The CODAL matrix programs CONFIG polarity LoToHi yet drives
+columns via PPI->TASKS_SET — a gated SET would no-op every strobe.
+Fix: drive unconditionally in task mode (comment cites the matrix
+shape). New test `set_clr_ignore_polarity_in_task_mode` (CH3/P0.31
+LoToHi: SET sets, CLR clears, OUT toggles). 232 green, zero warnings.
+
+MakeCode strobe-chain verdict (same probes, bench-parity pump): the
+chain is ARMED but never FIRES — TIMER4 CC1/CC2/CC3 read 0/0/0 (only
+CC0=0xD055 programmed), so EV_COMPARE1/2/3 stay 0 and PPI CH3-5
+(EEP=COMPARE1/2/3 -> TEP=SET1/2/3) never dispatch. TIMER4 itself runs
+(COUNTER advances, COMPARE0 fires+IRQs, T1 system-tick healthy).
+Per NRF52LedMatrix.cpp `render()`, CC[column+1] are written per-row
+inside the TIMER4 IRQ handler (`display_irq` -> `render()` sets
+CC[1..5] = pixel*quantum each strobe) — i.e. the multi-compare
+pattern only exists AFTER the first handler entry, and the handler
+only runs after firmware programs CC0 AND the row loop starts. At
+the park the image buffer already holds the 'A' glyph (RAM-diff:
+25B 0/255 window at 0x20003823 renders the A shape) — printCharAsync
+wrote it synchronously — but the strobe never started because main
+parks in the 0x2e410 pump-entry waiter BEFORE the display path runs
+(runQ = self re-queue node only, waitQ empty, sleepQ garbage ASCII).
+So: GPIOTE fix removes a real strobe-killer that WOULD have bitten
+on first fire, but the content gate stays firmware-side (scroll fiber
+never created, P106 waiter path). No faulting config exists; per the
+reopen rule no further model change ships for MakeCode display.

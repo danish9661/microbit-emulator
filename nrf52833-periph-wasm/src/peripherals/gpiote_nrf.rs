@@ -70,6 +70,16 @@ impl Gpiote {
     fn drive_task(&self, sys: &System, ch: usize, level: Option<bool>) {
         let cfg = self.config[ch];
         if cfg & 3 != 3 { return; } // task mode only
+        // NOTE: no POLARITY gate here. On silicon TASKS_SET/CLR/OUT
+        // drive the pin unconditionally in task mode; POLARITY only
+        // selects the *event* edge in event mode (SVD: MODE=Task vs
+        // Event are disjoint behaviors). A polarity gate here kills
+        // the CODAL LED-matrix strobe: NRF52LedMatrix programs
+        // CONFIG polarity LoToHi (expected TOGGLE shape) but drives
+        // columns via PPI->TASKS_SET, which must set unconditionally
+        // (proven: MakeCode park has PPI CH3-5 -> SET1/2/3 armed with
+        // CC1/2/3 = 0/0/0 so COMPARE1/2/3 never fire — the model was
+        // never reached, but a gated SET would no-op even when fired).
         let Some((port, pin)) = Self::cfg_pin(cfg) else { return; };
         let mut gpio = sys.p.gpio.borrow_mut();
         if port < 2 && pin < 32 {
@@ -142,5 +152,23 @@ mod tests {
         assert!(sys.p.gpio.borrow().read_output_pin(0, 21));
         g.write(&sys, 0x064, 1); // CLR1
         assert!(!sys.p.gpio.borrow().read_output_pin(0, 21));
+    }
+    #[test]
+    fn set_clr_ignore_polarity_in_task_mode() {
+        // CODAL LED-matrix strobe programs CONFIG polarity LoToHi
+        // but drives columns via PPI->TASKS_SET: SET/CLR must act
+        // unconditionally in task mode (POLARITY gates event edges
+        // only — SVD MODE=Task vs Event are disjoint).
+        let sys = test_dummy_system();
+        let mut g = Gpiote::default();
+        // CH3: task mode, P0.31, polarity LoToHi (matrix strobe shape)
+        g.write(&sys, 0x51C, (3) | (31 << 8) | (1 << 16) | (1 << 20));
+        g.write(&sys, 0x03C, 1); // SET3
+        assert!(sys.p.gpio.borrow().read_output_pin(0, 31), "SET with LoToHi polarity");
+        g.write(&sys, 0x06C, 1); // CLR3
+        assert!(!sys.p.gpio.borrow().read_output_pin(0, 31), "CLR with LoToHi polarity");
+        // OUT (toggle) likewise ignores polarity.
+        g.write(&sys, 0x00C, 1); // OUT3
+        assert!(sys.p.gpio.borrow().read_output_pin(0, 31), "OUT toggle ungated");
     }
 }

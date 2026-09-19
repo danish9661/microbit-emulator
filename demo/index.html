@@ -49,6 +49,7 @@
         <option value="air">air (USB + RADIO loopback + PPI)</option>
         <option value="cirq">c-irq (C TIMER0 IRQ + UART)</option>
         <option value="mpy">MicroPython v2.1.2 (built-in, auto-boots)</option>
+        <option value="makecode">MakeCode showString (built-in, scheduler-idle)</option>
       </select>
       <button id="reset" type="button">Reset</button>
       <button id="mpyboot" type="button" title="Boot the app at 0x1C000 with MBR params (see docs)">Boot MicroPython app</button>
@@ -471,8 +472,11 @@
   };
   // Selecting a preset only STAGES it (same as Load) — nothing runs
   // until Run is pressed. stagedKind lets Run apply per-preset fixups.
+  // 'mpy' continues into the MicroPython direct-app boot; 'makecode'
+  // into the MakeCode direct-app boot (same recipe).
   function bootPreset(name) {
     if (name === 'mpy') { bootPresetMicroPython(); return; }
+    if (name === 'makecode') { bootPresetMakeCode(); return; }
     const b64 = PRESETS[name];
     if (!b64) return;
     stageImage('preset:' + name, Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)), []);
@@ -492,6 +496,24 @@
       stagedKind = 'mpy';
     } catch (err) {
       status.textContent = 'built-in MicroPython failed to load: ' + err;
+    }
+  }
+  // MakeCode direct-app preset: boots mc/built/mbcodal-binary.hex
+  // (basic.showString("A"), S140 + CODAL app at 0x1C000) through the
+  // same staged path as a dropped file; Run continues into the
+  // direct-app boot (same recipe as MicroPython). Boots to scheduler
+  // idle; display content parks firmware-side pre-scroll.
+  async function bootPresetMakeCode() {
+    status.textContent = 'loading built-in MakeCode…';
+    try {
+      const res = await fetch('../mc/built/mbcodal-binary.hex');
+      if (!res.ok) throw new Error('http ' + res.status);
+      const parsed = parseHex(await res.text());
+      if (!parsed) throw new Error('no data records');
+      stageImage('preset:makecode', parsed.img, parsed.uicr);
+      stagedKind = 'makecode';
+    } catch (err) {
+      status.textContent = 'built-in MakeCode failed to load: ' + err;
     }
   }
   document.getElementById('preset').addEventListener('change', (e) => {
@@ -532,7 +554,15 @@
   // the MBR parameter page hand-installed (a real MBR->SD boot installs
   // these; our direct boot must do it by hand).
   function bootMicroPythonApp() {
-    if (!cpu) { status.textContent = 'load a micro:bit MicroPython hex first'; return; }
+    bootDirectApp('MicroPython');
+  }
+  // Direct-app boot shared by MicroPython AND MakeCode (both ship an
+  // S140 SoftDevice + CODAL app at 0x1C000; both reset-loop through
+  // MBR/BL in emulation, so both boot the app table directly with the
+  // MBR parameter page hand-installed). No model change: this is the
+  // documented direct-app recipe both native probes use.
+  function bootDirectApp(label) {
+    if (!cpu) { status.textContent = 'load a micro:bit hex first'; return; }
     const w = (a) => cpu.read32(a);
     if (w(0x1C000) === 0xFFFFFFFF) { status.textContent = 'no app vector table at 0x1C000'; return; }
     // Start pristine (native-probe equivalent): the frames between hex
@@ -551,14 +581,22 @@
     // 0x1C000 as 0x00000000, and reset_cpu(0, 0) would jump into the
     // weeds and fault obscurely (pc=60012100 class). Fail loudly instead.
     if (sp < 0x20000000 || sp > 0x20020000 || pc < 0x1C000 || pc >= 0x80000) {
-      status.textContent = `no valid MicroPython app at 0x1C000 (SP=${(sp >>> 0).toString(16)} PC=${(pc >>> 0).toString(16)}) — load its .hex first`;
+      status.textContent = `no valid ${label} app at 0x1C000 (SP=${(sp >>> 0).toString(16)} PC=${(pc >>> 0).toString(16)}) — load its .hex first`;
       return;
     }
     cpu.reset_cpu(sp, pc);
     boot = { sp, pc };
     appBoot = { sp, pc };
     uartBox.value = '';
-    status.textContent = `MicroPython app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}), banner follows`;
+    status.textContent = `${label} app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}), banner follows`;
+  }
+  // MakeCode direct-app boot: same recipe as MicroPython (S140 +
+  // CODAL app at 0x1C000, MBR params hand-installed). Boots to
+  // scheduler idle (display content parks firmware-side pre-scroll —
+  // STATUS §6.4): TIMER4/DIR/matrix prove init ran, scroll fiber not
+  // yet created. Same path the native probes use.
+  function bootMakeCodeApp() {
+    bootDirectApp('MakeCode');
   }
   // Staged image: Load/preset parses and holds it here WITHOUT booting;
   // Run boots it via bootImage. Nothing runs until Run is pressed.
@@ -581,6 +619,7 @@
     // must too (radio loopback is already in pumpDma).
     if (stagedKind === 'air') { try { wasm.usbd_signal_reset(); } catch (e) {} }
     if (stagedKind === 'mpy') bootMicroPythonApp();
+    if (stagedKind === 'makecode') bootMakeCodeApp();
   });
   document.getElementById('fw').addEventListener('change', async (e) => {
     const f = e.target.files[0];
