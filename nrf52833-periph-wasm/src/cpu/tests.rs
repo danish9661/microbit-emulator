@@ -90,6 +90,25 @@ fn nrf_blinky_firmware_runs() {
 }
 
 #[test]
+fn nrf_matrix_led_sweep_and_glyph() {
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    // 5x5 matrix proof (matrix_nrf.s): row-sweep with column drive,
+    // then the "A" glyph; MATRIX:OK when GPIO reads back driven state.
+    // Rows sink (OUT=0), columns source (OUT=1) per parts/pins.js.
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/matrix_nrf.bin"));
+    let sys = crate::sys();
+    cpu.run(sys, &mut mem, 5_000_000);
+    assert!(cpu.fault.is_none(), "matrix faulted: {:?}", cpu.fault);
+    let out = crate::system::get_uart_output().lock().unwrap().clone();
+    assert!(out.contains("MATRIX:OK"), "missing MATRIX:OK marker, got {out:?}");
+    // Row/col DIR latched (P0 rows+cols, P1.5 col4)
+    assert_eq!(sys.p.gpio.borrow().dir[0] & 0xD8988000, 0xD8988000, "P0 matrix DIR");
+    assert_eq!(sys.p.gpio.borrow().dir[1] & 0x20, 0x20, "P1.5 DIR");
+}
+
+#[test]
 fn nrf_sensors_buttons_twim_gpiote() {
     let _u = crate::system::lock_uart();
     let _t = crate::system::lock_i2c_tap();

@@ -46,13 +46,30 @@
         <option value="dma">dma (TWIM DMA loopback)</option>
         <option value="extras">extras (SAADC/TEMP/RNG/PWM)</option>
         <option value="stubs">stubs (SPIM/PDM/QSPI/USBD/RADIO)</option>
+        <option value="wdt">wdt (watchdog reboot)</option>
+        <option value="i2s">i2s (audio stream + capture)</option>
+        <option value="nfct">nfct (field + frames)</option>
+        <option value="sdevt">sd_evt (flash event transport)</option>
+        <option value="spim23">spim23 (SPIM2 TX + SPIM3 RX)</option>
+        <option value="uarte1">uarte1 (UARTE1 TX + RX)</option>
+        <option value="usbdev">usbdev (USBD setup + EPIN)</option>
+        <option value="usbep">usbep (USBD endpoints)</option>
+        <option value="matrix">matrix (5x5 sweep + A glyph)</option>
         <option value="air">air (USB + RADIO loopback + PPI)</option>
         <option value="cirq">c-irq (C TIMER0 IRQ + UART)</option>
+        <option value="fetch:bleconf">C: BLE conformance (19 markers)</option>
+        <option value="fetch:cface">C: BLE face (C:* markers)</option>
+        <option value="fetch:cppface">C++: BLE face (P:* markers)</option>
+        <option value="fetch:gatt">C: GATT table + HVX</option>
+        <option value="fetch:pair">C: pairing flow (BLEP:*)</option>
+        <option value="fetch:roles">C: roles ADV/SCAN (BLER:*)</option>
         <option value="mpy">MicroPython v2.1.2 (built-in, auto-boots)</option>
         <option value="makecode">MakeCode showString (built-in, scheduler-idle)</option>
       </select>
       <button id="reset" type="button">Reset</button>
       <button id="mpyboot" type="button" title="Boot the app at 0x1C000 with MBR params (see docs)">Boot MicroPython app</button>
+      <button id="matrixDemo" type="button" title="Drive the 5x5 matrix from JS: sweep rows vs columns, then the A glyph">Matrix demo</button>
+      <span class="pin-note" id="matrixDemoStatus">matrix: firmware-driven</span>
     </div>
     <p class="hint">Presets run the same boot path as a dropped file: MBR vectors at <code>0x0</code>, no UICR records. MicroPython continues straight into the direct-app boot at <code>0x1C000</code>.</p>
   </section>
@@ -459,28 +476,67 @@
     }
     for (const [w, v] of words) wasm.periph_write(w, 4, v >>> 0);
   }
-  // Built-in preset firmware (blinky/*.bin proofs, base64). Same boot
-  // path as a dropped file: MBR vectors at 0x0, no UICR records.
+  // Built-in preset firmware: small proof bins embedded base64 (same
+  // boot path as a dropped file: MBR vectors at 0x0, no UICR records),
+  // plus fetch-loaded language firmwares (C/C++/BLE, MPY/MakeCode hex).
   const PRESETS = {
     blinky: 'ACAAIAkAAABP8IBAASEBYBRICCEBYBRIT/QAEQFgE0gA8BP4AiQSSE/0ABEBYADwFfgQSE/0ABEBYADwD/gOSADwA/gBPO7R/ucQtQRGFPgBGxGxCUoRYPnnEL0ISgE6/dFwRwAlAEAYBQBQhAAAAAgFAFAMBQBQigAAABwlAEBADQMAQk9PVAoAQkxJTksKAA==',
     sensors: 'ACAAIAkAAABP8IBAASEBYBxICCEBYBxIHEkBYBxIBiEBYBxIGSEBYBtIASEBYBtIKCEBYBpIASEBYBpIAPAZ+AIlGUgAaEAEAdQBIADgACCoQgnQBUYAKAPQFEgA8An4AuATSADwBfhP9AAQATj90efnELUERhT4ARsRsQ1KEWD55xC9ACUAQBBlAEABDgIAADUAQIg1AEAIMABAHDUAQBQwAEC4AAAAEAUAUMEAAADIAAAAHCUAQFNFTlM6T0sKAEJUTjoxCgBCVE46MAoA',
     dma: 'ACAAIAkAAABP8IBAASEBYCJICCEBYCJIIkkBYCJIByEBYCJIASEBYCFIAPAl+CFIIUkBYCFIAyEBYCFIGSEBYCBIASEBYCBIAPAW+B9IAPAb+B9IH0kBYB9IASEBYB9IAWAfSAFgH0gBYB9IAPAE+B5IAPAJ+P7nBrUdSQJoACoB0QE5+tEGvRC1BEYU+AEbEbEYShFg+ecQvQAAACUAQEQlAED4AAAASCUAQAggAEAgIQBANDUAQAAQACA4NQBAiDUAQAAwAEAMMQBAAAEAACx2AEAQEAAgMHYAQAB1AEAAcABABHAAQARxAEAIAQAAQEIPABwlAEBETUE6T0sKAEkyQzpPSwoAQURDOk9LCgA=',
     extras: 'ACAAIAkAAABP8IBAASEBYCdICCEBYCdIASEBYCZIASEBYCZIAWAmSADwMfglSADwNvglSAEhAWAkSADwKPgkSABoACgD0CNIAPAp+ALgIkgA8CX4IUgBIQFgIUgA8Bf4IEgAaAAoA9AfSADwGPgC4B5IAPAU+B5IASEBYB1IAWAdSADwBPgdSADwCfj+5wa1G0kCaAAqAdEBOfrRBr0QtQRGFPgBGxGxFkoRYPnnEL0AJQBAAHUAQABwAEAEcABABHEAQAgBAAAAwABAAMEAQAjFAEASAQAAGwEAAADQAEAA0QBACNUAQCUBAAAtAQAAABUCQAgQAkAQEQJANgEAAEBCDwAcJQBAU0FBREM6T0sKAFRFTVA6T0sKAFRFTVA6QkFECgBSTkc6T0sKAFJORzpCQUQKAFBXTTpPSwoA',
     stubs: 'ACAAIAkAAABP8IBAASEBYC1ICCEBYC1IASEBYCxIAWAsSADwP/gsSAEhAWArSAFgK0gA8Df4K0gBIQFgKkgBYCpIAPAv+CpIASEBYClIAWApSADwJ/gpSAEhAWAoSAFgKEgBYChIAPAd+ChIASEBYCdIAWAnSAFgJ0gA8BP4J0gBIQFgJkgA8A34JkgBIQFgJUgA8Af4JUgBIQFgJEgA8An4/ucGtSNJAmgAKgHRATn60Qa9ELUERhT4ARsRsR5KEWD55xC9AAAAJQBAEDAAQBQwAEAEMQBAEDACQBQwAkAEMQJAEPACQBTwAkAE8QJAANUBQADQAUAA0QFAAJUCQACQAkAEkAJABJECQAB1AkAEdQJAAHACQARxAkAAEABAABEAQAgQAEAMEQBADBAAQDwBAABAQg8AHCUAQFNUVUJTOk9LCgA=',
+    wdt: 'ACAAIAkAAAAFSAFoATEBYARIASEBYARIAWAESAFg/ucAEAAgBAUBQAgFAUAAAAFA',
+    i2s: 'ACAAIAkAAABP8IBAASEBYChICCEBYE/wICCgIQgiAPgBGwExATr60SNIASEBYCNII0kBYCNICCEBYCNIT/AgIQFgIkgIIQFgIUgBIQFgIUgA8B/4IEgA8Bz4IEwhaAAp/NAXSBAhCCIQ+AE7i0IM0QExATr40RpIASEBYBlIAPAI+BlIAPAN+P7nGEgA8An4+ucGtRZJAmgAKgHRATn60Qa9ELUERhT4ARsRsRFKEWD55xC9ACUAQABVAkA4VQJAABAAIDxVAkBAVQJARFUCQABQAkAEUQJAFFECQAAwACAEUAJACFECQPgAAAAAAQAAQEIPABwlAEBJMlM6T0sKAEkyUzpCQUQKAA==',
+    nfct: 'ACAAIAkAAABP8IBAASEBYCNICCEBYCNIASEBYCJIAWAiSADwLPgAIQFgIUgBIQFgIEgA8CT4IEgA8Cn4H0ggSQFgIEgEIQFgH0gBIQFgH0gA8BX4GUgeSQFgHkgBIQFgHUgA8Az4GkgAeFIoA9EbSADwDfj+5xpIAPAJ+PrnBrUYSQJoACoB0QE5+tEGvRC1BEYU+AEbEbETShFg+ecQvQAlAEAAVQBACFAAQARRAEAAUABATFEAQOwAAAAQVQBA9AAAABRVAEAMUABAEFEAQAAQACAcUABAGFEAQPgAAAABAQAAQEIPABwlAEBORkM6T0sKANAHhndORkNUOk9LCgBORkNUOkJBRAoA',
+    sdevt: 'ACAAIDMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAxAAAAcEdP8IBAASEBYB5ICCEBYBDfHUgCIQFgHEhP9OghAWAbSABoAPAc+BpIAGhS3xlIAGgCiEOIAioO0QArDNEWSADwFvgTSABoUt8USADwEPgTSADwDfj+5xJIAPAJ+PrnBrURSQJoACoB0QE5+tEGvRC1BEYU+AEbEbEMShFg+ecQvQAAACUAQATlAUAI5QFA4AAAAOQAAADoAAAA7wAAAPkAAAADAQAAQEIPABwlAEAAEAAgEBAAIEVWOk9LCgBFTVBUWTpPSwoAU0RFVlQ6T0sKAFNERVZUOkZBSUwKAA==',
+    spim23: 'ACAAIAkAAABP8IBAASEBYBxICCEBYBxIHEkBYBxIBCEBYBxIByEBYBtIASEBYBtIAPAW+BpIAPAb+BpIGkkBYBpIBCEBYBpIByEBYBlIASEBYBlIAPAE+BhIAPAJ+P7nBrUXSQJoACoB0QE5+tEGvRC1BEYU+AEbEbESShFg+ecQvQAAACUAQEQ1AkDIAAAASDUCQAA1AkAIMAJAIDECQMwAAAA09QJAABAAIDj1AkAA9QJAAPACQAzxAkDVAAAAQEIPABwlAEABAgMEUzJUWDpPSwoAUzNSWDpPSwoA',
+    uarte1: 'ACAAIAkAAABP8IBAASEBYBpICCEBYBpIGkkBYBpIByEBYBpICCEBYBlIASEBYBlIAPAT+BhIAPAY+BhIGEkBYBhIAyEBYBhIASEBYBdIAPAE+BdIAPAJ+P7nBrUVSQJoACoB0QE5+tEGvRC1BEYU+AEbEbEQShFg+ecQvQAlAEBEhQJAvAAAAEiFAkAAhQJACIACQCCBAkDEAAAANIUCQAAQACA4hQJAAIACQAyBAkDNAAAAQEIPABwlAEBVMURBVEEKAFUxVFg6T0sKAFUxUlg6T0sKAA==',
+    usbdev: 'AAACIG0AAAB5AAAAeQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB5AAAAAAAAAAAAAAB5AAAAeQAAAHkAAACCsAhLAZMDaCuxB+ABmwE7AZMDaBO5AZsAK/fRAGgCsHBHAL9AQg8AA0iFRgDwBvj+5wC//ucAAAAAAiBP8IBCL0kItQEkCCAuSxRgVSLB+AAFwfgcJRP4AS8AKvnRKkkqSAEjwfgANcH4BDX/98j/ULknSqH1FDFTI8H4HDUS+AE/ACv50f7nwfhcIdH4gDSAKwnQH0oaSVMjwfgcNRL4AT8AK/nR/ucbShVJUyPB+Bw1EvgBPwAr+dETSxdIw/gABgEiCCHD+AQWFUjD+BAlGmD/95X/SLESSglJVSPB+Bw1EvgBPwAr+dH+5w5KBElVI8H4HDUS+AE/ACv50f7nACAAQHABAAAAcAJAXHECQHgBAACUAQAAiAEAALwBAAAIcQJAsAEAAKABAABVQk9PVAoAAFNFVFVQOlRJTUVPVVQKAABTRVRVUDpPSwoAAABTRVRVUDpCQUQKAABVU0JFUDpUSU1FT1VUCgAAVVNCRVA6T0sKAAAAEgEAAgAAAEA=',
+    usbep: 'ACAAIAkAAABP8IBAASEBYB1ICCEBYB1IASEBYBxIAWAcSADwH/gAIQFgG0gAaIAoA9EaSADwHvgC4BlIAPAa+BhIGUkBYBlICCEBYBhIASEBYBhIAWAYSADwBPgXSADwCfj+5wa1FkkCaAAqAdEBOfrRBr0QtQRGFPgBGxGxEUoRYPnnEL0AAAAlAEAAdQJABHUCQFxxAkCAdAJAyAAAANIAAAAAdgJA3QAAAAR2AkAQdQJAAHACQAhxAkDlAAAAQEIPABwlAEBTRVRVUDpPSwoAU0VUVVA6QkFECgASAQACAAAAQFVTQkVQOk9LCgA=',
+    matrix: 'ACAAIAkAAABP8IBAASEBYDpICCEBYDpIOkkBYDpIICEBYAAkOU06TjpPoAAoWDpJCGA6SDpJAWA6SCAhAWAA8Fj4oAAoWDhJCWgBQkTRATQFLOrbACSgAChYL0kIYCSxYB6AAChYLUkIYDBIAF0AIQAiwwcC1U/wgFMZQ4MHAtVP9ABjGUNDBwLVT/AAQxlDAwcA1QEiwwYC1U/wgEMZQx5LGWAfSxsAACoD0B1LICIaYALgHksgIhpgAPAa+AE0BSzI2xhIAGgVSQhAiEID0RhIAPAF+ALgF0gA8AH4/ucQtQRGFPgBGxGxFEoRYPnnEL1M8lAyATr90XBHACUAQBgFAFAAgJjYGAgAUEABAABUAQAAZAEAAAwFAFAIBQBQAAiQSAgIAFAEBQBQaAEAAAwIAFBtAQAAeAEAABwlAEAAACAAAABAAACAAAAAAAABAAAIAAAAABAACAAAAAAAgAAAAEAgAAAADhEfERFNQVRSSVg6T0sKAE1BVFJJWDpGQUlMCgA=',
     air: 'ACAAIAkAAABP8IBAASEBYCxICCEBYCxIAPA8+AAhAWAqSADwRfgqSCpJAWAqSAEhAWAqSAFgKkgBYCpIAWAnSAFgKUgA8Cb4KEgA8DH4KEhB8gNRAWAnSE/0+mEBYCZIJkkBYCZIJ0kBYCdIASEBYCZIAWAA8Bb4JUgAaE/0ABEIQgPQI0gA8BP4AuAiSADwD/j+5wa1IUkCaAAqAdEBOfrRBr0EtUzyUDIBOv3RBL0QtQRGFPgBGxGxGUoRYPnnEL0AAAAlAEAAcQJAJAEAAAQVAEAAEgAgABAAQAgQAEAMEABABBAAQAwRAEAsAQAAEGUAQECFAEAQ9QFAQIEAQBT1AUAAYABABPUBQACAAEAEBQBQNgEAAD4BAABAQg8AHCUAQFVTQjpPSwoAUkFESU86T0sKAFBQSTpPSwoAUFBJOkJBRAoA',
     cirq: 'AAACIGUAAABxAAAAcQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABxAAAAAAAAAAAAAABxAAAAcQAAAHEAAABxAAAAcQAAAHEAAABxAAAAcQAAAHEAAABxAAAAdQAAAC9IhUYA8F74/ucAv/7nAL8mS9P4QCEAKkPQMLUkSAAihbDD+EAhA2giSk/woEEBM0/0ABQDYMH4CEUfSVQjwfgcNRL4AT8AK/nRAGhQswGsGk2kRqX7ABLSCALrggGg60EBhkYwMb7xCQ8M+AEbA/EBAxBGAdkKK+zRD0kjRBP4AS3B+BwlnEL50QtJT/CgQwogT/QAEsH4HAXD+AwlBbAwvXBHMCPB+Bw17ucAgABAAAAAIOgBAAAAIABAzczMzAAAAiBP8IBCT/ABDChJwvgAwE/woEAII0/0ABwlSsH4ADVCI8D4GMXB+Bw1EvgBPwAr+dEgSk/0emzC+EDFASFP8OAgT/SAPML4ABLC+ATDT/SAfMD4AMERYGK2F0kKaAIqGtiCsBpGAZIBm7P1en8G0gGbATMBkwGbs/V6f/jTC2gCK/DZDkoJSUQjwfgcNRL4AT8AK/nR/ucJSgRJRCPB+Bw1EvgBPwAr+dH+5wC/ACAAQPABAAAAgABAAAAAIPgBAABUSUNLOgAAAEJPT1QKAAAARE9ORQoA',
+  };
+  // Fetch-loaded language firmwares (too big for base64 presets):
+  // C/C++/BLE asm+C images from blinky/ble_fw, stock MPY + MakeCode hex.
+  const FETCH_PRESETS = {
+    bleconf: '../blinky/ble_fw/ble_conformance.bin',
+    cface: '../blinky/ble_fw/c_ble_face.bin',
+    cppface: '../blinky/ble_fw/ble_cpp_face.bin',
+    gatt: '../blinky/ble_fw/ble_gatt_fw.bin',
+    pair: '../blinky/ble_fw/ble_pairing_fw.bin',
+    roles: '../blinky/ble_fw/ble_roles_fw.bin',
   };
   // Selecting a preset only STAGES it (same as Load) — nothing runs
   // until Run is pressed. stagedKind lets Run apply per-preset fixups.
   // 'mpy' continues into the MicroPython direct-app boot; 'makecode'
-  // into the MakeCode direct-app boot (same recipe).
-  function bootPreset(name) {
+  // into the MakeCode direct-app boot (same recipe); 'fetch:*' loads
+  // a language firmware binary over fetch first.
+  async function bootPreset(name) {
     if (name === 'mpy') { bootPresetMicroPython(); return; }
     if (name === 'makecode') { bootPresetMakeCode(); return; }
+    if (name.startsWith('fetch:')) { await bootPresetFetch(name.slice(6)); return; }
     const b64 = PRESETS[name];
     if (!b64) return;
     stageImage('preset:' + name, Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)), []);
     stagedKind = name;
+  }
+  // Fetch-loaded firmware preset (C/C++/BLE .bin files under blinky/):
+  // same staged path as a dropped file (vectors at 0x0, no UICR).
+  async function bootPresetFetch(which) {
+    const url = FETCH_PRESETS[which];
+    if (!url) { status.textContent = 'unknown fetch preset ' + which; return; }
+    status.textContent = 'loading ' + url + '…';
+    try {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('http ' + res.status);
+      const buf = new Uint8Array(await res.arrayBuffer());
+      stageImage('preset:fetch:' + which, buf, []);
+      stagedKind = 'fetch:' + which;
+      status.textContent = `loaded ${url} (${buf.length}B) — press Run`;
+    } catch (err) {
+      status.textContent = 'fetch preset failed: ' + err;
+    }
   }
   // Built-in MicroPython: shipped as demo/firmware/*.hex (same origin,
   // no CORS involved). Staged like everything else; Run boots the MBR
@@ -646,6 +702,46 @@
     }
   });
   document.getElementById('mpyboot').addEventListener('click', bootMicroPythonApp);
+  // Matrix demo (JS-driven, no firmware needed): sweep each row low vs
+  // all columns high, then hold the "A" glyph — the same patterns the
+  // matrix_nrf.bin firmware proof drives natively. Rows sink (OUT=0),
+  // columns source (OUT=1); led on <=> row low && col high (parts/pins.js).
+  // DIR is set to output first (silicon: input pins stay dark).
+  const matrixDemoStatus = document.getElementById('matrixDemoStatus');
+  const ROW_BITS = [1 << 21, 1 << 22, 1 << 15, 1 << 24, 1 << 19];
+  const COL_BITS_P0 = [1 << 28, 1 << 11, 1 << 31, 1 << 30];
+  const GLYPH_A = [0x0E, 0x11, 0x1F, 0x11, 0x11];
+  document.getElementById('matrixDemo')?.addEventListener('click', async () => {
+    if (!wasm) return;
+    try {
+      // DIRSET rows + cols to output.
+      wasm.periph_write(0x50000518, 4, 0xD8988000);
+      wasm.periph_write(0x50000818, 4, 0x20);
+      // Sweep: each row low, all cols high, 120ms per row.
+      for (let r = 0; r < 5; r++) {
+        wasm.periph_write(0x5000050C, 4, 0xD8988000 & ~ROW_BITS[r] & 0xFFFFFFFF);
+        wasm.periph_write(0x50000508, 4, 0x48900800);
+        wasm.periph_write(0x50000808, 4, 0x20);
+        if (matrixDemoStatus) matrixDemoStatus.textContent = `matrix: sweep row ${r + 1}/5`;
+        await new Promise((res) => setTimeout(res, 120));
+      }
+      // Glyph "A": per row, previous row back high, cols per glyph bits.
+      for (let r = 0; r < 5; r++) {
+        wasm.periph_write(0x5000050C, 4, ROW_BITS[r]);
+        if (r > 0) wasm.periph_write(0x50000508, 4, ROW_BITS[r - 1]);
+        let p0 = 0;
+        for (let c = 0; c < 4; c++) if (GLYPH_A[r] & (1 << c)) p0 |= COL_BITS_P0[c];
+        wasm.periph_write(0x50000508, 4, p0);
+        if (GLYPH_A[r] & 0x10) wasm.periph_write(0x50000808, 4, 0x20);
+        else wasm.periph_write(0x5000080C, 4, 0x20);
+        if (matrixDemoStatus) matrixDemoStatus.textContent = `matrix: glyph A row ${r + 1}/5`;
+        await new Promise((res) => setTimeout(res, 200));
+      }
+      if (matrixDemoStatus) matrixDemoStatus.textContent = 'matrix: A held (firmware: MATRIX preset)';
+    } catch (e) {
+      if (matrixDemoStatus) matrixDemoStatus.textContent = 'matrix: ' + e.message;
+    }
+  });
   for (const [id, port, pin] of [['btnA', ...INTERNAL.BTN_A], ['btnB', ...INTERNAL.BTN_B]]) {
     const b = document.getElementById(id);
     // Buttons are active-low with pull-ups: released=true, pressed=false.

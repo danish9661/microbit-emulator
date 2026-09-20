@@ -3549,3 +3549,34 @@ So: GPIOTE fix removes a real strobe-killer that WOULD have bitten
 on first fire, but the content gate stays firmware-side (scroll fiber
 never created, P106 waiter path). No faulting config exists; per the
 reopen rule no further model change ships for MakeCode display.
+
+## 109. P128 MakeCode wall workaround hunt + 20-preset bench + matrix demo (2026-09-20)
+
+Wall hunt (online CODAL sources fetched, quoted in-tree): the DISPLAY
+gate is the `AnimatedDisplay::fiberWait()` pattern, not the TIMER tick.
+`MicroBit::init()` brings up the fiber scheduler (`scheduler_init`),
+then every display call path (`printChar`/`print`/`scroll` ->
+`waitForFreeDisplay` + `fiberWait`) blocks the calling fiber on
+`DEVICE_ID_NOTIFY`/`DISPLAY_EVT_FREE` and `DEVICE_ID_DISPLAY`/
+`DISPLAY_EVT_ANIMATION_COMPLETE` until `animationUpdate()` (driven by
+the system-tick `periodicCallback` chain) completes the animation and
+raises the completion event. Our TIMER1 system-tick fires and dispatches
+(ipsr42 healthy, scheduler_tick runs), but the parked main fiber sits in
+the 0x2e410 pump-entry waiter with runQ holding only its own re-queue
+node and waitQ EMPTY — i.e. main never reaches `printChar` at all (the
+'A' glyph IS in RAM at 0x20003823, written synchronously by an earlier
+`printCharAsync`, but the scroll fiber is never created). No faulting
+config exists, so per the reopen rule no model change ships for the
+content itself. Workaround delivered instead: the bench now drives the
+same photons directly — see matrix demo below.
+
+20-preset bench (`demo/index.html`): 14 base64 proof bins (blinky,
+sensors, dma, extras, stubs, wdt, i2s, nfct, sdevt, spim23, uarte1,
+usbdev, usbep, matrix, air, cirq) + 6 fetch-loaded language firmwares
+(C conformance/face, C++ face, GATT, pairing, roles from blinky/ble_fw)
++ MicroPython + MakeCode direct-app presets = 24 entries. New
+`test:js`/`test:py` face runners + package scripts (test:wasm covers
+handshake+parts+mpy+js+py+ts+repl). Matrix demo button: JS-driven row
+sweep + "A" glyph hold (same ROW/COL patterns as matrix_nrf.bin).
+New files: matrix_nrf.s/.bin + cpu test (MATRIX:OK + DIR asserts,
+233 green), run_js_face.mjs, run_py_face.mjs.
