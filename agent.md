@@ -8,7 +8,7 @@
 
 - HEAD: `a525dfb` "P123 MPY banner+REPL committed proof".
 - Branch: `master`, remote `git@github.com:danish9661/microbitemu.git`.
-- Suite: **227 single green** (gate re-run), = 116 cpu (incl. 20 firmware proofs) + 94 peripherals + 14 sd_ble + 3 sd_evt. Handshake 18/18, smoke OK, browser 16/16 re-verified, both pkgs rebuilt.
+- Suite: **233 single green** (gate re-run), = 117 cpu (incl. 21 firmware proofs) + 95 peripherals + 14 sd_ble + 3 sd_evt + 4 smp_crypto. Handshake 18/18, smoke OK, browser 16/16 re-verified, both pkgs rebuilt.
 - Working tree: P124 radio air + ACL gate + S132 range rule + mock air stage + rebuilt pkgs + this doc sync (see §9 log); `?? .openchamber/` stays untracked (never commit).
 - Big news: **handshake SIGNED WRITE_RSP path FIXED** — the mock asserted the op echo at `body[2]` (conn/status/err zone), but the real wire puts the handle at `body[6..8]` and the op at `body[8]` (see `write_rsp_payload`; native test asserts `0x2000300C == op`). Mock now checks `body[8] === 0x03`. Rust side verified: `complete_gattc_write(conn, handle, op, data)` echoes op/bytes; `resolveJob()` tag-8 passes `(bj[1], bj[3], bj[2], take_data)` in the right order. Full matrix re-green on this tree (see §9).
 
@@ -91,7 +91,7 @@ session, not a real gap:
 ## 6. Verify matrix (run in order, stop on red)
 
 ```
-cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 227 green
+cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 233 green
 cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml --lib -- --list 2>/dev/null | grep -c ": test"
 node demo/parts/handshake.mjs          # 18/18 (rebuild via npm run build:handshake --prefix demo after Rust changes)
 npm run test:parts --prefix demo ; npm run test:mpy --prefix demo

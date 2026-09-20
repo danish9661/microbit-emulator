@@ -165,8 +165,19 @@ in the bond store across disconnects — hit/miss/delete):
     all-NULL = no keys (AUTH_STATUS AUTH_REQ fail, link stays up);
     non-NULL enc = keys found (ENCRYPT expected next)
   sd_ble_gap_encrypt(conn, master_id, enc_info) re-encrypts (needs
-  EncryptPending/Accepted); sd_ble_gap_lesc_oob_data_get zeroes 32B
-  (no crypto — documented); LESC_OOB_DATA_SET is an ack
+  EncryptPending/Accepted); sd_ble_gap_lesc_oob_data_get derives a 32B
+  f4-confirm+random block when the reply buffer carries key material
+  (else the legacy zeroed stub); LESC_OOB_DATA_SET is an ack.
+  LESC_DHKEY_REPLY validates 96B peer-key buffers through real P-256
+  ECDH (off-curve refuses INVALID_PARAM); shorter buffers keep the
+  legacy accept path.
+SMP toolbox (P125, LE protocol order throughout; bumble-frozen vectors):
+  ble_lesc_dhkey(priv_be32, x_le32, y_le32) -> dhkey LE 32B (empty off-curve)
+  ble_lesc_public_key(priv_be32) -> X_LE ++ Y_LE 64B (empty on bad scalar)
+  ble_smp_f4(u32, v32, x16, z) -> confirm LE 16B
+  ble_smp_f5(w32, n1_16, n2_16, a1_7, a2_7) -> MacKey ++ LTK (32B)
+  ble_smp_f6(w16, n1_16, n2_16, r16, iocap3, a1_7, a2_7) -> check LE 16B
+  ble_smp_g2(u32, v32, x16, y16) -> u32 (firmware shows % 1000000)
 BLE complete (driver -> model, posts the SoftDevice event):
   ble_complete_gattc_read(conn, handle, offset, data)  (READ_RSP)
   ble_complete_gattc_write(conn, handle, op, data)      (WRITE_RSP, op echo — SIGNED op 3 carries its 12B signature in data; PREP op 4 / EXEC op 5 queue/commit)

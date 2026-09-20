@@ -8,7 +8,7 @@ DAPLink/interface MCU (KL27) is NOT emulated (JS loader + UART only).
 Status key: **F** = functional (timed, IRQs, driver take/complete,
 firmware proof) · **H** = handshake (TASKS/EVENTS/INTEN minimum, no
 timed behavior or no consumer) · **–** = missing / deliberately
-omitted. Counts: `cargo test` **227 green**,
+omitted. Counts: `cargo test` **233 green**,
 `node demo/parts/smoke.mjs` green, `node demo/parts/handshake.mjs`
 18/18, `node demo/parts/ble_live_e2e.mjs` 42/42 over air, browser
 16/16 (`python3 tools/browser_verify_16.py`).
@@ -65,7 +65,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 
 | Board HW (CODAL v0.2.67 driver) | Emulated by | St | Remark |
 |---|---|---|---|
-| 5×5 LED matrix (NRF52LEDMatrix → TIMER4 + GPIOTE/PPI) | `demo/index.html` matrix (DIR+OUT gate) + `demo/parts/pins.js` ROWS/COLS | F | DIR-gated render (P35 CNF→DIR fix); sticky DIR0=`0x01788000` in MakeCode. Content never drawn — init stalls pre-scroll (L4), not a render gap. |
+| 5×5 LED matrix (NRF52LEDMatrix → TIMER4 + GPIOTE/PPI) | `demo/index.html` matrix (DIR+OUT gate) + `demo/parts/pins.js` ROWS/COLS + Matrix demo button (JS sweep + A glyph) | F | DIR-gated render (P35 CNF→DIR fix); P127 GPIOTE task polarity fix (SET/CLR unconditional in task mode); `blinky/matrix_nrf.s/.bin` firmware proof (`MATRIX:OK`, row/col DIR asserts). Content never drawn — init stalls pre-scroll (L4), not a render gap. |
 | BTN_A P0.14 / BTN_B P0.23 (active-low, pull-up) | Buttons + `gpio_set_input`; `input_state` survives `init()` (P43) | F | Level-poll `sensors_nrf` proof prints BTN:1/0 on change; Playwright press→release verified. |
 | LSM303AGR accel `0x19` + mag `0x1E` (internal TWIM1, DRDY P0.25/`irq1` active-lo) | `demo/parts/lsm303.js` (WHO_AM_I `0x33`/`0x40`, STATUS data-ready, live tilt) | F | DRDY pulses 60ms/140ms (P53: permanent low trips KL27 `idleCallback` >30-tick USB threshold on shared irq1). `requestUpdate` awaitSample spin needs the low window. `normAddr` handles nrfx shifted form. Smoke: WHO_AM_I/CTRL-echo/tilt/DMA/byte paths green. |
 | KL27 USB interface (UIPM `0x70`, irq1-shared) | `demo/parts/kl27.js` Kl27Uipm via `lsm303.js` TWIM1 delegation | F | Valid protocol frames per CODAL wire contract: READ_RSP BOARD_REV 0x9904 (V2.00 KL27) / I2C v2 (BUSY_FLAG_SUPPORTED, no null-txn) / DAPLink / POWER_SRC / POWER_CONS / USB_STATE / KL27_MODE / LED_STATE + USER_EVENT queue; WRITE applies LED/mode; e8777 NOP-wake ignored; unknown -> ERR/UNKNOWN. Smoke: protocol + geometry + speaker/mic/logo checks. |
@@ -226,7 +226,7 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 
 | Gap | Why it stays |
 |---|---|
-| No SMP crypto (LESC confirm/key math) | Crypto runs driver-side by design (bridge confirms air handshake); handshake legs + status codes + key-shape validation are real. |
+| SMP crypto toolbox (P125) | `smp_crypto.rs`: P-256 ECDH + AES-CMAC + f4/f5/f6/g2 (bumble-frozen vectors, 4 tests); DHKEY_REPLY validates 96B peer-key buffers through real ECDH (INVALID_PARAM off-curve), OOB_DATA_GET derives f4 confirms, 7 wasm exports (`ble_lesc_*`, `ble_smp_*`). |
 | Key / bond storage | CLOSED P114: per-peer LTK/IRK/CSRK/master-id store (hit/miss/delete + bridge `bond_keys` leg); SEC_INFO_REQUEST re-encrypts hit from store. |
 | Central role only | CLOSED P114 (dial-in): `complete_peripheral_connect` posts CONNECTED with PERIPH role; bridge/pump `periph_connected` leg. ADV_START arms validation + whitelist/directed state (P119–P121: shape/IN_USE/CONN_COUNT legs, `ble_adv_state`); the bridge `periph_connected` leg completes dial-in over air. |
 | No parameter enforcement | CLOSED P114 (events): request SVC validates; driver completion posts CONN_PARAM_UPDATE. No MTU/DLE/PHY SVCs exist in S132 form and none are synthesized. |
@@ -263,7 +263,7 @@ skip, else fall through to `raise_sync` — zero-cost when idle).
 | `docs/COVERAGE.md` | This file | Table audit (uncommitted, per order). |
 
 ```
-cargo test -- --test-threads=1   # 227 green (parallel ~30/31 on the P114 tree; single-threaded stays the gate by convention)
+cargo test -- --test-threads=1   # 233 green (parallel ~30/31 on the P114 tree; single-threaded stays the gate by convention)
 node demo/parts/smoke.mjs        # parts green
 node demo/parts/handshake.mjs    # 18/18 vs the built pkg
 node demo/parts/ble_live_e2e.mjs # 42/42 over air (bridge on :18771)

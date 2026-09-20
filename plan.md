@@ -3580,3 +3580,23 @@ handshake+parts+mpy+js+py+ts+repl). Matrix demo button: JS-driven row
 sweep + "A" glyph hold (same ROW/COL patterns as matrix_nrf.bin).
 New files: matrix_nrf.s/.bin + cpu test (MATRIX:OK + DIR asserts,
 233 green), run_js_face.mjs, run_py_face.mjs.
+
+## 110. P130 doc sync (227->233) + SMP/API rows + QSPI lock audit note (2026-09-20, uncommitted)
+
+Doc sync for P125–P128 (no code except the committed QSPI lock):
+STATUS §3/§8 (227->233, test:wasm face list), COVERAGE header+verify
+(227->233) + SMP toolbox row (replaces the "No SMP crypto" gap row) +
+matrix row (P127 polarity fix + matrix_nrf proof), doc.html (4 spots),
+about.html (twenty-one proofs, MPY/JS/PY+TS faces), agent.md
+breakdown (117 cpu/21 proofs + 95 periph + 14 sd_ble + 3 sd_evt + 4
+smp_crypto), ble_lang README (js/py face rows), API.md SMP toolbox
+(7 exports) + LESC reply/OOB wording. QSPI lock audit: I2C_TAP/SPI_TAP
+have their own test locks (held in twim tests + cpu tests),
+UART_OUTPUT has UART_TEST_LOCK, EXT_DEVICES is emptied per
+test_dummy_system, QSPI_FLASH was the only unlocked global (fixed by
+the committed BOOT_LOCK join); remaining flake surface is the P108
+SYS-swap family (uncaptured backtrace, ~1/14 rate). Perf: gated on a
+profiler (none on PATH: no perf/flamegraph/valgrind) or an explicit
+src/cpu/ override — hot-spot reads (select_pending re-borrows,
+mem.rs MPU/ACL/watch chains, tick() fan-out, INSTRUCTION_COUNT
+chunking) are all documented-correct and unmeasured; no guessing.

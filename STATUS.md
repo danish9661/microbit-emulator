@@ -67,7 +67,7 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 227 green (`cargo test`)
+## 3. Tests — 233 green (`cargo test`)
 
 - 116 integration tests (`src/cpu/tests.rs`): 20 GCC-built firmware
   proofs (`blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
@@ -91,7 +91,7 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   stock multi-threaded `cargo test` intermittently failed sd_ble/MWU
   tests with `RefCell already borrowed` at `peripherals/mod.rs:457` /
   `mwu_nrf.rs:237` (~1/4 runs pre-P105; ~2/15 post-P105;
-   single-threaded `-- --test-threads=1` always 227/227). Two
+   single-threaded `-- --test-threads=1` always 233/233). Two
   mechanisms, separated by evidence (P105+P108):
   (a) DETERMINISTIC order-dependence (fixed P105): the MPU ENABLE +
   programmed regions live in the INSTALLED model and outlive the test
@@ -462,8 +462,9 @@ beyond proof-level driving remain future work.
      post_lesc_dhkey_request/enabled/queue_len/batt_level/conn_handles/
      conn_sec/tx_power/adv_state/post_sec_request/post_timeouts/
      post_user_mem/post_rw_authorize/post_sys_attr/post_sc_confirm/
-     complete_service_changed` exports; 14 native tests + SVC-hook proof
-     in cpu/tests.rs (227 green); headless `MockBleSvc` executes REAL SVC
+     complete_service_changed` exports + SMP toolbox (`ble_lesc_dhkey`,
+     `ble_lesc_public_key`, `ble_smp_f4/f5/f6/g2`, P125); 14 native tests + SVC-hook proof
+     in cpu/tests.rs (233 green); headless `MockBleSvc` executes REAL SVC
      bytes on a WasmCpu end to end (enable→table→connect→disc×6→read→
      write→L2CAP→pairing→peer-pairing(passkey)→HVX-indicate→
      service-changed→ADV/SCAN roles→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
@@ -512,8 +513,8 @@ beyond proof-level driving remain future work.
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 227 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
-npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY-idiom face, all vs the BUILT pkg
+cargo test -- --test-threads=1    # 233 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
+npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY/JS/PY/TS-idiom faces + REPL, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)
 python3 -m http.server 8080 --directory demo &  # bench

@@ -116,8 +116,8 @@
   cpu/{mod.rs,mem.rs,regs.rs,tests.rs,thumb.rs},peripherals/*.rs,
   ext_devices/}`. AGENTS.md scope lock applies: nRF52833 only, never
   edit `src/cpu/` for board issues, one clock, small diffs.
-- Key numbers: 40 `ble_*` wasm exports (`grep -c "pub fn ble_"
-  src/lib.rs` = 33 + take/data variants); 10 sd_ble native tests;
+- Key numbers: 61 `ble_*` wasm exports (`grep -c "pub fn ble_"
+  src/lib.rs`, incl. the 7 P125 SMP toolbox exports); 10 sd_ble native tests;
   16 BleJob tags; 67 S132 BLE SVC numbers claimed (`0x60..=0xBF`
   hook in `cpu/thumb.rs:1437-1451`); bridge peers ×2 (87/64).
 - Toolchains present: xpack GCC 14.2.1

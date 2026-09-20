@@ -14,7 +14,8 @@ bytes — but each language below proves it independently:
 | MicroPython-idiom | `mpy_ble_face.py` + `run_mpy_face.mjs` | `node run_mpy_face.mjs` (also valid MicroPython) | connect->CONNECTED->read->87 in MPY idioms; the shipped MPY hex has NO bluetooth module (verified absent in flash, `MICROBIT_BLE_ENABLED=0`), so on-device MPY BLE waits on a BLE-enabled build |
 | MicroPython runtime | `run_mpy_repl.mjs` | `node run_mpy_repl.mjs` (`npm run test:repl`) | Full-stock-hex boot (P16 recipe + bench-exact pump): 105B banner + `print(1+2)`->`3`, zero faults. Load-bearing: resets return to the APP table, UART log TAKE-accumulated |
 | TypeScript (Node, strict types) | `ts_lang_face.mts` | `node --experimental-strip-types ts_lang_face.mts` (`npm run test:ts`) | BLE face (ENABLE->CONNECT->CONNECTED->READ->87) + RADIO face (TX take/complete/END + RX inject/complete/END) in strict TS, no `any` |
-| JS (Node) | `/tmp/js_ble_test.mjs` pattern / `run_mpy_face.mjs` | `node` vs built pkg | multi-conn handles, conn_sec, GapAuthenticate take |
+| JS (Node) | `run_js_face.mjs` | `node run_js_face.mjs` (`npm run test:js`) | Same BLE contract in JS idioms (ENABLE->CONNECT->CONNECTED->READ->87) |
+| Python-idiom (Node runner) | `run_py_face.mjs` (mirrors `mpy_ble_face.py`) | `node run_py_face.mjs` (`npm run test:py`) | Same BLE contract in Python idioms (CPython runs the `.py` directly too) |
 
 MicroPython note: `import bluetooth` does not exist in
 `micropython-microbit-v2.1.2.hex` (flash scan: zero hits). When a
