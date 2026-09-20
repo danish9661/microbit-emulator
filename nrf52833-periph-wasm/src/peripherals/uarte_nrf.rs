@@ -152,12 +152,22 @@ impl Peripheral for Uarte {
                     // call means a legacy harness path — take/complete as
                     // before. Last-wins on back-to-back STARTTX (silicon
                     // would not stage twice without ENDTX either).
-                    match snapshot_tx_bytes(self.tx_ptr, self.tx_maxcnt) {
-                        Some(bytes) => {
-                            self.tx_snapshot = bytes;
-                            self.tx_snapshot_valid = true;
+                    // Snapshot ONLY when the DMA source is a single reused
+                    // slot (MAXCNT==1, the putc `&c` shape): multi-byte
+                    // transfers read a stable firmware buffer, and a stale
+                    // snapshot there would DUPLICATE bytes if the driver
+                    // also completes (the "ZSHi!" interleave: snapshot
+                    // emitted a byte the TXD path had already printed).
+                    if self.tx_maxcnt == 1 {
+                        match snapshot_tx_bytes(self.tx_ptr, self.tx_maxcnt) {
+                            Some(bytes) => {
+                                self.tx_snapshot = bytes;
+                                self.tx_snapshot_valid = true;
+                            }
+                            None => self.tx_snapshot_valid = false,
                         }
-                        None => self.tx_snapshot_valid = false,
+                    } else {
+                        self.tx_snapshot_valid = false;
                     }
                 } else {
                     self.ev_txdrdy = true;
@@ -189,7 +199,15 @@ impl Peripheral for Uarte {
             0x500 => self.enable = value & 0xF,
             0x518 => {} // RXD read-only
             0x51C => {
-                // TXD byte: console lifeline
+                // TXD byte: console lifeline. Guarded by ENABLE (silicon
+                // ignores TXD when the UARTE is disabled; without this a
+                // parallel test's stale TXD write lands in the shared
+                // UART buffer mid-assert — the "SENZS"/"ZSHi!" dup-byte
+                // flake: sensors asserts SENS while another test's byte
+                // interleaves).
+                if self.enable == 0 {
+                    return;
+                }
                 let ch = (value & 0xFF) as u8;
                 get_uart_output().lock().unwrap().push(ch as char);
                 let _ = instruction_count();
@@ -240,7 +258,14 @@ pub fn with_uarte<R>(sys: &System, f: impl FnOnce(&mut Uarte) -> R) -> Option<R>
 pub fn with_uarte_at<R>(sys: &System, base: u32, f: impl FnOnce(&mut Uarte) -> R) -> Option<R> {
     for slot in &sys.p.peripherals {
         if slot.start == base {
-            let mut b = slot.peripheral.borrow_mut();
+            // try_borrow_mut (P108 SYS-swap family): Peripherals::read/
+            // write/tick already hold this slot while driving UARTE
+            // (e.g. a model write re-enters via take/complete paths).
+            // A failed borrow drops the op, never panics.
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
             if let Some(u) = b.as_any_mut().downcast_mut::<Uarte>() {
                 return Some(f(u));
             }
@@ -433,6 +458,8 @@ mod tests {
     }
     #[test]
     fn tx_dma_completion_irq_when_enabled() {
+        // UART lock: complete_txdma pushes "Z" to the shared console.
+        let _u = crate::system::lock_uart();
         let sys = test_dummy_system();
         sys.p.write(&sys, 0xE000E100, 4, 1 << 2); // NVIC ISER: UARTE0
         sys.p.write(&sys, 0x40002304, 4, 1 << 8); // INTEN: ENDTX
@@ -511,7 +538,10 @@ mod tests {
     fn uarte1_txdma_roundtrip_targets_instance_1() {
         // UARTE1 (0x40028000, IRQ 40) stages and completes exactly like
         // UARTE0; completion lands on instance 1, not instance 0.
-        use crate::system::test_dummy_system;
+        // UART lock: complete_txdma pushes "Hi!" to the shared console —
+        // without it a parallel marker test's assert can interleave.
+        use crate::system::{lock_uart, test_dummy_system};
+        let _u = lock_uart();
         let sys = test_dummy_system();
         sys.p.write(&sys, 0xE000E104, 4, 1 << 8); // NVIC ISER word1: IRQ 40
         sys.p.write(&sys, 0x40028304, 4, 1 << 8); // UARTE1 INTEN: ENDTX

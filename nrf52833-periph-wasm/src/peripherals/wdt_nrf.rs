@@ -133,7 +133,12 @@ mod tests {
     #[test]
     fn expiry_resets() {
         // Shares the process-global reset event with the sysresetreq test.
+        // BOOT_LOCK: the deadline is measured in shared INSTRUCTION_COUNT.
+        // Lock order UART-then-BOOT matches the cpu/tests convention
+        // (uart first, boot second) — reversed order deadlocks when both
+        // tests contend.
         let _u = crate::system::lock_uart();
+        let _g = crate::system::lock_boot();
         let sys = test_dummy_system();
         // CRV small: timeout after ~2000 virtual instructions.
         let mut w = WdtNrf::default();
@@ -155,6 +160,7 @@ mod tests {
     #[test]
     fn petting_prevents_expiry() {
         let _u = crate::system::lock_uart();
+        let _g = crate::system::lock_boot();
         let sys = test_dummy_system();
         // Drain any stale reset flag from parallel tests first.
         let _ = crate::system::is_watchdog_reset_requested();

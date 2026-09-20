@@ -107,9 +107,10 @@ impl Peripheral for TimerNrf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::test_dummy_system;
+    use crate::system::{lock_boot, test_dummy_system};
     #[test]
     fn compare_fires_after_cc() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut t = TimerNrf::new("TIMER0").unwrap();
         t.write(&sys, 0x510, 0); // prescaler 0
@@ -125,6 +126,7 @@ mod tests {
     }
     #[test]
     fn capture_snapshots_counter() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut t = TimerNrf::new("TIMER0").unwrap();
         t.write(&sys, 0x510, 0);

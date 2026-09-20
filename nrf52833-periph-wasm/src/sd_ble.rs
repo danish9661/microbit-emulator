@@ -1372,6 +1372,10 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
     fn read_u16_le(mem: &mut dyn Memory, p: u32) -> u16 {
         (mem.read8(p) as u16) | ((mem.read8(p.wrapping_add(1)) as u16) << 8)
     }
+    /// Byte-wise u16 store (never traps UNALIGNED: the test helper
+    /// mem.write16 faults+drops at odd addresses when a parallel cpu
+    /// test has UNALIGN_TRP set — P108-family flake. All whitelist /
+    /// pointer / interval test setup goes through here).
     fn write_u16_le(mem: &mut dyn Memory, p: u32, v: u16) {
         mem.write8(p, (v & 0xFF) as u8);
         mem.write8(p.wrapping_add(1), (v >> 8) as u8);
@@ -1579,19 +1583,22 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
             // channel_mask@14 u8 (u16-aligned tail — the S132 struct
             // has no pragma pack; u16 fields align even). Pointer
             // fields read as two u16 halves (the model traps odd
-            // read32 — see the ADV test note).
+            // read32 — see the ADV test note). Byte-wise halves: plain
+            // read16 faults UNALIGNED at odd addresses when a parallel
+            // cpu test has UNALIGN_TRP set (P108-family flake) — the
+            // interval/timeout lines below already use read_u16_le.
             let adv_type = mem.read8(p);
             if adv_type > 3 {
                 return Some(NRF_ERROR_INVALID_PARAM);
             }
-            let p_peer =
-                mem.read16(p.wrapping_add(1)) as u32 | ((mem.read16(p.wrapping_add(3)) as u32) << 16);
+            let p_peer = read_u16_le(mem, p.wrapping_add(1)) as u32
+                | ((read_u16_le(mem, p.wrapping_add(3)) as u32) << 16);
             let fp = mem.read8(p.wrapping_add(5));
             if fp > 3 {
                 return Some(NRF_ERROR_INVALID_PARAM);
             }
-            let p_wl =
-                mem.read16(p.wrapping_add(6)) as u32 | ((mem.read16(p.wrapping_add(8)) as u32) << 16);
+            let p_wl = read_u16_le(mem, p.wrapping_add(6)) as u32
+                | ((read_u16_le(mem, p.wrapping_add(8)) as u32) << 16);
             let interval = read_u16_le(mem, p.wrapping_add(10));
             let timeout = read_u16_le(mem, p.wrapping_add(12));
             // Whitelist present (non-NULL): validate the table shape
@@ -2186,8 +2193,13 @@ fn dispatch(mem: &mut dyn Memory, s: &mut SdBle, svc: u8, r: &[u32; 13]) -> Opti
                 return Some(NRF_ERROR_INVALID_PARAM);
             }
             let selective = (b0 & 0x02) != 0;
-            let p_wl =
-                mem.read16(p.wrapping_add(1)) as u32 | ((mem.read16(p.wrapping_add(3)) as u32) << 16);
+            // p_whitelist is a u32 pointer: read it byte-wise, not as
+            // two u16 halves. The halves form is a stale odd-address
+            // trap (mem.read16 faults UNALIGNED when UNALIGN_TRP is set
+            // by a parallel cpu test; byte reads never trap — the same
+            // read_u16_le the interval/window lines below already use).
+            let p_wl = read_u16_le(mem, p.wrapping_add(1)) as u32
+                | ((read_u16_le(mem, p.wrapping_add(3)) as u32) << 16);
             let interval = read_u16_le(mem, p.wrapping_add(6));
             let window = read_u16_le(mem, p.wrapping_add(8));
             if !(0x0004..=0x4000).contains(&interval)
@@ -3697,6 +3709,13 @@ mod tests {
     fn lock_boot() -> std::sync::MutexGuard<'static, ()> {
         crate::system::lock_boot()
     }
+    /// Byte-wise u16 store for test setup (never traps UNALIGNED).
+    /// (Dispatch has its own same-shaped helper; nested fn items do not
+    /// import via super::*, so tests carry this copy.)
+    fn write_u16_le(mem: &mut dyn Memory, p: u32, v: u16) {
+        mem.write8(p, (v & 0xFF) as u8);
+        mem.write8(p.wrapping_add(1), (v >> 8) as u8);
+    }
 
     fn regs(r0: u32, r1: u32, r2: u32, r3: u32) -> [u32; 13] {
         let mut r = [0u32; 13];
@@ -4088,8 +4107,8 @@ mod tests {
             "selective without table refuses"
         );
         mem.write8(0x20003300, 0x00);
-        mem.write16(0x20003301, 0x3400);
-        mem.write16(0x20003303, 0x2000);
+        write_u16_le(&mut mem, 0x20003301, 0x3400);
+        write_u16_le(&mut mem, 0x20003303, 0x2000);
         mem.write8(0x20003404, 9); // 9 whitelist addrs
         mem.write8(0x2000340C, 0);
         let r = regs(0x20003300, 0, 0, 0);
@@ -4995,8 +5014,8 @@ mod tests {
             mem.write8(0x20005200 + 1 + i as u32, *b);
         }
         // p_peer = 0x20005200 via two u16 halves (even addresses only).
-        mem.write16(0x20005001, 0x5200);
-        mem.write16(0x20005003, 0x2000);
+        write_u16_le(&mut mem, 0x20005001, 0x5200);
+        write_u16_le(&mut mem, 0x20005003, 0x2000);
         mem.write16(0x2000500A, 0); // high-duty directed: interval 0
         let r = regs(0x20005000, 0, 0, 0);
         assert_eq!(handle_svc(&sys, &mut mem, SVC_GAP_ADV_START, &r), Some(NRF_SUCCESS));

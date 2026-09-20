@@ -314,6 +314,12 @@ mod tests {
     }
     #[test]
     fn samplerdy_after_period() {
+        use crate::system::{lock_boot, test_dummy_system};
+        // INSTRUCTION_COUNT is process-global (shared virtual clock):
+        // hold BOOT_LOCK so a parallel test's clock steps cannot add or
+        // steal fractional periods mid-test (P108-family flake: exact-8192
+        // elapsed reads as 0 steps when a neighbor consumed the window).
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut q = QdecNrf::default();
         q.write(&sys, 0x500, 1); // ENABLE

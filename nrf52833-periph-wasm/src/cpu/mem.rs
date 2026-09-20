@@ -225,7 +225,17 @@ impl FlatMemory {
         if size <= 1 || (addr & (size - 1)) == 0 {
             return false;
         }
-        if crate::system::unalign_trp() || crate::sys().p.mpu_is_device(addr) {
+        // Order matters: unalign_trp() is a single Relaxed atomic load
+        // (false in every aligned-only test); mpu_is_device() walks the
+        // peripheral table + borrows the MPU slot, so only consult it
+        // when the trap is clear. try_sys() (not sys()) skips the
+        // installed-SYS deref when no system is installed — sd_ble unit
+        // tests run on test_dummy_system() without installing SYS, and
+        // the old unconditional deref panicked "not initialized" there.
+        if crate::system::unalign_trp() {
+            crate::system::pend_align_fault(addr);
+            true
+        } else if matches!(crate::try_sys(), Some(sys) if sys.p.mpu_is_device(addr)) {
             crate::system::pend_align_fault(addr);
             true
         } else {

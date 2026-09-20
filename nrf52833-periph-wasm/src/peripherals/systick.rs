@@ -99,9 +99,11 @@ impl Peripheral for SysTick {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::test_dummy_system;
+    use crate::system::{lock_boot, test_dummy_system};
     #[test]
     fn val_counts_down_and_flags() {
+        // Shared virtual clock: hold BOOT_LOCK (RTC/QDEC discipline).
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut s = SysTick::new("SysTick").unwrap();
         s.write(&sys, 0x04, 1000); // RVR
@@ -121,6 +123,7 @@ mod tests {
     }
     #[test]
     fn disabled_counter_holds() {
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut s = SysTick::new("SysTick").unwrap();
         s.write(&sys, 0x04, 1000);

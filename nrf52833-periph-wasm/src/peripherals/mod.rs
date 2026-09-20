@@ -129,7 +129,16 @@ impl Peripherals {
         let priv_ = priv_ && !crate::system::mpu_force_unpriv();
         for slot in &self.peripherals {
             if slot.start == 0xE000_ED90 {
-                if let Some(mpu) = slot.peripheral.borrow_mut().as_any_mut().downcast_mut::<Mpu>() {
+                // try_borrow_mut: the mem.rs unaligned_deny path calls
+                // mpu_is_device() while a cpu write holds the MPU slot
+                // (P108 SYS-swap family: RefCell already borrowed at
+                // mod.rs:132). A failed borrow = treat as no-match
+                // (the holder's check decides), never panic.
+                let mut b = match slot.peripheral.try_borrow_mut() {
+                    Ok(b) => b,
+                    Err(_) => return None,
+                };
+                if let Some(mpu) = b.as_any_mut().downcast_mut::<Mpu>() {
                     return mpu.check_range(addr, size, write, exec, priv_, hfnmi);
                 }
                 break;
@@ -144,7 +153,11 @@ impl Peripherals {
         }
         for slot in &self.peripherals {
             if slot.start == 0xE000_ED90 {
-                if let Some(mpu) = slot.peripheral.borrow_mut().as_any_mut().downcast_mut::<Mpu>() {
+                let mut b = match slot.peripheral.try_borrow_mut() {
+                    Ok(b) => b,
+                    Err(_) => return false,
+                };
+                if let Some(mpu) = b.as_any_mut().downcast_mut::<Mpu>() {
                     return mpu.is_device(addr);
                 }
                 break;
@@ -454,10 +467,21 @@ impl Peripherals {
             return (self.read(sys, addr, 1) >> bit_number) & 1;
         }
         let (addr, byte_offset) = Self::align_addr_4(addr);
+        // try_borrow_mut throughout this arm (P108 SYS-swap family):
+        // mem.rs read paths re-enter the same slot (e.g. MPU-region
+        // or MWU-watch reads while a model read holds it). A failed
+        // borrow reads 0 instead of panicking — same discipline as
+        // write() above and mpu_check/mpu_is_device.
         let value = if Self::NVIC_REGS_BASE <= addr && addr < Self::NVIC_REGS_END {
-            self.nvic.borrow_mut().read(sys, addr - Self::NVIC_REGS_BASE)
+            match self.nvic.try_borrow_mut() {
+                Ok(mut n) => n.read(sys, addr - Self::NVIC_REGS_BASE),
+                Err(_) => 0,
+            }
         } else if let Some(p) = Self::get_peripheral(&self.peripherals, addr) {
-            p.peripheral.borrow_mut().read(sys, addr - p.start)
+            match p.peripheral.try_borrow_mut() {
+                Ok(mut b) => b.read(sys, addr - p.start),
+                Err(_) => 0,
+            }
         } else { 0 };
         // Shift DOWN: callers truncate to their width (mem.read8 takes the
         // low byte). Shifting up here zeroed every sub-word read past
@@ -481,7 +505,14 @@ impl Peripherals {
         if Self::NVIC_REGS_BASE <= addr && addr < Self::NVIC_REGS_END {
             self.nvic.borrow_mut().write(sys, addr - Self::NVIC_REGS_BASE, value);
         } else if let Some(p) = Self::get_peripheral(&self.peripherals, addr) {
-            p.peripheral.borrow_mut().write(sys, addr - p.start, value);
+            // try_borrow_mut: a peripheral write can re-enter this same
+            // slot (e.g. SCB AIRCR write -> reset path -> model write
+            // to the same peripheral; P108 SYS-swap family). A failed
+            // borrow drops the re-entrant write instead of panicking
+            // (same discipline as mpu_check/mpu_is_device above).
+            if let Ok(mut b) = p.peripheral.try_borrow_mut() {
+                b.write(sys, addr - p.start, value);
+            }
         }
     }
 

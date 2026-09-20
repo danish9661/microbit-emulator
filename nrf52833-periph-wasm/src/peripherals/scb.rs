@@ -202,11 +202,15 @@ impl Peripheral for Scb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::test_dummy_system;
+    use crate::system::{lock_boot, test_dummy_system};
     #[test]
     fn aircr_sysresetreq_fires_and_self_clears() {
         // MicroPython's 0x29CC8 sequence writes 0x05FA0004: the SYSRESETREQ
         // bit must reach the reset latch even though PRIGROUP is 0.
+        // UNALIGN_TRP is a process-global CCR cache: hold BOOT_LOCK so a
+        // parallel cpu test's trap programming cannot leak in mid-test
+        // (same P108-family discipline as the sd_ble/qspi joins).
+        let _g = lock_boot();
         let sys = test_dummy_system();
         sys.p.write(&sys, 0xE000ED0C, 4, 0x05FA0004);
         assert!(crate::system::is_watchdog_reset_requested(), "reset latched");

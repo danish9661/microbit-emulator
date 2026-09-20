@@ -106,9 +106,14 @@ impl Peripheral for RtcNrf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system::test_dummy_system;
+    use crate::system::{lock_boot, test_dummy_system};
     #[test]
     fn tick_sets_event() {
+        // INSTRUCTION_COUNT is process-global (shared virtual clock):
+        // hold BOOT_LOCK so a parallel test's clock steps cannot add
+        // extra LF ticks mid-test (P108-family flake: exact-4000
+        // elapsed reads as 4+ ticks when a neighbor pads the window).
+        let _g = lock_boot();
         let sys = test_dummy_system();
         let mut r = RtcNrf::new("RTC0").unwrap();
         r.write(&sys, 0x508, 0);
@@ -121,6 +126,8 @@ mod tests {
     #[test]
     fn compare_match_fires_irq_and_ovrflw_wraps() {
         // COMPARE path: CC0=2, INTEN COMPARE0 (bit 16), ISER IRQ 11.
+        // Same BOOT_LOCK discipline as tick_sets_event above.
+        let _g = lock_boot();
         let sys = test_dummy_system();
         sys.p.write(&sys, 0xE000E100, 4, 1 << 11);
         let mut r = RtcNrf::new("RTC0").unwrap();

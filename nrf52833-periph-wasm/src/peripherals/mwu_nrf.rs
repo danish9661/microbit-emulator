@@ -234,7 +234,14 @@ impl Peripheral for MwuNrf {
 pub fn mwu_note(sys: &System, addr: u32, is_write: bool) {
     for slot in &sys.p.peripherals {
         if slot.start == 0x4002_0000 {
-            let mut b = slot.peripheral.borrow_mut();
+            // try_borrow_mut (P108 SYS-swap family): the mem.rs watch
+            // hook fires while the model write holds this same slot
+            // (e.g. REGIONENSET write -> mem watch -> mwu_note).
+            // A failed borrow drops the note, never panics.
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             if let Some(m) = b.as_any_mut().downcast_mut::<MwuNrf>() {
                 m.check(sys, addr, is_write);
             }
@@ -283,6 +290,7 @@ mod tests {
         assert!(!crate::system::mwu_armed(), "disarmed");
         mem.write8(0x20001004, 0xDD);
         assert_eq!(sys.p.read(&sys, 0x40020100, 4), 0, "no event when disarmed");
+        crate::system::mwu_set_armed(false); // hygiene for other tests
     }
     #[test]
     fn pregion_subs_include_exclude() {

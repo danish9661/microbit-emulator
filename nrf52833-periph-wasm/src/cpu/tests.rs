@@ -3259,6 +3259,8 @@ fn nonbasethrdena_faults_boosted_thread_return() {
 #[test]
 fn itm_port0_console_gated() {
     // ITM STIM0 writes reach UART output only with TCR.ITMENA + TER[0].
+    // UART lock: the console push races parallel marker asserts.
+    let _u = crate::system::lock_uart();
     let _g = lock_boot();
     let (mut cpu, mut mem) = boot(&irq_test_image(false));
     let sys = crate::sys();

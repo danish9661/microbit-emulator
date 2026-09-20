@@ -101,7 +101,9 @@ mod tests {
         assert_eq!(p.read(&sys, 0x500), 0);
     }
     #[test]
-    fn timer_compare_drives_gpiote_task() {        use crate::system::test_dummy_system;
+    fn timer_compare_drives_gpiote_task() {
+        use crate::system::{lock_boot, test_dummy_system};
+        let _g = lock_boot();
         let sys = test_dummy_system();
         // GPIOTE CH0 = task mode on P0.21
         sys.p.write(&sys, 0x40006510, 4, (3) | (21 << 8));

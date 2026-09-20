@@ -840,8 +840,13 @@ mod tests {
         use crate::system::test_dummy_system;
         // 0x19 has no tap on TWIM1 in this test's view; the DMA/sensors
         // tests register TWIM0/0x19 (different bus, no alias). Lock the
-        // tap table so no parallel test can add one mid-flight.
+        // tap table so no parallel test can add one mid-flight, and
+        // drain any leaked taps first: EXT_DEVICES is process-global and
+        // a parallel test's push (dma test's TWIM0/0x19) can otherwise
+        // sit in the table when arm_nack polls — the lock alone does not
+        // help if the entry leaked BEFORE we locked.
         let _t = crate::system::lock_i2c_tap();
+        crate::system::get_ext_devices().lock().unwrap().i2c_taps.clear();
         let sys = test_dummy_system();
         // No tap slave registered for TWIM1/0x19: address phase NACKs.
         sys.p.write(&sys, 0x40004588, 4, 0x19); // ADDRESS
