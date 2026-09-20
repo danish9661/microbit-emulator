@@ -268,7 +268,11 @@ mod tests {
     }
     #[test]
     fn write_read_erase_roundtrip() {
-        use crate::system::test_dummy_system;
+        use crate::system::{lock_boot, test_dummy_system};
+        // QSPI_FLASH is a process-global registry: hold BOOT_LOCK so a
+        // parallel test's qspi_clear/reset cannot pull the image mid-test
+        // (same discipline as the sd_ble BOOT_LOCK join, P108).
+        let _g = lock_boot();
         let sys = test_dummy_system();
         qspi_register_flash("QSPI", &vec![0xFF; 65536]);
         sys.p.write(&sys, 0x40029500, 4, 1); // ENABLE
