@@ -136,7 +136,12 @@ impl Peripheral for CompNrf {
 fn with_comp<R>(sys: &System, f: impl FnOnce(&mut CompNrf) -> R) -> Option<R> {
     for slot in &sys.p.peripherals {
         if slot.start == 0x4001_3000 {
-            let mut b = slot.peripheral.borrow_mut();
+            // try_borrow_mut (P108 family): take/complete paths re-enter
+            // via read/write/tick while borrowed; drop instead of panic.
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
             if let Some(c) = b.as_any_mut().downcast_mut::<CompNrf>() {
                 return Some(f(c));
             }

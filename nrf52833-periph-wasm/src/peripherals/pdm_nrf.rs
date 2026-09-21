@@ -72,7 +72,12 @@ impl Peripheral for PdmNrf {
 pub fn take_sample(sys: &System) -> Option<(u32, u32)> {
     for slot in &sys.p.peripherals {
         if slot.start == 0x4001_D000 {
-            let mut b = slot.peripheral.borrow_mut();
+            // try_borrow_mut (P108 family): take/complete paths re-enter
+            // via read/write/tick while borrowed; drop instead of panic.
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
             if let Some(p) = b.as_any_mut().downcast_mut::<PdmNrf>() {
                 if p.sample_pending {
                     p.sample_pending = false;
@@ -91,7 +96,12 @@ pub fn take_sample(sys: &System) -> Option<(u32, u32)> {
 pub fn complete_sample(sys: &System) {
     for slot in &sys.p.peripherals {
         if slot.start == 0x4001_D000 {
-            let mut b = slot.peripheral.borrow_mut();
+            // try_borrow_mut (P108 family): take/complete paths re-enter
+            // via read/write/tick while borrowed; drop instead of panic.
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return,
+            };
             if let Some(p) = b.as_any_mut().downcast_mut::<PdmNrf>() {
                 p.ev_end = true;
                 if p.intenset & (1 << 2) != 0 {

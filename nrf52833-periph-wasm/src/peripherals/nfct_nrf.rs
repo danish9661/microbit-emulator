@@ -255,7 +255,12 @@ impl Peripheral for NfctNrf {
 fn with_nfct<R>(sys: &System, f: impl FnOnce(&mut NfctNrf) -> R) -> Option<R> {
     for slot in &sys.p.peripherals {
         if slot.start == 0x4000_5000 {
-            let mut b = slot.peripheral.borrow_mut();
+            // try_borrow_mut (P108 family): take/complete paths re-enter
+            // via read/write/tick while borrowed; drop instead of panic.
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
             if let Some(n) = b.as_any_mut().downcast_mut::<NfctNrf>() {
                 return Some(f(n));
             }

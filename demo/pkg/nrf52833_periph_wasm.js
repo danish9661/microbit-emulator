@@ -1355,6 +1355,20 @@ export function get_uart_output() {
 }
 
 /**
+ * Direction bit: true = firmware configured the pin as output
+ * (PIN_CNF.DIR source of truth, kept in sync by the model).
+ * OpenHW matrix/buttons render needs this: an OUT latch toggling on
+ * an input pin must stay dark (see the bench frame loop).
+ * @param {number} port
+ * @param {number} pin
+ * @returns {boolean}
+ */
+export function gpio_read_dir(port, pin) {
+    const ret = wasm.gpio_read_dir(port, pin);
+    return ret !== 0;
+}
+
+/**
  * @param {number} port
  * @param {number} pin
  * @returns {boolean}
@@ -1527,6 +1541,27 @@ export function init_svd(svd_xml) {
 export function is_watchdog_reset_requested() {
     const ret = wasm.is_watchdog_reset_requested();
     return ret !== 0;
+}
+
+/**
+ * 5x5 LED matrix state for an OpenHW matrix component: 25 bytes,
+ * row-major, 1 = lit. Lit <=> row OUT==0 && col OUT==1 with both pins
+ * configured output (same rule the bench frame loop uses).
+ * Rows: P0.21/P0.22/P0.15/P0.24/P0.19. Cols: P0.28/P0.11/P0.31/P1.05/P0.30.
+ * @returns {Uint8Array}
+ */
+export function matrix_state() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.matrix_state(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU8FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 1, 1);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
 }
 
 /**

@@ -269,7 +269,12 @@ impl Peripheral for QdecNrf {
 fn with_qdec<R>(sys: &System, f: impl FnOnce(&mut QdecNrf) -> R) -> Option<R> {
     for slot in &sys.p.peripherals {
         if slot.start == 0x4001_2000 {
-            let mut b = slot.peripheral.borrow_mut();
+            // try_borrow_mut (P108 family): take/complete paths re-enter
+            // via read/write/tick while borrowed; drop instead of panic.
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
             if let Some(q) = b.as_any_mut().downcast_mut::<QdecNrf>() {
                 return Some(f(q));
             }

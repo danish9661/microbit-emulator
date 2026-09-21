@@ -405,6 +405,14 @@ export function get_next_pending_interrupt(): number;
  */
 export function get_uart_output(): string;
 
+/**
+ * Direction bit: true = firmware configured the pin as output
+ * (PIN_CNF.DIR source of truth, kept in sync by the model).
+ * OpenHW matrix/buttons render needs this: an OUT latch toggling on
+ * an input pin must stay dark (see the bench frame loop).
+ */
+export function gpio_read_dir(port: number, pin: number): boolean;
+
 export function gpio_read_input(port: number, pin: number): boolean;
 
 export function gpio_read_output(port: number, pin: number): boolean;
@@ -451,6 +459,14 @@ export function init_svd(svd_xml: string): void;
  * (MicroPython does this twice during boot).
  */
 export function is_watchdog_reset_requested(): boolean;
+
+/**
+ * 5x5 LED matrix state for an OpenHW matrix component: 25 bytes,
+ * row-major, 1 = lit. Lit <=> row OUT==0 && col OUT==1 with both pins
+ * configured output (same rule the bench frame loop uses).
+ * Rows: P0.21/P0.22/P0.15/P0.24/P0.19. Cols: P0.28/P0.11/P0.31/P1.05/P0.30.
+ */
+export function matrix_state(): Uint8Array;
 
 export function nfct_complete_rx(amount: number): void;
 
@@ -717,6 +733,7 @@ export interface InitOutput {
     readonly ecb_take_job: (a: number) => void;
     readonly get_next_pending_interrupt: () => number;
     readonly get_uart_output: (a: number) => void;
+    readonly gpio_read_dir: (a: number, b: number) => number;
     readonly gpio_read_input: (a: number, b: number) => number;
     readonly gpio_read_output: (a: number, b: number) => number;
     readonly gpio_set_input: (a: number, b: number, c: number) => void;
@@ -732,6 +749,7 @@ export interface InitOutput {
     readonly init: () => void;
     readonly init_svd: (a: number, b: number) => void;
     readonly is_watchdog_reset_requested: () => number;
+    readonly matrix_state: (a: number) => void;
     readonly nfct_complete_rx: (a: number) => void;
     readonly nfct_complete_tx: () => void;
     readonly nfct_field_present: (a: number) => void;

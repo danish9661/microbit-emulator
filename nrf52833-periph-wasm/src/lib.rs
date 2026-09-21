@@ -136,6 +136,44 @@ pub fn gpio_read_output(port: u32, pin: u32) -> bool {
     sys().p.gpio.borrow().read_output_pin(port as u8, pin as u8)
 }
 
+/// Direction bit: true = firmware configured the pin as output
+/// (PIN_CNF.DIR source of truth, kept in sync by the model).
+/// OpenHW matrix/buttons render needs this: an OUT latch toggling on
+/// an input pin must stay dark (see the bench frame loop).
+#[wasm_bindgen]
+pub fn gpio_read_dir(port: u32, pin: u32) -> bool {
+    let g = sys().p.gpio.borrow();
+    if (port as usize) < 2 && pin < 32 {
+        (g.dir[port as usize] >> pin) & 1 == 1
+    } else {
+        false
+    }
+}
+
+/// 5x5 LED matrix state for an OpenHW matrix component: 25 bytes,
+/// row-major, 1 = lit. Lit <=> row OUT==0 && col OUT==1 with both pins
+/// configured output (same rule the bench frame loop uses).
+/// Rows: P0.21/P0.22/P0.15/P0.24/P0.19. Cols: P0.28/P0.11/P0.31/P1.05/P0.30.
+#[wasm_bindgen]
+pub fn matrix_state() -> Vec<u8> {
+    const ROWS: [(u8, u8); 5] = [(0, 21), (0, 22), (0, 15), (0, 24), (0, 19)];
+    const COLS: [(u8, u8); 5] = [(0, 28), (0, 11), (0, 31), (1, 5), (0, 30)];
+    let g = sys().p.gpio.borrow();
+    let mut out = Vec::with_capacity(25);
+    for &(rp, rpin) in &ROWS {
+        for &(cp, cpin) in &COLS {
+            let row_out = (rp as usize) < 2 && rpin < 32
+                && (g.dir[rp as usize] >> rpin) & 1 == 1
+                && (g.out[rp as usize] >> rpin) & 1 == 0;
+            let col_out = (cp as usize) < 2 && cpin < 32
+                && (g.dir[cp as usize] >> cpin) & 1 == 1
+                && (g.out[cp as usize] >> cpin) & 1 == 1;
+            out.push((row_out && col_out) as u8);
+        }
+    }
+    out
+}
+
 /// Drive a raw input level. Buttons are active-low: released = true
 /// (idle pull-up default), pressed = false. JS button layer maps to this.
 /// NFC antenna pins (P0.09/P0.10 with UICR.NFCPINS PROTECT=1, the reset

@@ -483,7 +483,12 @@ impl Twim {
 fn with_twim<R>(sys: &System, base: u32, f: impl FnOnce(&mut Twim) -> R) -> Option<R> {
     for slot in &sys.p.peripherals {
         if slot.start == base {
-            let mut b = slot.peripheral.borrow_mut();
+            // try_borrow_mut (P108 family): take/complete paths re-enter
+            // via read/write/tick while borrowed; drop instead of panic.
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
             if let Some(t) = b.as_any_mut().downcast_mut::<Twim>() {
                 return Some(f(t));
             }

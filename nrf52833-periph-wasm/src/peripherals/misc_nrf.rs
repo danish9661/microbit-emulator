@@ -103,7 +103,12 @@ impl Peripheral for EcbNrf {
 fn with_ecb<R>(sys: &System, f: impl FnOnce(&mut EcbNrf) -> R) -> Option<R> {
     for slot in &sys.p.peripherals {
         if slot.start == 0x4000_E000 {
-            let mut b = slot.peripheral.borrow_mut();
+            // try_borrow_mut (P108 family): take/complete paths re-enter
+            // via read/write/tick while borrowed; drop instead of panic.
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
             if let Some(e) = b.as_any_mut().downcast_mut::<EcbNrf>() {
                 return Some(f(e));
             }
@@ -395,7 +400,12 @@ impl Peripheral for AarCcmNrf {
 fn with_aar<R>(sys: &System, f: impl FnOnce(&mut AarCcmNrf) -> R) -> Option<R> {
     for slot in &sys.p.peripherals {
         if slot.start == 0x4000_F000 {
-            let mut b = slot.peripheral.borrow_mut();
+            // try_borrow_mut (P108 family): take/complete paths re-enter
+            // via read/write/tick while borrowed; drop instead of panic.
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
             if let Some(a) = b.as_any_mut().downcast_mut::<AarCcmNrf>() {
                 return Some(f(a));
             }
@@ -591,7 +601,12 @@ impl Peripheral for I2sNrf {
 fn with_i2s<R>(sys: &System, f: impl FnOnce(&mut I2sNrf) -> R) -> Option<R> {
     for slot in &sys.p.peripherals {
         if slot.start == 0x4002_5000 {
-            let mut b = slot.peripheral.borrow_mut();
+            // try_borrow_mut (P108 family): take/complete paths re-enter
+            // via read/write/tick while borrowed; drop instead of panic.
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
             if let Some(i) = b.as_any_mut().downcast_mut::<I2sNrf>() {
                 return Some(f(i));
             }

@@ -219,4 +219,27 @@ mod tests {
         p0.write(&sys, 0x700 + 21 * 4, 0x0); // DIR=input
         assert_eq!(p0.read(&sys, 0x514) & (1 << 21), 0, "back to input");
     }
+    #[test]
+    fn openhw_matrix_read_path_row_low_col_high() {
+        // OpenHW matrix contract: the lib.rs matrix_state() pixels light
+        // exactly when row OUT==0 && col OUT==1 with both DIR=output.
+        // Drive them through the same model writes firmware uses.
+        use crate::system::{lock_boot, test_dummy_system};
+        let _g = lock_boot();
+        crate::init_for_test(crate::system::WasmSystem::new());
+        let sys = crate::sys();
+        // Row0 P0.21 low + Col0 P0.28 high, both output.
+        sys.p.write(sys, 0x50000518, 4, (1 << 21) | (1 << 28)); // DIRSET
+        sys.p.write(sys, 0x5000050C, 4, 1 << 21); // row low
+        sys.p.write(sys, 0x50000508, 4, 1 << 28); // col high
+        assert!(crate::gpio_read_dir(0, 21), "row dir");
+        assert!(crate::gpio_read_dir(0, 28), "col dir");
+        let px = crate::matrix_state();
+        assert_eq!(px.len(), 25);
+        assert_eq!(px[0], 1, "pixel (0,0) lit");
+        assert_eq!(px[1], 0, "pixel (0,1) dark (col low)");
+        // Row back high extinguishes the pixel (input-gated render).
+        sys.p.write(sys, 0x50000508, 4, 1 << 21);
+        assert_eq!(crate::matrix_state()[0], 0, "pixel dark when row high");
+    }
 }
