@@ -7,7 +7,7 @@
 ## 0. Snapshot (2026-09-23, P132+P133+P134 UNCOMMITTED in tree — user approval needed to commit)
 
 - HEAD: `e1a23d2` "P132 OpenHW read APIs: gpio_read_dir + matrix_state + try_borrow hardening (234 green)".
-- Branch: `master`, remote `https://github.com/danish9661/microbit-emulator.git`.
+- Branch: `master`, remote `git@github.com:danish9661/microbit-emulator.git`.
 - Suite: **238 single green** (gate re-run), = 117 cpu (incl. 21 firmware proofs) + 100 peripherals + 14 sd_ble + 3 sd_evt + 4 smp_crypto. Handshake 18/18, smoke OK, browser 16/16 re-verified, both pkgs rebuilt.
 - Working tree: P132 (committed at HEAD) + P133 doc sync + P134 UARTE RX/TX fixes + P135/P136 MPY/MakeCode verdicts + rebuilt pkgs + this doc sync (see §9 log); `?? .openchamber/` + `?? nrf52833-periph-wasm/plan.md` stay untracked (never commit).
 - Big news: **handshake SIGNED WRITE_RSP path FIXED** — the mock asserted the op echo at `body[2]` (conn/status/err zone), but the real wire puts the handle at `body[6..8]` and the op at `body[8]` (see `write_rsp_payload`; native test asserts `0x2000300C == op`). Mock now checks `body[8] === 0x03`. Rust side verified: `complete_gattc_write(conn, handle, op, data)` echoes op/bytes; `resolveJob()` tag-8 passes `(bj[1], bj[3], bj[2], take_data)` in the right order. Full matrix re-green on this tree (see §9).
