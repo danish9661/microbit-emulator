@@ -497,15 +497,18 @@
     air: 'ACAAIAkAAABP8IBAASEBYCxICCEBYCxIAPA8+AAhAWAqSADwRfgqSCpJAWAqSAEhAWAqSAFgKkgBYCpIAWAnSAFgKUgA8Cb4KEgA8DH4KEhB8gNRAWAnSE/0+mEBYCZIJkkBYCZIJ0kBYCdIASEBYCZIAWAA8Bb4JUgAaE/0ABEIQgPQI0gA8BP4AuAiSADwD/j+5wa1IUkCaAAqAdEBOfrRBr0EtUzyUDIBOv3RBL0QtQRGFPgBGxGxGUoRYPnnEL0AAAAlAEAAcQJAJAEAAAQVAEAAEgAgABAAQAgQAEAMEABABBAAQAwRAEAsAQAAEGUAQECFAEAQ9QFAQIEAQBT1AUAAYABABPUBQACAAEAEBQBQNgEAAD4BAABAQg8AHCUAQFVTQjpPSwoAUkFESU86T0sKAFBQSTpPSwoAUFBJOkJBRAoA',
     cirq: 'AAACIGUAAABxAAAAcQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABxAAAAAAAAAAAAAABxAAAAcQAAAHEAAABxAAAAcQAAAHEAAABxAAAAcQAAAHEAAABxAAAAdQAAAC9IhUYA8F74/ucAv/7nAL8mS9P4QCEAKkPQMLUkSAAihbDD+EAhA2giSk/woEEBM0/0ABQDYMH4CEUfSVQjwfgcNRL4AT8AK/nRAGhQswGsGk2kRqX7ABLSCALrggGg60EBhkYwMb7xCQ8M+AEbA/EBAxBGAdkKK+zRD0kjRBP4AS3B+BwlnEL50QtJT/CgQwogT/QAEsH4HAXD+AwlBbAwvXBHMCPB+Bw17ucAgABAAAAAIOgBAAAAIABAzczMzAAAAiBP8IBCT/ABDChJwvgAwE/woEAII0/0ABwlSsH4ADVCI8D4GMXB+Bw1EvgBPwAr+dEgSk/0emzC+EDFASFP8OAgT/SAPML4ABLC+ATDT/SAfMD4AMERYGK2F0kKaAIqGtiCsBpGAZIBm7P1en8G0gGbATMBkwGbs/V6f/jTC2gCK/DZDkoJSUQjwfgcNRL4AT8AK/nR/ucJSgRJRCPB+Bw1EvgBPwAr+dH+5wC/ACAAQPABAAAAgABAAAAAIPgBAABUSUNLOgAAAEJPT1QKAAAARE9ORQoA',
   };
-  // Fetch-loaded language firmwares (too big for base64 presets):
-  // C/C++/BLE asm+C images from blinky/ble_fw, stock MPY + MakeCode hex.
+  // Fetch-loaded language firmwares: vendored under demo/firmware/
+  // (copies of blinky/ble_fw/*.bin + mc/built/mbcodal-binary.hex — the
+  // sources of truth stay there, but the bench is served from demo/ as
+  // site root on Pages, so ../blinky and ../mc do not exist there).
+  // Stock MPY hex already lived here; same pattern.
   const FETCH_PRESETS = {
-    bleconf: '../blinky/ble_fw/ble_conformance.bin',
-    cface: '../blinky/ble_fw/c_ble_face.bin',
-    cppface: '../blinky/ble_fw/ble_cpp_face.bin',
-    gatt: '../blinky/ble_fw/ble_gatt_fw.bin',
-    pair: '../blinky/ble_fw/ble_pairing_fw.bin',
-    roles: '../blinky/ble_fw/ble_roles_fw.bin',
+    bleconf: './firmware/ble_conformance.bin',
+    cface: './firmware/c_ble_face.bin',
+    cppface: './firmware/ble_cpp_face.bin',
+    gatt: './firmware/ble_gatt_fw.bin',
+    pair: './firmware/ble_pairing_fw.bin',
+    roles: './firmware/ble_roles_fw.bin',
   };
   // Selecting a preset only STAGES it (same as Load) — nothing runs
   // until Run is pressed. stagedKind lets Run apply per-preset fixups.
@@ -554,7 +557,9 @@
       status.textContent = 'built-in MicroPython failed to load: ' + err;
     }
   }
-  // MakeCode direct-app preset: boots mc/built/mbcodal-binary.hex
+  // MakeCode direct-app preset: vendored demo/firmware/mbcodal-binary.hex
+  // (copy of mc/built/mbcodal-binary.hex, same reason as above:
+  // ../mc does not exist under the demo/ site root).
   // (basic.showString("A"), S140 + CODAL app at 0x1C000) through the
   // same staged path as a dropped file; Run continues into the
   // direct-app boot (same recipe as MicroPython). Boots to scheduler
@@ -562,7 +567,7 @@
   async function bootPresetMakeCode() {
     status.textContent = 'loading built-in MakeCode…';
     try {
-      const res = await fetch('../mc/built/mbcodal-binary.hex');
+      const res = await fetch('./firmware/mbcodal-binary.hex');
       if (!res.ok) throw new Error('http ' + res.status);
       const parsed = parseHex(await res.text());
       if (!parsed) throw new Error('no data records');
@@ -1110,7 +1115,11 @@
       // frames and the 60/140ms DRDY pulse could never land inside a
       // 20K wait window (P54: banner needs 160-180M but browser reparks
       // at 0x200021b8/bb with u_txmax=0 at 6 MIPS).
-      for (let k = 0; k < 5; k++) {
+      // Batch 20x20K (probe-measured 6ms wall = 62 MIPS, 0.4M/frame):
+      // core headroom is ~60x the old 100K/frame budget, so batching
+      // 4x costs <10ms/frame and keeps the rAF loop interactive while
+      // MPY's sustained MIPS (not the budget) sets banner time.
+      for (let k = 0; k < 20; k++) {
         mipsN += cpu.step(20000);
         wasm.tick_peripherals();
         if (cpu.fault_pc() !== 0xFFFFFFFF) break;

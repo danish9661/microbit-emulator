@@ -6,6 +6,7 @@
   "files": [
     "pkg/",
     "parts/",
+    "firmware/",
     "index.html",
     "doc.html",
     "about.html",

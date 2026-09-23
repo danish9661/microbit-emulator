@@ -3678,3 +3678,32 @@ latest wins; complete pops the taken PTR's entry, else driver bytes).
 Verified on the fresh pkg: `ab` + `microbit.display.show('A')` +
 `microbit.temperature()` echo byte-exact (full lines incl. CR), zero faults.
 Suite stays 238 green. Uncommitted per order with the P133+P134 batch.
+
+## 115. P137 speed round: 20x20K batch + firmware 404 fix + vendored bins (2026-09-23, no Rust change)
+
+Speed question ("what is the current speed, I want more"): Node raw core
+`~57–59 MIPS` (blinky 5M/85ms; language faces C/C++/BLE/matrix all
+`~56–59`, c_irq `~36` IRQ-heavy; MPY banner `~33` sustained through the
+bench pump). Browser raw core in the same Chromium: `~66 MIPS`
+(temp-page probe, reverted) — the old `~6 MIPS` meter was the vsync cap
+(5x20K = 100K/frame @60fps), never core speed. Fix: 20x20K per frame
+(same 20K quantum, duties still in-loop so P54 tick-starve can't
+regress; probe-measured 6ms wall = 62 MIPS, 0.4M/frame, rAF stays
+interactive). Verified live: meter `~24 MIPS` on blinky, MPY banner
+105B in ~5s wall (was ~30s), zero page errors. wasm-opt -O3 tried and
+REJECTED (59→56 MIPS, smaller but slower — V8 already optimizes the
+stock shape). Browser BLE fetch presets show `SOME-FAIL` markers
+without the native `pump_ble_test_driver` (bench `pumpBleLoopback`
+answers battery-87 only — expected, NOT a model gap: native 238 green
+proves the SVC face with the real driver).
+Firmware 404 fix: `fetch:bleconf/cface/cppface/gatt/pair/roles` +
+`makecode` 404'd on Pages AND locally because `demo/index.html` fetched
+`../blinky/...` + `../mc/...` but the site root is `demo/` (pages.yml
+serves `demo/` only; a stray `openhw-gw` on :8080 also masked local
+testing — verify on a fresh port). Fix: vendored 7 files into
+`demo/firmware/` (6 BLE `.bin` + `mbcodal-binary.hex`, `cmp`-identical
+to `blinky/ble_fw/` + `mc/built/`), fetch URLs now `./firmware/*`,
+`sources-of-truth comment in index.html`, `firmware/` added to npm
+`files[]`, microbitapi §1/§3 + STATUS §6 + COVERAGE §4/§6 synced.
+MakeCode preset boots (scheduler-idle, parked firmware-side per §6.4).
+Uncommitted; needs user approval to commit.

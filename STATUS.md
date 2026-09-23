@@ -156,7 +156,7 @@ Preset dropdown (same `bootImage` path as dropped files, staged — Run
 boots): blinky/sensors/dma/extras/stubs/air/c-irq + built-in
 MicroPython hex (i2s excluded: needs patterned-RX + mailbox release
 only the test driver provides); separate Load (stage, no boot) and
-Run buttons; live MIPS meter (~6.0 with the 5x pump).
+Run buttons; live MIPS meter (~24 with the 20x pump).
 P109 live crypto+QSPI pumps: `pumpDma` resolves staged ECB jobs
 (driver AES-128 in place, FIPS-197), AAR jobs (resolve-present), CCM
 jobs (CTR+MIC-4 encrypt / decrypt+verify per the CNF contract), and
@@ -511,13 +511,19 @@ beyond proof-level driving remain future work.
      (BUSY/param/selective/cross-IN_USE) → CONNECT (CENTRAL role) →
      SERVICE_CHANGED range leg → DISCONNECT, 21 `BLER:*` markers,
      2nd-run clean (`nrf_ble_roles_fw_markers`).
- 6. **Demo wall-time — environmental, measured, no action.**
-    Node WASM on this host: blinky `~41–54 MIPS` (6M/0.11–0.15 s,
-    BOOT/BLINK/BLINK correct); MPY-fault path `~24 MIPS`
-    sustained-through-fault; native debug blinky test 0.32–0.40 s
-    (5M-instr run — harness time, NOT core speed). Bench meter
-    `~6 MIPS` in-browser; banner math stands (160–180M ⇒ ~4 s Node,
-    ~30 s browser). Pkg profile closed (byte-identical dev/release).
+  6. **Demo wall-time — raised 4x this round (20x20K batch, still no Rust change).**
+     Node WASM on this host: blinky `~57–59 MIPS` raw core (5M/85ms),
+     MPY banner `~33 MIPS` sustained through the bench pump, language
+     faces all `~56–59` (c_irq `~36`, IRQ-heavy). Bench meter was
+     `~6 MIPS` at 5x20K (vsync-capped, not core speed — raw core in the
+     same Chromium measures `~66 MIPS`); 20x20K batch verified
+     `~24 MIPS` live on blinky + MPY banner in ~5s wall (was ~30s).
+     Native debug blinky test 0.32–0.40 s (5M-instr run — harness time,
+     NOT core speed). Vendored firmware: `demo/firmware/` now ships the
+     MakeCode hex + 6 BLE `.bin` copies (sources of truth stay in
+     `mc/built/` + `blinky/ble_fw/`; `../blinky`/`../mc` 404 under the
+     `demo/` Pages root, fixed by vendoring). Pkg profile closed
+     (byte-identical dev/release; wasm-opt -O3 measured SLOWER, not shipped).
 
 ## 7. Deliberately out of scope (owner + reason — DO NOT reopen without both)
 

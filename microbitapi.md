@@ -1,7 +1,7 @@
 # microbitapi.md — micro:bit v2.2 (`microbit-v2-emulator@0.1.0`) API + OpenHW gap spec
 
-Probed from `"board/microbit-v2"` (`demo/pkg/*.d.ts` 154 named exports =
-`WasmCpu` class + `initSync` + 152 free fns: 61 `ble_*` + 91 others,
+Probed from `"board/microbit-v2"` (`demo/pkg/*.d.ts` 157 named exports =
+`WasmCpu` class + `default` init + `initSync` + 155 free fns: 61 `ble_*` + 94 others,
 `demo/API.md` frozen v1, `demo/index.html`, `demo/parts/*`, `blinky/`,
 `tools/ble_air_bridge.py`, `demo/package.json`). All names dumped live from
 the built glue; lifecycle order is `API.md` §Lifecycle, verified in
@@ -22,7 +22,11 @@ the built glue; lifecycle order is `API.md` §Lifecycle, verified in
   usbdev(.c), usbep, wdt) + `ble_fw/` (ble_conformance/gatt/pairing/roles/
   c_ble_face/ble_cpp_face + arduino sketch) + `link_nrf.ld/link_c_nrf.ld/
   hex2bin.py`.
-  `demo/firmware/` = `micropython-microbit-v2.1.2.hex`. `mc/` = PXT/MakeCode.
+  `demo/firmware/` = `micropython-microbit-v2.1.2.hex` + `mbcodal-binary.hex`
+  (MakeCode, vendored copy of `mc/built/`) + `ble_conformance/c_ble_face/
+  ble_cpp_face/ble_gatt_fw/ble_pairing_fw/ble_roles_fw.bin` (vendored copies
+  of `blinky/ble_fw/` — the bench is served from `demo/` as site root, so
+  `../blinky` and `../mc` do not resolve there). `mc/` = PXT/MakeCode.
 - `demo/parts/`: `pins.js` (EDGE/ROWS/COLS/INTERNAL/LSM303 addrs),
   `lsm303.js` (accel 0x19/mag 0x1E on TWIM1), `spidisplay.js`/`ssd1306.js`
   (SPI/I2C displays), `kl27.js` (interface MCU), `mocks.js`, `crypto.js`,
@@ -50,8 +54,8 @@ Clock = `INSTRUCTION_COUNT/64MHz` virtual only (`tick`=1 insn, `tick_n`=batch,
 `cpu.set_deliver_irqs(true)` to preempt. Reboot: poll
 `is_watchdog_reset_requested()` → `cpu.reset_cpu(read32(0), read32(4))`.
 
-## 3. `WasmCpu` + free fns (`demo/pkg/nrf52833_periph_wasm.d.ts`: 154 named
-exports = `WasmCpu` class + `initSync` + 152 free fns: 61 `ble_*` + 91 others)
+## 3. `WasmCpu` + free fns (`demo/pkg/nrf52833_periph_wasm.d.ts`: 157 named
+exports = `WasmCpu` class + `default` init + `initSync` + 155 free fns: 61 `ble_*` + 94 others)
 
 `WasmCpu(sp,pc,flash,ram)`: `step(budget)→executed, reset_cpu,
 set_deliver_irqs, sleeping/wake, get_pc/sp/regs/xpsr/sregs/fpscr/primask/ipsr,
@@ -66,7 +70,8 @@ get_next_pending_interrupt, set_intr_pending, is_watchdog_reset_requested`;
 pixels; lit <=> row OUT==0 && col OUT==1, both DIR=output — same rule
 the bench frame loop uses);
 `get_uart_output, uart_rx_byte` (UARTE0 0x40002000, pace on EVENTS_RXDRDY
-0x40002108); `spi_tap, spi_take_events, spi_push_miso`;
+0x40002108); `mmio_trace_start/take` (P134 forensics: 4K-ring of UARTE
+MMIO addr/value pairs, off by default); `spi_tap, spi_take_events, spi_push_miso`;
 `i2c_register_slave, i2c_take_events, i2c_push_rx`;
 EASYDMA pumps `uarte_take_txdma/complete_txdma, uarte_take_rxdma/complete_rxdma,
 twim_take_txdma/complete_txdma, twim_take_rxdma/complete_rxdma,

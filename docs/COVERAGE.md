@@ -158,15 +158,19 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | nfct | Field-select + frames | F | Field-detect/select state machine. |
 | 2nd-run | `reset_state`, no leak | F | Every proof re-runs clean (BOOT_LOCK + UART lock discipline). |
 
-| Wall-time (measured P112–P113, no action) | Value | Remark |
+| Wall-time (measured, raised 4x this round) | Value | Remark |
 |---|---|---|
-| Node WASM blinky | ~41–54 MIPS | 6M instr / 0.11–0.15 s, BOOT/BLINK/BLINK correct (`wall_mips.mjs`). |
-| Node WASM MPY-fault path | ~24 MIPS | Sustained through fault/reset path (`wall_mpy2.mjs`). |
+| Node WASM blinky | ~57–59 MIPS | 5M instr / ~85 ms, BOOT/BLINK/BLINK correct (raw core; was ~41–54 on the old meter). |
+| Node WASM MPY banner | ~33 MIPS | Sustained through the bench-exact pump to the 105 B banner. |
+| Node language faces (C/C++/BLE/matrix) | ~56–59 MIPS | c_irq ~36 (IRQ-heavy); all zero faults. |
+| Browser raw core (same Chromium) | ~66 MIPS | Temp-page probe, reverted — vsync cap was the old 6 MIPS, never core speed. |
+| Browser bench meter | ~6 → ~24 MIPS | 5x20K → 20x20K batch (same 20K quantum, duties in-loop); blinky + MPY banner ~5 s wall. |
 | Native debug blinky test | 0.32–0.40 s | 5M-instr `cpu.run` + model — harness time, NOT core speed. Do not cite as MIPS. |
-| Banner cost | ~150–260M instr | ~4 s Node pure-stepping, ~30 s browser @6 MIPS. |
-| Pump batching | 5×[20K step+tick+pumpDma] per frame (P54: duties moved INSIDE the sub-loop) | Duties-once-per-frame starved polled firmware (1B STARTTX waited ~100K; DRDY pulse couldn't land in a 20K window). |
-| Profile | dev == release (byte-identical) | wasm-pack single profile; speed is environmental, never the lever. |
+| Banner cost | ~150–260M instr | Was ~30 s browser @6 MIPS; now ~5 s @24 MIPS. |
+| Pump batching | 20×[20K step+tick+pumpDma] per frame (was 5x; P54 duties-in-loop kept) | 20x20K probe-measured 6 ms wall in-browser; quantum unchanged so tick-starve behavior can't regress. |
+| Profile | dev == release (byte-identical) | wasm-pack single profile; wasm-opt -O3 measured SLOWER (59→56), not shipped. |
 | Package | `demo/pkg` 1.5MB committed, `.gitignore` removed | Deliberate: Pages serves it directly, no toolchain needed. |
+| Vendored firmware | `demo/firmware/` ships MakeCode hex + 6 BLE `.bin` copies | Sources of truth stay `mc/built/` + `blinky/ble_fw/`; `../blinky`/`../mc` 404 under the `demo/` Pages root. |
 
 ## 5. Real-firmware scoreboard (all executed, zero CPU faults*)
 
@@ -186,7 +190,7 @@ sources (`/tmp` clones — ephemeral, re-clone on demand).
 | 3 | Bootloader full chain | PARKED, stays parked | Reopen only with a faulting config |
 | 4 | MakeCode display content | PARKED, shared gate with (1) | Same NEXT as (1) |
 | 5 | SPIM2/3 | Done + DMA-proven (P110 `spim23_nrf`: TX+RX DMA on both instances) + consumer wired (P114 `demo/parts/spidisplay.js` ST7789 240×240 on SPIM2, headless-verified) | — |
-| 6 | Demo wall-time | Environmental, measured, no action (Node ~41–54, MPY ~24, browser ~6 MIPS) | — |
+| 6 | Demo wall-time | Raised 4x (20x20K batch, ~24 MIPS meter, ~5 s MPY banner; no Rust change) | Vendored firmware ships in `demo/firmware/` |
 | 7 | UARTE1 second-instance proof | Done (P110 `uarte1_nrf`: TX+RX DMA through shared take/complete) | — |
 | 8 | RTC/PWM/RNG/TEMP/EGU depth | Done (P110 second proofs: COMPARE/OVRFLW, STOP/INTEN, DATARDY/INTEN, SHORTS/re-arm, channels/mask) | — |
 | 9 | Bench crypto+QSPI pumps | Done (P109: ECB/AAR/CCM/QSPI live in pumpDma via shared `crypto.js`) | AAR has no wasm export (pump resolves present by design). |
