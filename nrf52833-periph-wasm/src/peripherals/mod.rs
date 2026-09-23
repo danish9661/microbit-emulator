@@ -491,6 +491,24 @@ impl Peripherals {
     }
 
     pub fn write(&self, sys: &System, addr: u32, _size: u8, mut value: u32) {
+        // P134 forensics: guest re-arm + TX-event writes on UARTE0.
+        // Reads flood the ring (JS PTR/AMT poll every pump + TIMER/TWIM
+        // chatter), so only these addrs are traced.
+        if crate::system::mmio_trace_on()
+            && (addr == 0x4000_2000 // TASKS_STARTRX
+                || addr == 0x4000_2008 // TASKS_STARTTX
+                || addr == 0x4000_200C // TASKS_STOPTX
+                || addr == 0x4000_2200 // SHORTS
+                || addr == 0x4000_2110 // EVENTS_ENDRX
+                || addr == 0x4000_2108 // EVENTS_RXDRDY
+                || addr == 0x4000_211C // EVENTS_TXDRDY
+                || addr == 0x4000_2120 // EVENTS_ENDTX
+                || addr == 0x4000_251C // TXD byte register
+                || addr == 0x4000_2544 // TXD.PTR
+                || addr == 0x4000_2548) // TXD.MAXCNT
+        {
+            crate::system::mmio_trace_push(addr, value);
+        }
         if let Some((addr, bit_number)) = Self::bitbanding(addr) {
             let mut v = self.read(sys, addr, 1);
             v &= !(1 << bit_number);

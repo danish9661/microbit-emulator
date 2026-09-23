@@ -1128,13 +1128,20 @@
       if (fpc !== 0xFFFFFFFF) {
         status.textContent = `CPU fault pc=${(fpc >>> 0).toString(16)} op=${cpu.fault_op1().toString(16)} (see console-style UART above)`;
       }
-      // Drip one typed byte per consumed RXDRDY (see above). The byte is
-      // mirrored into the DMA buffer (RXD.PTR+AMOUNT) so DMA-mode firmware
-      // (MicroPython reads exclusively from that ring) receives it too.
+      // Drip one typed byte per frame, paced on RXDRDY-consumed (P134:
+      // the RXD register holds ONE byte — dripping faster than firmware
+      // reads sets OVERRUN and the byte is lost (proven: 2 lost per
+      // 26-char line with unpaced drip, 'microbit' arrived as 'micrt').
+      // RXDRDY==0 means firmware consumed the previous byte, so pace on
+      // it; the AMT<MAXCNT mirror bound is the second guard (never write
+      // past the DMA ring). The byte is mirrored into the DMA buffer
+      // (RXD.PTR+AMOUNT) so DMA-mode firmware (MicroPython reads
+      // exclusively from that ring) receives it too.
       if (uartOut.length && wasm.periph_read(0x40002108, 4) === 0) {
         const b = uartOut.shift();
-        const ptr = wasm.periph_read(0x40002534, 4), amt = wasm.periph_read(0x4000253C, 4);
-        if (ptr >= 0x20000000 && amt < 4096) cpu.mem_write(ptr + amt, new Uint8Array([b]));
+        const ptr = wasm.periph_read(0x40002534, 4), amt = wasm.periph_read(0x4000253C, 4),
+          max = wasm.periph_read(0x40002538, 4);
+        if (ptr >= 0x20000000 && amt < max && amt < 4096) cpu.mem_write(ptr + amt, new Uint8Array([b]));
         wasm.uart_rx_byte(0x40002000, b);
       }
       const out = wasm.get_uart_output();

@@ -5,7 +5,7 @@
 # The wasm pkg is committed intentionally (see 3a29694), so no
 # wasm-pack/Rust toolchain is needed here; what is in demo/ is what
 # ships. After merging, enable once in repo Settings -> Pages ->
-# Source: "GitHub Actions". Live URL: https://danish9661.github.io/microbitemu/
+# Source: "GitHub Actions". Live URL: https://danish9661.github.io/microbit-emulator/
 name: Deploy demo to GitHub Pages
 
 on:

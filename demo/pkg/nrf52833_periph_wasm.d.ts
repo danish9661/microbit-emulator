@@ -468,6 +468,14 @@ export function is_watchdog_reset_requested(): boolean;
  */
 export function matrix_state(): Uint8Array;
 
+/**
+ * MMIO trace controls (P134 forensics; also exported so JS harnesses
+ * can capture the firmware's UARTE register sequence around a stall).
+ */
+export function mmio_trace_start(): void;
+
+export function mmio_trace_take(): Uint32Array;
+
 export function nfct_complete_rx(amount: number): void;
 
 export function nfct_complete_tx(): void;
@@ -750,6 +758,8 @@ export interface InitOutput {
     readonly init_svd: (a: number, b: number) => void;
     readonly is_watchdog_reset_requested: () => number;
     readonly matrix_state: (a: number) => void;
+    readonly mmio_trace_start: () => void;
+    readonly mmio_trace_take: (a: number) => void;
     readonly nfct_complete_rx: (a: number) => void;
     readonly nfct_complete_tx: () => void;
     readonly nfct_field_present: (a: number) => void;

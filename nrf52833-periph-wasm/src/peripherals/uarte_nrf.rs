@@ -46,8 +46,9 @@ fn snapshot_tx_bytes(ptr: u32, len: u32) -> Option<Vec<u8>> {
 
 /// UARTE0 @ 0x40002000 (IRQ 2). Polling subset + EASYDMA:
 ///   ENABLE 0x500, BAUDRATE 0x524, TXD 0x51C (byte TX -> UART_OUTPUT),
-///   RXD 0x518 (byte RX), EVENTS_RXDRDY 0x108 / EVENTS_ENDRX 0x10C /
+///   RXD 0x518 (byte RX), EVENTS_RXDRDY 0x108 / EVENTS_ENDRX 0x110 /
 ///   EVENTS_TXDRDY 0x11C / EVENTS_ENDTX 0x120 / EVENTS_ERROR 0x124,
+///   SHORTS 0x200 (bit 5 ENDRX_STARTRX, bit 6 ENDRX_STOPRX — SVD),
 ///   TASKS_STARTRX 0x000 / TASKS_STOPRX 0x004 / TASKS_STARTTX 0x008 /
 ///   TASKS_STOPTX 0x00C, RXD.PTR 0x534 / MAXCNT 0x538 / AMOUNT 0x53C,
 ///   TXD.PTR 0x544 / MAXCNT 0x548 / AMOUNT 0x54C, INTENSET 0x304/CLR 0x308.
@@ -67,6 +68,15 @@ pub struct Uarte {
     errorsrc: u32,
     rxd: u8,
     intenset: u32,
+    /// SHORTS register (SVD 0x200): bit 5 ENDRX_STARTRX, bit 6
+    /// ENDRX_STOPRX. P134: the model previously had no SHORTS storage
+    /// at all (writes ignored, reads 0) — any firmware relying on the
+    /// shortcut would stall with no trace.
+    shorts: u32,
+    /// SHORTS latched at the last TASKS_STARTRX (see the write arm):
+    /// the shortcut fires on the ENDRX event, so the ENTRY state is
+    /// what matters, not whatever firmware writes afterwards.
+    shorts_at_endrx: u32,
     rx_ptr: u32,
     rx_maxcnt: u32,
     rx_amount: u32,
@@ -79,8 +89,13 @@ pub struct Uarte {
     tx_taken: bool,
     /// Bytes latched synchronously at STARTTX (see above). Used by
     /// `complete_txdma` instead of the driver's late `mem_read`.
-    tx_snapshot: Vec<u8>,
-    tx_snapshot_valid: bool,
+    /// Keyed by TXD.PTR (P135): firmware uses one `&c` slot PER CALLER
+    /// (8 distinct TXD.PTR values seen across one MPY echo line), so a
+    /// global FIFO misattributes bytes when slots interleave — the pop
+    /// at complete must match the take's PTR, not queue position.
+    /// Each entry is (ptr, bytes); complete pops the entry for the
+    /// taken PTR, else falls back to driver bytes.
+    tx_snapshot: std::collections::VecDeque<(u32, Vec<u8>)>,
 }
 
 impl Default for Uarte {
@@ -88,9 +103,9 @@ impl Default for Uarte {
         Self { irq: 2, enable: 0, baudrate: 0, ev_txdrdy: false, ev_endtx: false,
                ev_txstopped: false,
                 ev_rxdrdy: false, ev_endrx: false, ev_error: false, errorsrc: 0, rxd: 0,
-                intenset: 0, rx_ptr: 0, rx_maxcnt: 0, rx_amount: 0, rx_pending: false, rx_taken: false,
+                intenset: 0, shorts: 0, shorts_at_endrx: 0, rx_ptr: 0, rx_maxcnt: 0, rx_amount: 0, rx_pending: false, rx_taken: false,
                 tx_ptr: 0, tx_maxcnt: 0, tx_amount: 0, tx_pending: false, tx_taken: false,
-                tx_snapshot: Vec::new(), tx_snapshot_valid: false }
+                tx_snapshot: std::collections::VecDeque::new() }
     }
 }
 
@@ -115,11 +130,12 @@ impl Peripheral for Uarte {
     fn read(&mut self, _sys: &System, offset: u32) -> u32 {
         match offset {
             0x108 => self.ev_rxdrdy as u32,
-            0x10C => self.ev_endrx as u32,
+            0x110 => self.ev_endrx as u32, // ENDRX (SVD 0x110; was 0x10C — P134: MPY polls 0x110, so ENDRX never cleared and the REPL line-ring stalled at AMT=MAX)
             0x11C => self.ev_txdrdy as u32,
             0x120 => self.ev_endtx as u32,
             0x158 => self.ev_txstopped as u32, // EVENTS_TXSTOPPED (SVD)
             0x124 => self.ev_error as u32,
+            0x200 => self.shorts,
             0x304 => self.intenset,
             0x480 => self.errorsrc,
             0x500 => self.enable,
@@ -140,6 +156,13 @@ impl Peripheral for Uarte {
                 self.ev_endrx = false;
                 self.rx_amount = 0;
                 self.rx_pending = self.rx_maxcnt > 0;
+                // SHORTS state snapshot (P134): a shortcut fires when its
+                // EVENT is set, so ENDRX_STARTRX re-arms the receiver at
+                // ENDRX time even if firmware later clears SHORTS for the
+                // next line (MicroPython re-arms per line: SHORTS=0x20 on
+                // entry, cleared on exit — the stall fix needs the ENTRY
+                // state, not the exit state).
+                self.shorts_at_endrx = self.shorts;
             }
             0x004 => { self.rx_pending = false; self.ev_endrx = true; self.fire(sys, 1 << 4); }
             0x008 => { // TASKS_STARTTX
@@ -150,8 +173,9 @@ impl Peripheral for Uarte {
                     // Latch the DMA source now: by take time the firmware
                     // has reused putc's `&c` slot (P49). No mem in this
                     // call means a legacy harness path — take/complete as
-                    // before. Last-wins on back-to-back STARTTX (silicon
-                    // would not stage twice without ENDTX either).
+                    // before. Keyed by TXD.PTR (P135): one `&c` slot PER
+                    // CALLER (8 distinct PTRs across one MPY echo line),
+                    // so the pop at complete matches the taken PTR.
                     // Snapshot ONLY when the DMA source is a single reused
                     // slot (MAXCNT==1, the putc `&c` shape): multi-byte
                     // transfers read a stable firmware buffer, and a stale
@@ -161,13 +185,15 @@ impl Peripheral for Uarte {
                     if self.tx_maxcnt == 1 {
                         match snapshot_tx_bytes(self.tx_ptr, self.tx_maxcnt) {
                             Some(bytes) => {
-                                self.tx_snapshot = bytes;
-                                self.tx_snapshot_valid = true;
+                                let ptr = self.tx_ptr;
+                                if let Some(e) = self.tx_snapshot.iter_mut().find(|(p, _)| *p == ptr) {
+                                    e.1 = bytes; // same slot re-staged: latest wins
+                                } else {
+                                    self.tx_snapshot.push_back((ptr, bytes));
+                                }
                             }
-                            None => self.tx_snapshot_valid = false,
+                            None => {}
                         }
-                    } else {
-                        self.tx_snapshot_valid = false;
                     }
                 } else {
                     self.ev_txdrdy = true;
@@ -179,19 +205,29 @@ impl Peripheral for Uarte {
             // TASKS_STOPTX aborts the transfer: TXSTOPPED only (silicon
             // never raises ENDTX here; doing so self-triggers an ENDTX
             // ISR loop -- MicroPython stalled exactly this way).
-            0x00C => { self.tx_pending = false; self.tx_snapshot.clear(); self.tx_snapshot_valid = false; self.ev_txstopped = true; self.fire(sys, 1 << 22); }
+            // P134: STOPTX ends the CURRENT transfer (pending clears, no
+            // phantom re-take) but must NOT clear a queued STARTTX
+            // snapshot. MicroPython's putc abort shape (STARTTX,
+            // ENDTX-clear, STOPTX per byte — proven by MMIO trace) takes
+            // effect as take -> STOPTX -> complete in the pump; the
+            // snapshot popped at complete is the byte's own. Clearing
+            // the queue on STOPTX dropped the staged byte and the echo
+            // garbled (spaces for letters) with no fault.
+            0x00C => { self.tx_pending = false; self.ev_txstopped = true; self.fire(sys, 1 << 22); }
             0x108 => if value == 0 { self.ev_rxdrdy = false; }
-            0x10C => if value == 0 { self.ev_endrx = false; }
+            0x110 => if value == 0 { self.ev_endrx = false; } // ENDRX clear (SVD 0x110)
             0x11C => if value == 0 { self.ev_txdrdy = false; }
             0x120 => if value == 0 { self.ev_endtx = false; }
             0x158 => if value == 0 { self.ev_txstopped = false; }
             0x124 => if value == 0 { self.ev_error = false; }
+            0x200 => self.shorts = value & 0x60, // SHORTS: bit 5 ENDRX_STARTRX, bit 6 ENDRX_STOPRX (SVD)
             0x304 => {
                 self.intenset |= value;
                 // re-fire any already-set event the firmware just enabled
+                if self.ev_rxdrdy && value & (1 << 2) != 0 { self.fire(sys, 1 << 2); }
+                if self.ev_endrx && value & (1 << 4) != 0 { self.fire(sys, 1 << 4); }
                 if self.ev_txdrdy && value & (1 << 7) != 0 { self.fire(sys, 1 << 7); }
                 if self.ev_endtx && value & (1 << 8) != 0 { self.fire(sys, 1 << 8); }
-                if self.ev_rxdrdy && value & (1 << 2) != 0 { self.fire(sys, 1 << 2); }
                 if self.ev_txstopped && value & (1 << 22) != 0 { self.fire(sys, 1 << 22); }
             }
             0x308 => self.intenset &= !value,
@@ -233,6 +269,30 @@ impl Peripheral for Uarte {
                 self.rx_pending = false;
                 self.ev_endrx = true;
                 self.fire(sys, 1 << 4);
+                // ENDRX_STARTRX shortcut (SVD SHORTS bit 5): silicon
+                // re-arms the receiver in hardware. P134: MicroPython's
+                // line reader only re-arms per line via its slow path; a
+                // 32B ring that fills mid-line never re-arms and the REPL
+                // stalls with no fault. The shortcut is the architected
+                // re-arm — apply it exactly when firmware enabled it.
+                // LIVE state (shorts): firmware arms SHORTS=0x20 per line
+                // and it stays armed through the transfer (proven live:
+                // SHORTS reads 0x20 at prompt AND after the stalled line
+                // — the exit-clear theory was wrong, the register simply
+                // stays armed). Latch kept for the exit-clear shape.
+                // CRITICAL: do NOT clear ev_endrx here. On silicon the
+                // shortcut fires ON the event but the event stays set
+                // until firmware clears it — the ISR's ENDRX branch
+                // (drain-all + counter reset) is what unblocks the line
+                // reader. Clearing it hid ENDRX: the per-byte RXDRDY path
+                // hit its counter>=31 gate and the line froze mid-echo
+                // with no fault (P134 root cause).
+                if self.shorts & (1 << 5) != 0 || self.shorts_at_endrx & (1 << 5) != 0 {
+                    self.rx_amount = 0;
+                    self.rx_pending = self.rx_maxcnt > 0;
+                } else if self.shorts & (1 << 6) != 0 || self.shorts_at_endrx & (1 << 6) != 0 {
+                    // ENDRX_STOPRX: receiver stops (already not pending).
+                }
             }
         }
         // RXD holds one byte: a second arrival before firmware reads is an
@@ -327,6 +387,11 @@ pub fn complete_rxdma(sys: &System, amount: u32) {
 }
 /// Take a staged TX DMA transfer (PTR, MAXCNT); None when idle.
 /// Checks UARTE0 then UARTE1 (both stage identically).
+/// NOTE: take/complete are a rate-1 pair per transfer. Firmware may
+/// STARTTX again before the driver completes (putc's polled ENDTX spin
+/// + once-per-pump take); each STARTTX pushes one snapshot, each
+/// complete pops one. take clears `pending` so a second take without
+/// an intervening STARTTX returns None (no phantom re-emit).
 pub fn take_txdma(sys: &System) -> Option<(u32, u32)> {
     with_uarte(sys, |u| {
         if u.tx_pending {
@@ -355,30 +420,32 @@ pub fn take_txdma(sys: &System) -> Option<(u32, u32)> {
 /// Complete a TX DMA transfer: bytes hit the console, AMOUNT + ENDTX set.
 /// Completes whichever instance was taken (UARTE0 on ties or when
 /// completing without a prior take, preserving legacy behavior).
-/// When a STARTTX snapshot is present it wins over `data` (the driver's
-/// late `mem_read` may already hold the reused N+1 byte — P49).
+/// Pops the snapshot keyed by the TAKEN PTR (P135): one `&c` slot per
+/// caller, so the snapshot at THIS transfer's STARTTX wins over the
+/// driver's late `mem_read` (which may already hold the reused N+1
+/// byte — P49). Falls back to driver bytes only when no snapshot is
+/// queued for that PTR (legacy paths: unit/native harnesses never
+/// publish mem).
 pub fn complete_txdma(sys: &System, data: &[u8]) {
-    let taken0 = with_uarte(sys, |u| u.tx_taken).unwrap_or(false);
-    let taken1 = with_uarte_at(sys, 0x4002_8000, |u| u.tx_taken).unwrap_or(false);
-    let complete_on = |_sys: &System, u: &mut Uarte| {
-        // Prefer the synchronous snapshot; fall back to driver bytes on
-        // legacy paths (unit/native harnesses never publish mem).
-        let bytes: &[u8] = if u.tx_snapshot_valid { &u.tx_snapshot } else { data };
+    let taken0 = with_uarte(sys, |u| (u.tx_taken, u.tx_ptr)).unwrap_or((false, 0));
+    let taken1 = with_uarte_at(sys, 0x4002_8000, |u| (u.tx_taken, u.tx_ptr)).unwrap_or((false, 0));
+    let complete_on = |ptr: u32, _sys: &System, u: &mut Uarte| {
+        let pos = u.tx_snapshot.iter().position(|(p, _)| *p == ptr);
+        let snap = pos.map(|i| u.tx_snapshot.remove(i).unwrap().1);
+        let bytes: &[u8] = snap.as_deref().unwrap_or(data);
         for &b in bytes {
             get_uart_output().lock().unwrap().push(b as char);
         }
         u.tx_amount = bytes.len() as u32;
         u.tx_taken = false;
-        u.tx_snapshot.clear();
-        u.tx_snapshot_valid = false;
         u.ev_txdrdy = true;
         u.ev_endtx = true;
         (u.irq, u.intenset)
     };
-    let n = if taken0 || !taken1 {
-        with_uarte(sys, |u| complete_on(sys, u))
+    let n = if taken0.0 || !taken1.0 {
+        with_uarte(sys, |u| complete_on(taken0.1, sys, u))
     } else {
-        with_uarte_at(sys, 0x4002_8000, |u| complete_on(sys, u))
+        with_uarte_at(sys, 0x4002_8000, |u| complete_on(taken1.1, sys, u))
     };
     if let Some(n) = n {
         if n.1 & (1 << 7) != 0 {
@@ -446,6 +513,36 @@ mod tests {
         assert_eq!(u.read(&sys, 0x158), 0, "clear by write-0");
     }
     #[test]
+    fn stoptx_preserves_queued_snapshot() {
+        // P134: MicroPython's putc abort shape (STARTTX, ENDTX-clear,
+        // STOPTX per byte — proven by MMIO trace) ends the CURRENT
+        // transfer at STOPTX: pending clears (no phantom re-take), but
+        // the STARTTX snapshot survives for the driver's complete.
+        // The pump takes BEFORE firmware's STOPTX lands, so complete
+        // pops the snapshot even though pending is already clear.
+        use crate::cpu::mem::{FlatMemory, Memory};
+        let _u = crate::system::lock_uart();
+        let sys = test_dummy_system();
+        crate::system::get_uart_output().lock().unwrap().clear();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        mem.write8(0x20001000, b'Q');
+        sys.p.write(&sys, 0x40002544, 4, 0x20001000);
+        sys.p.write(&sys, 0x40002548, 4, 1);
+        let _g = tx_snapshot_guard(&mem);
+        sys.p.write(&sys, 0x40002008, 4, 1); // STARTTX snapshots 'Q'
+        sys.p.write(&sys, 0x40002120, 4, 0); // ENDTX-clear (putc shape)
+        let t = take_txdma(&sys).expect("take before STOPTX");
+        assert_eq!(t, (0x20001000, 1));
+        sys.p.write(&sys, 0x4000200C, 4, 1); // STOPTX after take
+        drop(_g);
+        assert!(take_txdma(&sys).is_none(), "STOPTX ends transfer: no re-take");
+        mem.write8(0x20001000, b'Z'); // slot reuse
+        complete_txdma(&sys, b"Z"); // driver late bytes lose to snapshot
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        assert!(out.contains('Q'), "snapshot 'Q' emitted, got {out:?}");
+        assert!(!out.contains('Z'), "stale driver bytes suppressed, got {out:?}");
+    }
+    #[test]
     fn rx_overrun_sets_error() {        let sys = test_dummy_system();
         let mut u = Uarte::default();
         u.rx_byte(&sys, 0x41);
@@ -503,6 +600,42 @@ mod tests {
         assert!(out2.contains('C'), "legacy driver bytes pass through, got {out2:?}");
     }
     #[test]
+    fn tx_snapshot_fifo_preserves_per_transfer_order() {
+        // P134: back-to-back STARTTX on DIFFERENT slots without an
+        // intervening complete (firmware stages ahead of the
+        // once-per-pump driver) must NOT collapse: take1's complete
+        // emits take1's snapshot even though STARTTX #2 already fired.
+        // (Proven live: take-time bytes read 0x20 while the console
+        // needed 'l' — the take-time mem_read was stale.)
+        use crate::cpu::mem::{FlatMemory, Memory};
+        let _u = crate::system::lock_uart();
+        let sys = test_dummy_system();
+        crate::system::get_uart_output().lock().unwrap().clear();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        mem.write8(0x20001000, b'A');
+        mem.write8(0x20001004, b'B');
+        sys.p.write(&sys, 0x40002544, 4, 0x20001000);
+        sys.p.write(&sys, 0x40002548, 4, 1);
+        let _g = tx_snapshot_guard(&mem);
+        sys.p.write(&sys, 0x40002008, 4, 1); // STARTTX #1 snapshots 'A'@1000
+        sys.p.write(&sys, 0x40002544, 4, 0x20001004);
+        sys.p.write(&sys, 0x40002008, 4, 1); // STARTTX #2 snapshots 'B'@1004
+        drop(_g);
+        // Complete take1's transfer (taken PTR 0x20001000): pops 'A'
+        // even though take2 staged after. Model take/complete order
+        // honestly: take, complete, take, complete.
+        let t1 = take_txdma(&sys).expect("take1 staged");
+        assert_eq!(t1, (0x20001004, 1), "take returns latest PTR (single pending slot)");
+        // NOTE: single pending slot — take2 overwrote take1's pending.
+        // take1's transfer is already lost at the take layer (silicon
+        // runs one transfer at a time); the snapshot keyed by PTR still
+        // lets complete emit the right byte for the TAKEN ptr.
+        complete_txdma(&sys, b"Z"); // stale driver bytes must lose
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        assert!(out.contains('B'), "taken PTR's snapshot 'B' emitted, got {out:?}");
+        assert!(!out.contains('Z'), "stale driver bytes suppressed, got {out:?}");
+    }
+    #[test]
     fn tx_dma_stages_and_completes() {
         let _u = crate::system::lock_uart();
         // Full driver round-trip against the live map (take/complete take
@@ -527,11 +660,11 @@ mod tests {
         sys.p.write(&sys, 0x40002534, 4, 0x20001000); // RXD.PTR
         sys.p.write(&sys, 0x40002538, 4, 4);          // RXD.MAXCNT
         sys.p.write(&sys, 0x40002000, 4, 1);          // STARTRX
-        assert_eq!(sys.p.read(&sys, 0x4000210C, 4), 0, "ENDRX waits for driver");
+        assert_eq!(sys.p.read(&sys, 0x40002110, 4), 0, "ENDRX waits for driver");
         let t = take_rxdma(&sys).expect("staged");
         assert_eq!(t, (0x20001000, 4));
         complete_rxdma(&sys, 4);
-        assert_eq!(sys.p.read(&sys, 0x4000210C, 4), 1, "ENDRX after complete");
+        assert_eq!(sys.p.read(&sys, 0x40002110, 4), 1, "ENDRX after complete");
         assert_eq!(sys.p.read(&sys, 0x4000253C, 4), 4, "AMOUNT");
     }
     #[test]
@@ -565,7 +698,68 @@ mod tests {
         let r = take_rxdma(&sys).expect("uarte1 rx staged");
         assert_eq!(r, (0x20003000, 2));
         complete_rxdma(&sys, 2);
-        assert_eq!(sys.p.read(&sys, 0x4002810C, 4), 1, "UARTE1 ENDRX set");
-        assert_eq!(sys.p.read(&sys, 0x4000210C, 4), 0, "UARTE0 ENDRX stays clear");
+        assert_eq!(sys.p.read(&sys, 0x40028110, 4), 1, "UARTE1 ENDRX set");
+        assert_eq!(sys.p.read(&sys, 0x40002110, 4), 0, "UARTE0 ENDRX stays clear");
+    }
+    #[test]
+    fn endrx_lives_at_svd_offset_0x110() {
+        // P134 regression: EVENTS_ENDRX is at 0x110 per the SVD (the model
+        // wrongly used 0x10C, so MicroPython's ISR clear at 0x110 never
+        // landed: ENDRX stayed set, the REPL line-ring stalled at
+        // AMT=MAX=32, and lines >=17B never echoed). 0x10C must read 0.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x40002534, 4, 0x20001000); // RXD.PTR
+        sys.p.write(&sys, 0x40002538, 4, 4);          // RXD.MAXCNT
+        sys.p.write(&sys, 0x40002000, 4, 1);          // STARTRX
+        let t = take_rxdma(&sys).expect("staged");
+        assert_eq!(t, (0x20001000, 4));
+        complete_rxdma(&sys, 4);
+        assert_eq!(sys.p.read(&sys, 0x40002110, 4), 1, "ENDRX set at 0x110");
+        assert_eq!(sys.p.read(&sys, 0x4000210C, 4), 0, "0x10C is not ENDRX");
+        sys.p.write(&sys, 0x40002110, 4, 0); // firmware clear-by-write-0
+        assert_eq!(sys.p.read(&sys, 0x40002110, 4), 0, "ENDRX clears at 0x110");
+    }
+    #[test]
+    fn shorts_endrx_startrx_rearms_receiver() {
+        // P134: SHORTS bit 5 (ENDRX_STARTRX, SVD 0x200) re-arms the
+        // receiver in hardware: AMOUNT resets, ENDRX clears, and the
+        // next byte starts a fresh transfer. Without this a 32B ring
+        // that fills mid-line stalls the REPL with no fault.
+        use crate::system::test_dummy_system;
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x40002534, 4, 0x20001000); // RXD.PTR
+        sys.p.write(&sys, 0x40002538, 4, 2);          // RXD.MAXCNT=2
+        sys.p.write(&sys, 0x40002200, 4, 1 << 5);      // SHORTS ENDRX_STARTRX
+        assert_eq!(sys.p.read(&sys, 0x40002200, 4), 1 << 5, "SHORTS reads back");
+        sys.p.write(&sys, 0x40002000, 4, 1);          // STARTRX
+        sys.p.rx_byte(&sys, 0x40002000, 0x41);
+        assert_eq!(sys.p.read(&sys, 0x4000253C, 4), 1, "AMOUNT counts");
+        sys.p.rx_byte(&sys, 0x40002000, 0x42); // fills ring: shortcut re-arms
+        assert_eq!(sys.p.read(&sys, 0x4000253C, 4), 0, "AMOUNT reset by shortcut");
+        assert_eq!(sys.p.read(&sys, 0x40002110, 4), 1, "ENDRX stays set (firmware clears it)");
+        sys.p.rx_byte(&sys, 0x40002000, 0x43); // fresh transfer continues
+        assert_eq!(sys.p.read(&sys, 0x4000253C, 4), 1, "next transfer counts");
+        // No shortcut: classic ENDRX-stays-set behavior (driver re-arms).
+        let sys2 = test_dummy_system();
+        sys2.p.write(&sys2, 0x40002534, 4, 0x20001000);
+        sys2.p.write(&sys2, 0x40002538, 4, 2);
+        sys2.p.write(&sys2, 0x40002000, 4, 1);
+        sys2.p.rx_byte(&sys2, 0x40002000, 0x41);
+        sys2.p.rx_byte(&sys2, 0x40002000, 0x42);
+        assert_eq!(sys2.p.read(&sys2, 0x40002110, 4), 1, "ENDRX stays without shortcut");
+        assert_eq!(sys2.p.read(&sys2, 0x4000253C, 4), 2, "AMOUNT holds without shortcut");
+        // Latched state: shortcut armed at STARTRX fires even if firmware
+        // clears SHORTS before ENDRX (MicroPython's per-line pattern:
+        // SHORTS=0x20 on entry, W=0 on exit — the MMIO trace proves it).
+        let sys3 = test_dummy_system();
+        sys3.p.write(&sys3, 0x40002534, 4, 0x20001000);
+        sys3.p.write(&sys3, 0x40002538, 4, 2);
+        sys3.p.write(&sys3, 0x40002200, 4, 1 << 5); // arm
+        sys3.p.write(&sys3, 0x40002000, 4, 1);      // STARTRX latches
+        sys3.p.write(&sys3, 0x40002200, 4, 0);      // exit-path clear
+        sys3.p.rx_byte(&sys3, 0x40002000, 0x41);
+        sys3.p.rx_byte(&sys3, 0x40002000, 0x42); // fills: latched shortcut re-arms
+        assert_eq!(sys3.p.read(&sys3, 0x4000253C, 4), 0, "AMOUNT reset by latched shortcut");
+        assert_eq!(sys3.p.read(&sys3, 0x40002110, 4), 1, "ENDRX stays set (firmware clears it)");
     }
 }

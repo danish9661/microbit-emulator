@@ -47,8 +47,8 @@ _start:
     ldr r0, =0x40028000
     movs r1, #1
     str r1, [r0]              /* TASKS_STARTRX */
-    ldr r0, =0x4002810C
-    bl spin_until_set         /* EVENTS_ENDRX */
+    ldr r0, =0x40028110
+    bl spin_until_set         /* EVENTS_ENDRX (SVD 0x110) */
     ldr r0, =msg_rx
     bl print_cstr
 done:

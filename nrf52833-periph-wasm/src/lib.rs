@@ -73,11 +73,17 @@ pub fn init_svd(svd_xml: &str) {
 
 #[wasm_bindgen]
 pub fn periph_read(addr: u32, width: u32) -> u32 {
+    if crate::system::mmio_trace_on() && (0x4000_0000..0x4003_0000).contains(&addr) {
+        crate::system::mmio_trace_push(addr, 0xFFFF_FFFF);
+    }
     sys().p.read(&*sys(), addr, width as u8)
 }
 
 #[wasm_bindgen]
 pub fn periph_write(addr: u32, width: u32, value: u32) {
+    if crate::system::mmio_trace_on() && (0x4000_0000..0x4003_0000).contains(&addr) {
+        crate::system::mmio_trace_push(addr, value);
+    }
     sys().p.write(&*sys(), addr, width as u8, value);
 }
 
@@ -1323,4 +1329,15 @@ impl WasmCpu {
     pub fn trace_start(&mut self) { cpu::trace_start(); }
     pub fn trace_stop(&mut self) { cpu::trace_stop(); }
     pub fn take_trace(&mut self) -> Vec<u32> { cpu::take_trace() }
+}
+
+/// MMIO trace controls (P134 forensics; also exported so JS harnesses
+/// can capture the firmware's UARTE register sequence around a stall).
+#[wasm_bindgen]
+pub fn mmio_trace_start() { crate::system::mmio_trace_buf().lock().unwrap().clear(); crate::system::MMIO_TRACE_ON.store(true, std::sync::atomic::Ordering::Relaxed); }
+#[wasm_bindgen]
+pub fn mmio_trace_take() -> Vec<u32> {
+    crate::system::MMIO_TRACE_ON.store(false, std::sync::atomic::Ordering::Relaxed);
+    let v = std::mem::take(&mut *crate::system::mmio_trace_buf().lock().unwrap());
+    v.into_iter().flat_map(|(a, d)| [a, d]).collect()
 }

@@ -86,10 +86,14 @@ const pump = () => {
     else cpu.mem_write(t[0], new Uint8Array(4096).fill(0xff));
     wasm.nvmc_complete_erase();
   }
+  // Drip one byte per pump, paced on RXDRDY-consumed (P134: RXD holds
+  // ONE byte — unpaced drip overruns it and bytes are lost; the
+  // AMT<MAXCNT mirror bound is the second guard, never past the ring).
   if (uartOut.length && wasm.periph_read(0x40002108, 4) === 0) {
     const b = uartOut.shift();
-    const ptr = wasm.periph_read(0x40002534, 4), amt = wasm.periph_read(0x4000253c, 4);
-    if (ptr >= 0x20000000 && amt < 4096) cpu.mem_write(ptr + amt, new Uint8Array([b]));
+    const ptr = wasm.periph_read(0x40002534, 4), amt = wasm.periph_read(0x4000253c, 4),
+      max = wasm.periph_read(0x40002538, 4);
+    if (ptr >= 0x20000000 && amt < max && amt < 4096) cpu.mem_write(ptr + amt, new Uint8Array([b]));
     wasm.uart_rx_byte(0x40002000, b);
   }
   LOG += wasm.get_uart_output();

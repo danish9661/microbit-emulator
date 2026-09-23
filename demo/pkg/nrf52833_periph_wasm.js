@@ -1565,6 +1565,31 @@ export function matrix_state() {
 }
 
 /**
+ * MMIO trace controls (P134 forensics; also exported so JS harnesses
+ * can capture the firmware's UARTE register sequence around a stall).
+ */
+export function mmio_trace_start() {
+    wasm.mmio_trace_start();
+}
+
+/**
+ * @returns {Uint32Array}
+ */
+export function mmio_trace_take() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.mmio_trace_take(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
  * @param {number} amount
  */
 export function nfct_complete_rx(amount) {

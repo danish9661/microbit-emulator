@@ -3579,7 +3579,7 @@ usbdev, usbep, matrix, air, cirq) + 6 fetch-loaded language firmwares
 handshake+parts+mpy+js+py+ts+repl). Matrix demo button: JS-driven row
 sweep + "A" glyph hold (same ROW/COL patterns as matrix_nrf.bin).
 New files: matrix_nrf.s/.bin + cpu test (MATRIX:OK + DIR asserts,
-233 green), run_js_face.mjs, run_py_face.mjs.
+234 green post-P132), run_js_face.mjs, run_py_face.mjs.
 
 ## 110. P130 doc sync (227->233) + SMP/API rows + QSPI lock audit note (2026-09-20, uncommitted)
 
@@ -3600,3 +3600,81 @@ profiler (none on PATH: no perf/flamegraph/valgrind) or an explicit
 src/cpu/ override — hot-spot reads (select_pending re-borrows,
 mem.rs MPU/ACL/watch chains, tick() fan-out, INSTRUCTION_COUNT
 chunking) are all documented-correct and unmeasured; no guessing.
+
+## 111. P133 doc sync (233->234) + remote rename to microbit-emulator (2026-09-22, uncommitted per order)
+
+No model change. P132 added the delta: `gpio_read_dir` + `matrix_state()`
+wasm exports (lib.rs) + `openhw_matrix_read_path_row_low_col_high` gpio
+test (234 green = 117 cpu/21 proofs + 96 periph + 14 sd_ble + 3 sd_evt +
+4 smp_crypto) + take/complete `try_borrow_mut` hardening across
+comp/ecb/aar/i2s/nfct/pdm/qdec/qspi/radio/saadc/temp/twim/usbd (P108
+family: re-entrant read/write/tick drops instead of panicking). Doc sync:
+STATUS §3/§8 (233->234, breakdown 95->96 periph, P132 row), COVERAGE
+header+verify (233->234), doc.html (3 spots: matrix key, BLE boundary,
+checks), about.html (suite count), API.md GPIO section (DIR+matrix rows),
+agent.md snapshot+verify (233->234), plan P109-row fix (233 green label),
+microbitapi.md census already 154-accurate at P132 commit. Remote rename:
+origin `git@github.com:danish9661/microbitemu.git` ->
+`https://github.com/danish9661/microbit-emulator.git` (pages.yml:8 Pages
+URL, agent.md:10, HANDOVER.md:100; zero code impact — v1/M0 was never in
+tree: AGENTS.md scope lock holds, only comment traces remain).
+Uncommitted per order: pages.yml + agent.md + HANDOVER.md + this P133
+batch (STATUS/agent/COVERAGE/doc/about/API/plan). Commit+push when the
+user says so.
+
+## 112. P134 UARTE RX fix + TX snapshot FIFO + RXDRDY-paced drip (2026-09-23, uncommitted per order)
+
+Model changes (all in `uarte_nrf.rs`, no `src/cpu/` edits):
+- ENDRX at SVD 0x110 (was 0x10C): MPY's ISR clear at 0x110 never landed,
+  ENDRX stayed set, REPL line-ring stalled at AMT=MAX=32 (`endrx_lives_at_svd_offset_0x110` test).
+- SHORTS ENDRX_STARTRX/STOPRX model (SVD 0x200, bits 5/6) + ENTRY-state latch
+  (`shorts_at_endrx`): shortcut re-arms receiver in hardware at ENDRX;
+  event stays set until firmware clears it (`shorts_endrx_startrx_rearms_receiver` test).
+- TX snapshot FIFO (was last-wins single slot): per-STARTTX queue, pop per
+  complete (`tx_snapshot_fifo_preserves_per_transfer_order` test).
+- STOPTX ends transfer (pending clears, no re-take) but preserves queued
+  snapshot (`stoptx_preserves_queued_snapshot` test).
+- MMIO trace ring (mod.rs UARTE0 writes + lib.rs exports `mmio_trace_start/take`):
+  forensics only, off by default.
+Firmware proof: `blinky/uarte1_nrf.s/.bin` ENDRX poll moved 0x4002810C->0x40028110 + rebuilt.
+Driver: RXDRDY-paced drip restored in `demo/index.html` + `run_mpy_repl.mjs`
+(no-gate drip overran RXD, 2 lost bytes/line — 'microbit' arrived as 'micrt').
+Suite 238 green (= 117 cpu/21 proofs + 100 periph + 14 sd_ble + 3 sd_evt + 4 smp_crypto).
+MPY REPL: banner 105B + print(1+2)->3, zero faults. MPY namespaces: module/attr
+reads verified (`microbit` module, `microbit.display` MicroBitDisplay, bound methods);
+dotted method CALLS with args raise firmware-side int-not-callable (needs CODAL-DAL
+source match — parked, no model change per AGENTS.md). MakeCode: runQ=1 fiber,
+evQ empty, scroll fiber never created (firmware-side, parked per §6.4).
+Uncommitted per order with the P133 batch.
+
+## 113. P135 MicroPython REPL grammar map + MakeCode queue verdict (2026-09-23, probes reverted, no code)
+
+MPY (fresh pkg, RXDRDY-paced drip, 0 overruns, zero faults throughout):
+- Transport verdict: reboot the no-gate-drip theory — unpaced drip OVERRUNS
+  RXD (2 lost bytes per 26-char line: 'microbit' arrived as 'micrt', then as
+  'micrbit'/'micrbt' depending on phase). RXDRDY-consumed pacing in
+  `demo/index.html` + `run_mpy_repl.mjs` is load-bearing, not cosmetic.
+- Grammar map: builtins/slices/operators execute; method calls with args raise
+  firmware-side `TypeError: 'int' object isn't callable` (incl. `x.append(3)`,
+  `'hi'.upper()`, `display.show/clear`); attribute reads fine
+  (`microbit.display`→`<MicroBitDisplay>`); mixed `x+[3]` stalls silently.
+  The `microbit.display.show('A')` garble is this firmware behavior, NOT a
+  transport gap: bytes arrive intact (echo prefix studies), the CALL fails.
+  No model change without CODAL-DAL source match (AGENTS.md).
+- Ring forensics kept: 32B ring @0x20002be8, AMT accumulates per session,
+  SHORTS=0x20 armed, ENDRX@0x110 + ISR drain-all verified working (AMT 32->16
+  across wrap with echo continuing).
+MakeCode (fresh pkg): runQ=ONE fiber 0x2000621c, evQ EMPTY, scroll fiber never
+created; manual flag-clear wakes to 0x2000207b. Firmware-side, parked.
+Uncommitted per order with the P133+P134 batch.
+
+## 114. P136 TX snapshot keyed by TXD.PTR (2026-09-23, uncommitted per order)
+
+MMIO trace proof: 164 TXD.PTR writes across one MPY echo line, 8 DISTINCT
+slots (one `&c` slot per caller, not one global slot). Global FIFO pop
+misattributed bytes when slots interleaved — the pop at complete must match
+the TAKEN ptr. Fix: snapshot map keyed by TXD.PTR (same-slot re-stage =
+latest wins; complete pops the taken PTR's entry, else driver bytes).
+Verified on the fresh pkg: `ab` + `microbit.display.show('A')` +
+`microbit.temperature()` echo byte-exact (full lines incl. CR), zero faults.
+Suite stays 238 green. Uncommitted per order with the P133+P134 batch.

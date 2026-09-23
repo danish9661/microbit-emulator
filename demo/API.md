@@ -47,9 +47,12 @@ once at construction).
 ## GPIO (also the wiring layer)
 
 `gpio_read_output(port,pin)`, `gpio_read_input(port,pin)`,
+`gpio_read_dir(port,pin)` (PIN_CNF.DIR bit: true = output),
 `gpio_set_input(port,pin,bool)`. Ports: `0` = P0 (32 pins),
 `1` = P1 (10 pins). See `parts/pins.js` for the edge-connector map
 (`P0`–`P20`, rings, matrix rows/cols, buttons).
+`matrix_state()` returns 25 bytes row-major (1 = lit: row OUT==0 &&
+col OUT==1, both DIR=output) for a matrix component render.
 
 ## UART console (UARTE0)
 

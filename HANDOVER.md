@@ -97,7 +97,7 @@
 - Parent chain: `8c14b2a` (P103 SMP legs + conn-RSSI + multi-peer + ATT
   queue) ← `21ee9ce` (P102 live E2E) ← `08824e6` (P101 bench) ←
   `f62e855` (P100c pkg) ← `4d67f91` (P100a multi-conn+L2CAP+pairing).
-- Branch `master`, remote `git@github.com:danish9661/microbitemu.git`
+- Branch `master`, remote `https://github.com/danish9661/microbit-emulator.git`
   (pushed through `535cfcb`; verify with `git status -sb`).
 - Suite: 203 tests (`cargo test -- --list | grep -c ": test"` = 203).
   Deterministic green ONLY single-threaded; parallel default flakes

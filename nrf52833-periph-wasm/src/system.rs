@@ -55,6 +55,35 @@ pub fn get_ext_devices() -> &'static Mutex<ExtDevices> {
 pub static INSTRUCTION_COUNT: AtomicU64 = AtomicU64::new(0);
 pub fn instruction_count() -> u64 { INSTRUCTION_COUNT.load(Ordering::Relaxed) }
 
+// MMIO trace ring for bring-up forensics (P134): records (addr, value)
+// of nRF peripheral-space reads (value = sentinel) and writes while
+// enabled. Bounded (cap 4096, drop-oldest), off by default, zero cost
+// when off (one atomic load per MMIO op). Test-only consumer.
+pub static MMIO_TRACE_ON: AtomicBool = AtomicBool::new(false);
+static MMIO_TRACE: OnceLock<Mutex<Vec<(u32, u32)>>> = OnceLock::new();
+pub fn mmio_trace_on() -> bool { MMIO_TRACE_ON.load(Ordering::Relaxed) }
+pub fn mmio_trace_buf() -> &'static Mutex<Vec<(u32, u32)>> {
+    MMIO_TRACE.get_or_init(|| Mutex::new(Vec::new()))
+}
+pub fn mmio_trace_push(addr: u32, value: u32) {
+    let mut b = mmio_trace_buf().lock().unwrap();
+    b.push((addr, value));
+    let over = b.len().saturating_sub(4096);
+    if over > 0 {
+        b.drain(..over);
+    }
+}
+#[cfg(test)]
+pub(crate) fn mmio_trace_start() {
+    mmio_trace_buf().lock().unwrap().clear();
+    MMIO_TRACE_ON.store(true, Ordering::Relaxed);
+}
+#[cfg(test)]
+pub(crate) fn mmio_trace_stop() -> Vec<(u32, u32)> {
+    MMIO_TRACE_ON.store(false, Ordering::Relaxed);
+    std::mem::take(&mut *mmio_trace_buf().lock().unwrap())
+}
+
 static WATCHDOG_RESET_EVENT: AtomicBool = AtomicBool::new(false);
 // RESETREAS latch (POWER 0x40000400): bit 2 SREQ is set on an AIRCR
 // SYSRESETREQ / watchdog reboot so post-reset firmware (MBR/SD) sees a
