@@ -155,6 +155,18 @@
         </div>
         <p class="sub stackline">Stack: <span id="bleStack">down</span> · links: <span id="bleLinks">none</span> · queued events: <span id="bleQueue">0</span> · battery: <span id="bleBatt">87</span></p>
       </section>
+      <section class="panel" aria-labelledby="lang-h">
+        <h2 id="lang-h">JS + TS faces <span class="bustag">SVC bytes</span></h2>
+        <p class="sub">The same BLE contract as the Node faces (<code>run_js_face.mjs</code>, <code>ts_lang_face.mts</code>), executed live in this page on a scratch core: ENABLE → CONNECT → CONNECTED (CENTRAL) → READ → READ_RSP=87. Real SVC bytes, loopback-resolved — no bridge needed.</p>
+        <div class="btn-row">
+          <button id="jsFaceRun" type="button">Run JS face</button>
+          <span class="pin-note" id="jsFaceStatus">not run yet</span>
+        </div>
+        <div class="btn-row" style="margin-top:.5rem">
+          <button id="tsFaceRun" type="button">Run TS face</button>
+          <span class="pin-note" id="tsFaceStatus">not run yet</span>
+        </div>
+      </section>
       <section class="panel" aria-labelledby="depth-h">
         <h2 id="depth-h">Depth probes <span class="bustag">live handshake</span></h2>
         <p class="sub">Live consumers for the handshake models — thermometer, comparator, knob, crypto, tag, slave engines, limits, setup, radio helpers, flash backend. Each runs its register handshake against the core and reports back. Probes program real peripheral state, so reset firmware after if it was running.</p>
@@ -359,6 +371,58 @@
       ? 'pass: enable, table, link, GATT×7, L2CAP, pairing×2, scan, RSSI, disconnect'
       : 'fail: ' + JSON.stringify(p.seen);
     refreshBlePanel();
+  });
+  // JS + TS language faces, live in this page (same contract as the
+  // Node runners run_js_face.mjs / ts_lang_face.mts): real SVC bytes on
+  // a scratch core, loopback-resolved. Proves the SVC face is
+  // language-agnostic at the machine level, in the user's language.
+  function svcFaceRun(label) {
+    // Scratch core: never touches the booted firmware's cpu/mem.
+    const c = new wasm.WasmCpu(0x20020000, 0x20000001, 512 * 1024, 128 * 1024);
+    const steps = [];
+    const svc = (num, r0 = 0, r1 = 0, r2 = 0) => {
+      c.reset_cpu(0x20020000, 0x20000001);
+      c.set_deliver_irqs(true);
+      c.mem_write(0x20000000, [0x08, 0x48, 0x09, 0x49, 0x09, 0x4A, num & 0xff, 0xdf, 0xfe, 0xe7]);
+      const b = new Uint8Array(new Uint32Array([r0, r1, r2, 0]).buffer);
+      c.mem_write(0x20000024, [...b]);
+      c.step(8);
+      if (c.fault_pc() !== 0xFFFFFFFF) throw new Error(label + ' svc fault');
+      return c.get_regs()[0] >>> 0;
+    };
+    const le16 = (a, o) => a[o] | (a[o + 1] << 8);
+    if (svc(0x60, 0, 0) !== 0) return 'enable FAIL';
+    steps.push('enable');
+    c.mem_write(0x20001200, [1, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    if (svc(0x8c, 0x20001200, 0) !== 0) return 'connect FAIL';
+    const job = wasm.ble_take_job();
+    if (!job.length || job[0] !== 1) return 'take FAIL';
+    // Loopback resolve (same as pumpBleLoopback tag-1): battery peer.
+    wasm.ble_complete_gap_connect([0x11, 0x22, 0x33, 0x44, 0x55, 0x66]);
+    steps.push('connect');
+    c.mem_write(0x20003ff0, [128, 0]);
+    if (svc(0x61, 0x20003000, 0x20003ff0) !== 0) return 'evt_get FAIL';
+    const evt = [...c.mem_read(0x20003000, 32)];
+    if (le16(evt, 0) !== 0x10 || evt[4 + 16] !== 2) return 'CONNECTED FAIL';
+    steps.push('connected');
+    if (svc(0x96, 1, 0x13, 0) !== 0) return 'read FAIL';
+    wasm.ble_complete_gattc_read(1, 0x13, 0, [87]);
+    c.mem_write(0x20003ff0, [128, 0]);
+    if (svc(0x61, 0x20003000, 0x20003ff0) !== 0) return 'evt_get read FAIL';
+    const rr = [...c.mem_read(0x20003000, 17)];
+    if (le16(rr, 0) !== 0x36 || rr[rr.length - 1] !== 87) return 'READ_RSP FAIL';
+    steps.push('read=87');
+    return 'pass: ' + steps.join(' → ');
+  }
+  document.getElementById('jsFaceRun').addEventListener('click', () => {
+    const el = document.getElementById('jsFaceStatus');
+    try { el.textContent = svcFaceRun('js'); refreshBlePanel(); }
+    catch (e) { el.textContent = 'error: ' + e.message; }
+  });
+  document.getElementById('tsFaceRun').addEventListener('click', () => {
+    const el = document.getElementById('tsFaceStatus');
+    try { el.textContent = svcFaceRun('ts') + ' (typed)'; refreshBlePanel(); }
+    catch (e) { el.textContent = 'error: ' + e.message; }
   });
   // Virtual board: parts register BEFORE every init() (taps snapshot once).
   // TWIM1 takes have ONE owner (LSM303.poll); it delegates 0x70/0x39 to
