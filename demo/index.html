@@ -33,49 +33,55 @@
 </header>
 <main class="wrap" id="bench">
   <section class="panel loader" aria-labelledby="load-h">
-    <h2 id="load-h">Load firmware, then run it</h2>
-    <p class="sub">Drop a <code>.hex</code> / <code>.bin</code> built for flash <code>0x0</code> (ARM GCC, no SoftDevice). Staging loads nothing into the core; Run boots.</p>
-    <div class="loader-row">
-      <input type="file" id="fw" accept=".hex,.bin" hidden>
-      <button id="fwload" type="button">Load firmware…</button>
-      <button id="fwrun" type="button" class="primary">Run</button>
-      <select id="preset" aria-label="Built-in firmware proofs">
-        <option value="">preset firmware…</option>
-        <option value="blinky">blinky (UART BOOT/BLINK + GPIO)</option>
-        <option value="sensors">sensors (buttons + TWIM + GPIOTE)</option>
-        <option value="dma">dma (TWIM DMA loopback)</option>
-        <option value="extras">extras (SAADC/TEMP/RNG/PWM)</option>
-        <option value="stubs">stubs (SPIM/PDM/QSPI/USBD/RADIO)</option>
-        <option value="wdt">wdt (watchdog reboot)</option>
-        <option value="i2s">i2s (audio stream + capture)</option>
-        <option value="nfct">nfct (field + frames)</option>
-        <option value="sdevt">sd_evt (flash event transport)</option>
-        <option value="spim23">spim23 (SPIM2 TX + SPIM3 RX)</option>
-        <option value="uarte1">uarte1 (UARTE1 TX + RX)</option>
-        <option value="usbdev">usbdev (USBD setup + EPIN)</option>
-        <option value="usbep">usbep (USBD endpoints)</option>
-        <option value="matrix">matrix (5x5 sweep + A glyph)</option>
-        <option value="air">air (USB + RADIO loopback + PPI)</option>
-        <option value="cirq">c-irq (C TIMER0 IRQ + UART)</option>
-        <option value="fetch:bleconf">C: BLE conformance (19 markers)</option>
-        <option value="fetch:cface">C: BLE face (C:* markers)</option>
-        <option value="fetch:cppface">C++: BLE face (P:* markers)</option>
-        <option value="fetch:gatt">C: GATT table + HVX</option>
-        <option value="fetch:pair">C: pairing flow (BLEP:*)</option>
-        <option value="fetch:roles">C: roles ADV/SCAN (BLER:*)</option>
-        <option value="mpy">MicroPython v2.1.2 (built-in, auto-boots)</option>
-        <option value="makecode">MakeCode showString (built-in, scheduler-idle)</option>
-      </select>
-      <button id="reset" type="button">Reset</button>
-      <button id="mpyboot" type="button" title="Boot the app at 0x1C000 with MBR params (see docs)">Boot MicroPython app</button>
-      <button id="matrixDemo" type="button" title="Drive the 5x5 matrix from JS: sweep rows vs columns, then the A glyph">Matrix demo</button>
-      <span class="pin-note" id="matrixDemoStatus">matrix: firmware-driven</span>
+    <h2 id="load-h">Load firmware, then run it <span class="bustag">stage, then boot</span></h2>
+    <p class="sub">Drop a <code>.hex</code> / <code>.bin</code> built for flash <code>0x0</code> (ARM GCC, no SoftDevice). Staging loads nothing into the core; Run boots. <span class="staged-line" id="stagedLine">nothing staged</span></p>
+    <div class="loader-grid">
+      <div class="load-row">
+        <input type="file" id="fw" accept=".hex,.bin" hidden>
+        <button id="fwload" type="button">Load firmware…</button>
+        <button id="fwrun" type="button" class="primary">Run</button>
+        <button id="reset" type="button">Reset</button>
+      </div>
+      <div class="load-row">
+        <select id="preset" aria-label="Built-in firmware proofs">
+          <option value="">preset firmware…</option>
+          <option value="blinky">blinky (UART BOOT/BLINK + GPIO)</option>
+          <option value="sensors">sensors (buttons + TWIM + GPIOTE)</option>
+          <option value="dma">dma (TWIM DMA loopback)</option>
+          <option value="extras">extras (SAADC/TEMP/RNG/PWM)</option>
+          <option value="stubs">stubs (SPIM/PDM/QSPI/USBD/RADIO)</option>
+          <option value="wdt">wdt (watchdog reboot)</option>
+          <option value="i2s">i2s (audio stream + capture)</option>
+          <option value="nfct">nfct (field + frames)</option>
+          <option value="sdevt">sd_evt (flash event transport)</option>
+          <option value="spim23">spim23 (SPIM2 TX + SPIM3 RX)</option>
+          <option value="uarte1">uarte1 (UARTE1 TX + RX)</option>
+          <option value="usbdev">usbdev (USBD setup + EPIN)</option>
+          <option value="usbep">usbep (USBD endpoints)</option>
+          <option value="matrix">matrix (5x5 sweep + A glyph)</option>
+          <option value="air">air (USB + RADIO loopback + PPI)</option>
+          <option value="cirq">c-irq (C TIMER0 IRQ + UART)</option>
+          <option value="fetch:bleconf">C: BLE conformance (19 markers)</option>
+          <option value="fetch:cface">C: BLE face (C:* markers)</option>
+          <option value="fetch:cppface">C++: BLE face (P:* markers)</option>
+          <option value="fetch:gatt">C: GATT table + HVX</option>
+          <option value="fetch:pair">C: pairing flow (BLEP:*)</option>
+          <option value="fetch:roles">C: roles ADV/SCAN (BLER:*)</option>
+          <option value="mpy">MicroPython v2.1.2 (built-in, auto-boots)</option>
+          <option value="makecode">MakeCode showString (built-in, scheduler-idle)</option>
+        </select>
+      </div>
+      <div class="load-row">
+        <button id="mpyboot" type="button" title="Boot the app at 0x1C000 with MBR params (see docs)">Boot MicroPython app</button>
+        <button id="matrixDemo" type="button" title="Drive the 5x5 matrix from JS: sweep rows vs columns, then the A glyph">Matrix demo</button>
+        <span class="pin-note" id="matrixDemoStatus">matrix: firmware-driven</span>
+      </div>
     </div>
     <p class="hint">Presets run the same boot path as a dropped file: MBR vectors at <code>0x0</code>, no UICR records. MicroPython continues straight into the direct-app boot at <code>0x1C000</code>.</p>
   </section>
   <div class="bench">
     <section class="panel board" aria-labelledby="dut-h">
-      <h2 id="dut-h">Device under test</h2>
+      <h2 id="dut-h">Device under test <span class="bustag">GPIO · 0x50000000</span></h2>
       <p class="sub">The 5×5 matrix is the only glow on this page. It stays dark until the firmware drives a row low and a column high with direction set to output.</p>
       <div class="board-tag" aria-hidden="true"><span>DUT NRF52833</span><span>64 MHz, 512K / 128K</span></div>
       <div id="matrix" role="img" aria-label="5 by 5 LED matrix"></div>
@@ -95,8 +101,8 @@
       </div>
     </section>
     <div class="side">
-      <section class="panel" aria-labelledby="uart-h">
-        <h2 id="uart-h">Serial console (UARTE0)</h2>
+      <section class="panel console-panel" aria-labelledby="uart-h">
+        <h2 id="uart-h">Serial console <span class="bustag">UARTE0 · 0x40002000</span></h2>
         <p class="sub">Drains the firmware UART. Type below and press Enter; bytes drip one per consumed event, as on silicon.</p>
         <div class="console-face">
           <textarea id="uart" readonly aria-label="Firmware serial output"></textarea>
@@ -107,12 +113,12 @@
         </div>
       </section>
       <section class="panel" aria-labelledby="oled-h">
-        <h2 id="oled-h">OLED scope (SSD1306, edge I2C)</h2>
+        <h2 id="oled-h">OLED scope <span class="bustag">TWIM0 · 0x3C</span></h2>
         <p class="sub">128×64 add-on on TWIM0, address <code>0x3C</code>.</p>
         <canvas id="oled" width="128" height="64"></canvas>
       </section>
       <section class="panel" aria-labelledby="spidisp-h">
-        <h2 id="spidisp-h">SPI display (ST7789, edge SPI)</h2>
+        <h2 id="spidisp-h">SPI display <span class="bustag">SPIM2</span></h2>
         <p class="sub">240×240 add-on on SPIM2 (P13 SCK / P14 MISO / P15 MOSI / P16 CS). Firmware draws via CASET/RASET/RAMWR; ID read answers <code>04 85 52</code>.</p>
         <canvas id="spidisp" width="240" height="240" style="max-width:240px"></canvas>
         <div class="btn-row">
@@ -120,7 +126,7 @@
         </div>
       </section>
       <section class="panel" aria-labelledby="audio-h">
-        <h2 id="audio-h">Audio (speaker + mic)</h2>
+        <h2 id="audio-h">Audio <span class="bustag">PDM · I2S</span></h2>
         <p class="sub">Speaker P0.00 toggles/PWM1 SEQSTARTs counted live; mic P0.05 fills PDM from RUN_MIC P0.20 power + level knob. Press Enable once (browser gesture rule), then stream I2S.</p>
         <div class="btn-row">
           <button id="audioToggle" type="button" aria-pressed="false">Enable audio</button>
@@ -134,7 +140,7 @@
         <p class="sub">Speaker: <span id="spkStat">0 toggles, 0 SEQSTARTs</span></p>
       </section>
       <section class="panel" aria-labelledby="ble-h">
-        <h2 id="ble-h">BLE air (Bumble bridge)</h2>
+        <h2 id="ble-h">BLE air <span class="bustag">SVC 0x60–0xBF</span></h2>
         <p class="sub">Optional live peer. Run <code>python3 tools/ble_air_bridge.py</code>, then enable. Off means addressed loopback.</p>
         <div class="btn-row">
           <button id="bleToggle" type="button" aria-pressed="false">Enable BLE air</button>
@@ -147,10 +153,10 @@
           <button id="bleSelftest" type="button">Run BLE self-test</button>
           <span class="pin-note" id="bleSelftestStatus">not run yet</span>
         </div>
-        <p class="sub">Stack: <span id="bleStack">down</span> · links: <span id="bleLinks">none</span> · queued events: <span id="bleQueue">0</span> · battery: <span id="bleBatt">87</span></p>
+        <p class="sub stackline">Stack: <span id="bleStack">down</span> · links: <span id="bleLinks">none</span> · queued events: <span id="bleQueue">0</span> · battery: <span id="bleBatt">87</span></p>
       </section>
       <section class="panel" aria-labelledby="depth-h">
-        <h2 id="depth-h">Depth probes</h2>
+        <h2 id="depth-h">Depth probes <span class="bustag">live handshake</span></h2>
         <p class="sub">Live consumers for the handshake models — thermometer, comparator, knob, crypto, tag, slave engines, limits, setup, radio helpers, flash backend. Each runs its register handshake against the core and reports back. Probes program real peripheral state, so reset firmware after if it was running.</p>
         <div class="btn-row">
           <button id="depthRun" type="button">Run depth probes</button>
@@ -493,7 +499,7 @@
     uarte1: 'ACAAIAkAAABP8IBAASEBYBpICCEBYBpIGkkBYBpIByEBYBpICCEBYBlIASEBYBlIAPAT+BhIAPAY+BhIGEkBYBhIAyEBYBhIASEBYBdIAPAE+BdIAPAJ+P7nBrUVSQJoACoB0QE5+tEGvRC1BEYU+AEbEbEQShFg+ecQvQAlAEBEhQJAvAAAAEiFAkAAhQJACIACQCCBAkDEAAAANIUCQAAQACA4hQJAAIACQAyBAkDNAAAAQEIPABwlAEBVMURBVEEKAFUxVFg6T0sKAFUxUlg6T0sKAA==',
     usbdev: 'AAACIG0AAAB5AAAAeQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAB5AAAAAAAAAAAAAAB5AAAAeQAAAHkAAACCsAhLAZMDaCuxB+ABmwE7AZMDaBO5AZsAK/fRAGgCsHBHAL9AQg8AA0iFRgDwBvj+5wC//ucAAAAAAiBP8IBCL0kItQEkCCAuSxRgVSLB+AAFwfgcJRP4AS8AKvnRKkkqSAEjwfgANcH4BDX/98j/ULknSqH1FDFTI8H4HDUS+AE/ACv50f7nwfhcIdH4gDSAKwnQH0oaSVMjwfgcNRL4AT8AK/nR/ucbShVJUyPB+Bw1EvgBPwAr+dETSxdIw/gABgEiCCHD+AQWFUjD+BAlGmD/95X/SLESSglJVSPB+Bw1EvgBPwAr+dH+5w5KBElVI8H4HDUS+AE/ACv50f7nACAAQHABAAAAcAJAXHECQHgBAACUAQAAiAEAALwBAAAIcQJAsAEAAKABAABVQk9PVAoAAFNFVFVQOlRJTUVPVVQKAABTRVRVUDpPSwoAAABTRVRVUDpCQUQKAABVU0JFUDpUSU1FT1VUCgAAVVNCRVA6T0sKAAAAEgEAAgAAAEA=',
     usbep: 'ACAAIAkAAABP8IBAASEBYB1ICCEBYB1IASEBYBxIAWAcSADwH/gAIQFgG0gAaIAoA9EaSADwHvgC4BlIAPAa+BhIGUkBYBlICCEBYBhIASEBYBhIAWAYSADwBPgXSADwCfj+5wa1FkkCaAAqAdEBOfrRBr0QtQRGFPgBGxGxEUoRYPnnEL0AAAAlAEAAdQJABHUCQFxxAkCAdAJAyAAAANIAAAAAdgJA3QAAAAR2AkAQdQJAAHACQAhxAkDlAAAAQEIPABwlAEBTRVRVUDpPSwoAU0VUVVA6QkFECgASAQACAAAAQFVTQkVQOk9LCgA=',
-    matrix: 'ACAAIAkAAABP8IBAASEBYDpICCEBYDpIOkkBYDpIICEBYAAkOU06TjpPoAAoWDpJCGA6SDpJAWA6SCAhAWAA8Fj4oAAoWDhJCWgBQkTRATQFLOrbACSgAChYL0kIYCSxYB6AAChYLUkIYDBIAF0AIQAiwwcC1U/wgFMZQ4MHAtVP9ABjGUNDBwLVT/AAQxlDAwcA1QEiwwYC1U/wgEMZQx5LGWAfSxsAACoD0B1LICIaYALgHksgIhpgAPAa+AE0BSzI2xhIAGgVSQhAiEID0RhIAPAF+ALgF0gA8AH4/ucQtQRGFPgBGxGxFEoRYPnnEL1M8lAyATr90XBHACUAQBgFAFAAgJjYGAgAUEABAABUAQAAZAEAAAwFAFAIBQBQAAiQSAgIAFAEBQBQaAEAAAwIAFBtAQAAeAEAABwlAEAAACAAAABAAACAAAAAAAABAAAIAAAAABAACAAAAAAAgAAAAEAgAAAADhEfERFNQVRSSVg6T0sKAE1BVFJJWDpGQUlMCgA=',
+    matrix: 'ACAAIAkAAABP8IBAASEBYERICCEBYERIREkBYERIICEBYF/wAAgAJEJNQ05DT6AAKFhDSQhgQ0hDSQFgQ0ggIQFgAPBp+LjxAA8F0aAAKFg/SQloAUJS0QE0BSzn2wAkoAAoWDZJCGAksWAegAAoWDRJCGA3SABdACEAIsMHAtVP8IBTGUODBwLVT/QAYxlDQwcC1U/wAEMZQwMHANUBIsMGAtVP8IBDGUMmSxlgJ0sbAAAqA9AlSyAiGmAC4CZLICIaYADwKPgBNAUsyNu48QAPC9EeSABoG0kIQIhCDtEbSABoT/QAIQhCCNG48QAPndFf8AEIGUgA8AX4l+cYSADwAfj+5xC1BEYU+AEbEbEUShFg+ecQvUzyUDIBOv3RcEcAAAAlAEAYBQBQAIho0RgIAFBoAQAAfAEAAIwBAAAMBQBQCAUAUAAIANAICABQBAUAUJABAAAMCABQlQEAAKABAAAcJQBAAAAgAAAAQAAAgAAAAAAAAQAACAAAAAAQAAgAAAAAAIAAAABAIAAAAA4RHxERTUFUUklYOk9LCgBNQVRSSVg6RkFJTAoA',
     air: 'ACAAIAkAAABP8IBAASEBYCxICCEBYCxIAPA8+AAhAWAqSADwRfgqSCpJAWAqSAEhAWAqSAFgKkgBYCpIAWAnSAFgKUgA8Cb4KEgA8DH4KEhB8gNRAWAnSE/0+mEBYCZIJkkBYCZIJ0kBYCdIASEBYCZIAWAA8Bb4JUgAaE/0ABEIQgPQI0gA8BP4AuAiSADwD/j+5wa1IUkCaAAqAdEBOfrRBr0EtUzyUDIBOv3RBL0QtQRGFPgBGxGxGUoRYPnnEL0AAAAlAEAAcQJAJAEAAAQVAEAAEgAgABAAQAgQAEAMEABABBAAQAwRAEAsAQAAEGUAQECFAEAQ9QFAQIEAQBT1AUAAYABABPUBQACAAEAEBQBQNgEAAD4BAABAQg8AHCUAQFVTQjpPSwoAUkFESU86T0sKAFBQSTpPSwoAUFBJOkJBRAoA',
     cirq: 'AAACIGUAAABxAAAAcQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABxAAAAAAAAAAAAAABxAAAAcQAAAHEAAABxAAAAcQAAAHEAAABxAAAAcQAAAHEAAABxAAAAdQAAAC9IhUYA8F74/ucAv/7nAL8mS9P4QCEAKkPQMLUkSAAihbDD+EAhA2giSk/woEEBM0/0ABQDYMH4CEUfSVQjwfgcNRL4AT8AK/nRAGhQswGsGk2kRqX7ABLSCALrggGg60EBhkYwMb7xCQ8M+AEbA/EBAxBGAdkKK+zRD0kjRBP4AS3B+BwlnEL50QtJT/CgQwogT/QAEsH4HAXD+AwlBbAwvXBHMCPB+Bw17ucAgABAAAAAIOgBAAAAIABAzczMzAAAAiBP8IBCT/ABDChJwvgAwE/woEAII0/0ABwlSsH4ADVCI8D4GMXB+Bw1EvgBPwAr+dEgSk/0emzC+EDFASFP8OAgT/SAPML4ABLC+ATDT/SAfMD4AMERYGK2F0kKaAIqGtiCsBpGAZIBm7P1en8G0gGbATMBkwGbs/V6f/jTC2gCK/DZDkoJSUQjwfgcNRL4AT8AK/nR/ucJSgRJRCPB+Bw1EvgBPwAr+dH+5wC/ACAAQPABAAAAgABAAAAAIPgBAABUSUNLOgAAAEJPT1QKAAAARE9ORQoA',
   };
@@ -578,8 +584,10 @@
     }
   }
   document.getElementById('preset').addEventListener('change', (e) => {
+    // Keep the selection visible: the select IS the staged indicator
+    // (plus the staged line above). Do NOT reset to placeholder — the
+    // old reset is exactly why "select does not show selected".
     if (e.target.value) bootPreset(e.target.value);
-    e.target.value = ''; // back to placeholder: staging boots nothing
   });
   // Live speedometer: emulated instructions per wall-clock second.
   // Slice rate (last 500ms) + sustained average since boot: slice rates
@@ -591,7 +599,7 @@
   // Direct-app boot target (e.g. MicroPython at 0x1C000): SYSRESETREQ
   // reboots must return here, not to the MBR vector table.
   let appBoot = null;
-  function bootImage(u8, uicr) {
+  function bootImage(u8, uicr, name) {
     const dv = new DataView(u8.buffer);
     const sp = dv.getUint32(0, true), pc = dv.getUint32(4, true);
     initBoard(); // re-register taps: reset_state() clears them
@@ -608,7 +616,8 @@
     uartBox.value = '';
     mipsN = 0; mipsT = performance.now(); mipsEl.textContent = '';
     mipsBootN = 0; mipsBootT = performance.now();
-    status.textContent = `running (SP=${sp.toString(16)} PC=${pc.toString(16)})`;
+    status.textContent = `running ${name} (SP=${sp.toString(16)} PC=${pc.toString(16)})`;
+    showStaged();
   }
   // MicroPython direct-app boot (docs recipe): the stock hex's MBR
   // + bootloader reset-loop in emulation, so boot the app at 0x1C000 with
@@ -649,7 +658,9 @@
     boot = { sp, pc };
     appBoot = { sp, pc };
     uartBox.value = '';
-    status.textContent = `${label} app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}), banner follows`;
+    status.textContent = label === 'MakeCode'
+      ? `${label} app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}): scheduler-idle, no UART output by design — the scroll fiber never starts (see Docs)`
+      : `${label} app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}), banner follows`;
   }
   // MakeCode direct-app boot: same recipe as MicroPython (S140 +
   // CODAL app at 0x1C000, MBR params hand-installed). Boots to
@@ -664,18 +675,33 @@
   // stagedKind remembers which preset was staged (air needs a USBRESET
   // poke AFTER boot; mpy continues straight into the direct-app boot).
   let stagedImg = null, stagedName = '', stagedKind = null;
+  const stagedLine = document.getElementById('stagedLine');
+  const presetSel = document.getElementById('preset');
+  function showStaged() {
+    // The one persistent "what is loaded" readout: preset select keeps its
+    // value (never reset to placeholder), the line names the staged image,
+    // and Run echoes it when booting. Fixes "select does not show selected".
+    if (stagedLine) {
+      stagedLine.textContent = stagedImg
+        ? `staged: ${stagedName} (${stagedImg.length}B) — press Run`
+        : 'nothing staged';
+      stagedLine.classList.toggle('hot', !!stagedImg && !cpu);
+    }
+  }
   function stageImage(name, u8, uicr) {
     stagedImg = u8; stagedName = name; stagedKind = null;
     pendingUicr = uicr || [];
     const dv = new DataView(u8.buffer);
     status.textContent = `loaded ${name} (${u8.length}B, SP=${dv.getUint32(0, true).toString(16)} PC=${dv.getUint32(4, true).toString(16)}) — press Run`;
+    showStaged();
   }
   document.getElementById('fwload').addEventListener('click', () => {
     document.getElementById('fw').click();
   });
   document.getElementById('fwrun').addEventListener('click', () => {
     if (!stagedImg) { status.textContent = 'nothing staged — Load a file or pick a preset first'; return; }
-    bootImage(stagedImg, pendingUicr);
+    const name = stagedName;
+    bootImage(stagedImg, pendingUicr, name);
     // air_nrf polls USBRESET first: the test host pre-signals it, so Run
     // must too (radio loopback is already in pumpDma).
     if (stagedKind === 'air') { try { wasm.usbd_signal_reset(); } catch (e) {} }
@@ -695,15 +721,18 @@
       img = new Uint8Array(buf);
     }
     stagedImg = img; stagedName = f.name; stagedKind = null;
+    if (presetSel) presetSel.value = ''; // a dropped file is not a preset: show placeholder
     e.target.value = ''; // allow re-picking the same file later
     const dv = new DataView(img.buffer);
     status.textContent = `loaded ${f.name} (${img.length}B, SP=${dv.getUint32(0, true).toString(16)} PC=${dv.getUint32(4, true).toString(16)}) — press Run`;
+    showStaged();
   });
   document.getElementById('reset').addEventListener('click', () => {
     if (cpu && boot) {
       cpu.reset_cpu(boot.sp, boot.pc);
       uartBox.value = '';
-      status.textContent = 'reset';
+      status.textContent = `reset ${stagedName || ''}`.trim();
+      showStaged();
     }
   });
   document.getElementById('mpyboot').addEventListener('click', bootMicroPythonApp);
@@ -712,6 +741,9 @@
   // matrix_nrf.bin firmware proof drives natively. Rows sink (OUT=0),
   // columns source (OUT=1); led on <=> row low && col high (parts/pins.js).
   // DIR is set to output first (silicon: input pins stay dark).
+  // Masks: ROWS_ALL 0x01688000, COLS_P0 0xD0000800, union 0xD1688800
+  // (pins.js MicroBitIO ground truth — the old 0xD8988000 dropped rows
+  // P0.21/22/24 + col P0.11 and rendered only 4/25 LEDs).
   const matrixDemoStatus = document.getElementById('matrixDemoStatus');
   const ROW_BITS = [1 << 21, 1 << 22, 1 << 15, 1 << 24, 1 << 19];
   const COL_BITS_P0 = [1 << 28, 1 << 11, 1 << 31, 1 << 30];
@@ -720,12 +752,12 @@
     if (!wasm) return;
     try {
       // DIRSET rows + cols to output.
-      wasm.periph_write(0x50000518, 4, 0xD8988000);
+      wasm.periph_write(0x50000518, 4, 0xD1688800);
       wasm.periph_write(0x50000818, 4, 0x20);
       // Sweep: each row low, all cols high, 120ms per row.
       for (let r = 0; r < 5; r++) {
-        wasm.periph_write(0x5000050C, 4, 0xD8988000 & ~ROW_BITS[r] & 0xFFFFFFFF);
-        wasm.periph_write(0x50000508, 4, 0x48900800);
+        wasm.periph_write(0x5000050C, 4, 0xD1688800 & ~ROW_BITS[r] & 0xFFFFFFFF);
+        wasm.periph_write(0x50000508, 4, 0xD0000800);
         wasm.periph_write(0x50000808, 4, 0x20);
         if (matrixDemoStatus) matrixDemoStatus.textContent = `matrix: sweep row ${r + 1}/5`;
         await new Promise((res) => setTimeout(res, 120));
@@ -1107,6 +1139,16 @@
     }
   }
   function frame() {
+    // Idle (nothing booted yet): keep the slab honest — dark wells, no
+    // stale glow from a previous run's GPIO latch (reset_state clears
+    // the model but the DOM keeps last frame's classes without this).
+    // NOTE: no early return here — the render block below must run every
+    // frame so the Matrix demo (pure-JS GPIO writes, cpu === null) lights
+    // the slab too. Only the stepping block is gated on cpu.
+    if (!cpu) {
+      for (let i = 0; i < leds.length; i++) leds[i].classList.remove('on');
+      if (frame.pers) frame.pers.fill(0);
+    }
     if (cpu) {
       // Throughput: several step+tick slices per frame with DMA duties
       // INSIDE the sub-loop. Duties-once-per-frame starves polled
@@ -1162,24 +1204,40 @@
         mipsEl.textContent = `${(mipsN / (now - mipsT) / 1000).toFixed(2)} MIPS (avg ${sus.toFixed(2)})`;
         mipsN = 0; mipsT = now;
       }
-      // LEDs need DIR=output on silicon: a toggling OUT latch on an input
-      // pin (e.g. display refresh before first show) must stay dark.
+    // Sound/touch panel: speaker edge/SEQSTART counts + mic LED dot.
+    // Observer reads only (never clear firmware events). Gated on cpu:
+    // parts only exist after a boot (pre-boot activity() reads garbage).
+    if (cpu && spkStat) {
+      const a = speakerPart.activity();
+      spkStat.textContent = `${a.toggles} toggles, ${a.seqStarts} SEQSTARTs${a.muted ? ' (muted)' : ''}`;
+    }
+    if (cpu && micLed) micLed.textContent = micPart.ledOn() ? 'mic: on' : 'mic: off';
+    }
+    // Slab render runs EVERY frame (not gated on cpu): the Matrix demo
+    // writes GPIO purely from JS with no firmware booted, and the
+    // multiplexed-strobe persistence needs a sample per frame regardless
+    // of what drove the pins this frame.
+    // LEDs are a multiplexed strobe on silicon, not a static level:
+    // firmware sinks one row while its columns are high, then moves on.
+    // A single frame's level shows one row; persistence of vision comes
+    // from OR-ing N recent frames (phosphor persistence). Without this
+    // the "A" glyph reads as its last row only (4/25); with it the held
+    // glyph renders whole. Needs DIR=output on both pins (silicon rule:
+    // a toggling latch on an input pin stays dark, e.g. pre-show refresh).
+    // Depth 3 frames: one full 5-row sweep at 60fps.
+    if (!frame.pers) frame.pers = new Uint8Array(25);
+    {
       const dir0 = wasm.periph_read(0x50000514, 4), dir1 = wasm.periph_read(0x50000814, 4);
       const isOut = ([port, pin]) => (((port ? dir1 : dir0) >>> pin) & 1) !== 0;
       for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) {
         const row = wasm.gpio_read_output(ROWS[r][0], ROWS[r][1]);
         const col = wasm.gpio_read_output(COLS[c][0], COLS[c][1]);
-        leds[r * 5 + c].classList.toggle('on', isOut(ROWS[r]) && !row && isOut(COLS[c]) && col);
+        const i = r * 5 + c;
+        frame.pers[i] = ((frame.pers[i] << 1) & 0x7) | ((isOut(ROWS[r]) && !row && isOut(COLS[c]) && col) ? 1 : 0);
+        leds[i].classList.toggle('on', frame.pers[i] !== 0);
       }
-      // Sound/touch panel: speaker edge/SEQSTART counts + mic LED dot.
-      // Observer reads only (never clear firmware events).
-      if (spkStat) {
-        const a = speakerPart.activity();
-        spkStat.textContent = `${a.toggles} toggles, ${a.seqStarts} SEQSTARTs${a.muted ? ' (muted)' : ''}`;
-      }
-      if (micLed) micLed.textContent = micPart.ledOn() ? 'mic: on' : 'mic: off';
     }
-  requestAnimationFrame(frame);
+    requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 </script>

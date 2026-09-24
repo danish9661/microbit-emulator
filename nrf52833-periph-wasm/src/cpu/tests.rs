@@ -103,8 +103,11 @@ fn nrf_matrix_led_sweep_and_glyph() {
     assert!(cpu.fault.is_none(), "matrix faulted: {:?}", cpu.fault);
     let out = crate::system::get_uart_output().lock().unwrap().clone();
     assert!(out.contains("MATRIX:OK"), "missing MATRIX:OK marker, got {out:?}");
-    // Row/col DIR latched (P0 rows+cols, P1.5 col4)
-    assert_eq!(sys.p.gpio.borrow().dir[0] & 0xD8988000, 0xD8988000, "P0 matrix DIR");
+    // Row/col DIR latched (P0 rows+cols, P1.5 col4). Masks from
+    // demo/parts/pins.js: ROWS_ALL 0x01688000, COLS_P0 0xD0000800,
+    // union 0xD1688800 (the old 0xD8988000 was a wrong mask that
+    // dropped rows P0.21/22/24 + col P0.11 — the bench rendered 4/25).
+    assert_eq!(sys.p.gpio.borrow().dir[0] & 0xD1688800, 0xD1688800, "P0 matrix DIR");
     assert_eq!(sys.p.gpio.borrow().dir[1] & 0x20, 0x20, "P1.5 DIR");
 }
 

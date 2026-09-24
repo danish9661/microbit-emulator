@@ -15,6 +15,8 @@ bytes — but each language below proves it independently:
 | MicroPython runtime | `run_mpy_repl.mjs` | `node run_mpy_repl.mjs` (`npm run test:repl`) | Full-stock-hex boot (P16 recipe + bench-exact pump): 105B banner + `print(1+2)`->`3`, zero faults. Load-bearing: resets return to the APP table, UART log TAKE-accumulated |
 | TypeScript (Node, strict types) | `ts_lang_face.mts` | `node --experimental-strip-types ts_lang_face.mts` (`npm run test:ts`) | BLE face (ENABLE->CONNECT->CONNECTED->READ->87) + RADIO face (TX take/complete/END + RX inject/complete/END) in strict TS, no `any` |
 | JS (Node) | `run_js_face.mjs` | `node run_js_face.mjs` (`npm run test:js`) | Same BLE contract in JS idioms (ENABLE->CONNECT->CONNECTED->READ->87) |
+| JS GPIO example | `gpio_js_example.mjs` | `node gpio_js_example.mjs` (`npm run test:js-example`) | Matrix "A" from JS idioms: MATRIX:OK, fault-free, pin-level render == `matrix_state()`, strobe coverage ≥10/25 |
+| TS GPIO example | `gpio_ts_example.mts` | `node --experimental-strip-types gpio_ts_example.mts` (`npm run test:ts-example`) | Same matrix contract in strict TS, no `any` |
 | Python-idiom (Node runner) | `run_py_face.mjs` (mirrors `mpy_ble_face.py`) | `node run_py_face.mjs` (`npm run test:py`) | Same BLE contract in Python idioms (CPython runs the `.py` directly too) |
 
 MicroPython note: `import bluetooth` does not exist in

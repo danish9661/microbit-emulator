@@ -20,14 +20,20 @@ _start:
     ldr r0, =0x40002500
     movs r1, #8
     str r1, [r0]
-    /* DIRSET rows P0.21,22,15,24,19 + cols P0.28,11,31 P1.5 P0.30 */
+    /* DIRSET rows P0.21,22,15,24,19 + cols P0.28,11,31,30 P1.5.
+       Masks from demo/parts/pins.js (MicroBitIO ground truth):
+       ROWS_ALL = 0x01688000, COLS_P0 = 0xD0000800, union = 0xD1688800. */
     ldr r0, =0x50000518       /* P0 DIRSET */
-    ldr r1, =0xD8988000
+    ldr r1, =0xD1688800
     str r1, [r0]
     ldr r0, =0x50000818       /* P1 DIRSET (col4 P1.5) */
     movs r1, #0x20
     str r1, [r0]
-    /* sweep: each row low, all cols high, verify one led reads lit */
+    /* sweep: each row low, all cols high, verify one led reads lit.
+       Later strobe passes (r8 != 0) skip the verify: the sweep is the
+       display refresh, not the proof. r8 is zeroed at reset (BSS-style:
+       _start is the reset entry, so an explicit movs covers every boot). */
+    movs r8, #0
     movs r4, #0
     ldr r5, =rows
     ldr r6, =cols_p0
@@ -38,19 +44,22 @@ sweep:
     ldr r1, =0x5000050C       /* P0 OUTCLR */
     str r0, [r1]              /* row low */
     ldr r0, =0x50000508       /* P0 OUTSET: cols high */
-    ldr r1, =0x48900800
+    ldr r1, =0xD0000800
     str r1, [r0]
     ldr r0, =0x50000808       /* P1 OUTSET bit5 */
     movs r1, #0x20
     str r1, [r0]
     bl delay_short
-    /* verify: row OUT bit reads 0 */
+    /* verify: row OUT bit reads 0 (first pass only — see above) */
+    cmp r8, #0
+    bne sweep_next
     lsls r0, r4, #2
     ldr r0, [r5, r0]
     ldr r1, =0x50000504       /* P0 OUT */
     ldr r1, [r1]
     tst r1, r0
     bne fail
+sweep_next:
     adds r4, r4, #1
     cmp r4, #5
     blt sweep
@@ -118,16 +127,35 @@ doclr4:
     adds r4, r4, #1
     cmp r4, #5
     blt glyph
-    /* verify glyph row2 cols read high */
+    /* verify glyph row2 cols read high + row4 sunk (first pass only) */
+    cmp r8, #0
+    bne have_glyph
     ldr r0, =0x50000504
     ldr r0, [r0]
-    ldr r1, =0x48900800
+    ldr r1, =0xD0000800
     ands r0, r1
     cmp r0, r1
     bne fail
+    /* verify row4 (last) is the sunk row: its bit reads 0 */
+    ldr r0, =0x50000504
+    ldr r0, [r0]
+    ldr r1, =0x80000            /* ROW4 P0.19 */
+    tst r0, r1
+    bne fail
+have_glyph:
+    /* print once: first pass (r8 == 0) prints + arms the strobe flag;
+       later passes skip straight to the loop. Flag set BEFORE the
+       print (print_cstr clobbers r4/r1/r2, r8 survives). */
+    cmp r8, #0
+    bne sweep
+    movs r8, #1
     ldr r0, =msg_ok
     bl print_cstr
-    b done
+    /* Strobe the glyph forever (multiplexed like silicon): re-run the
+       sweep+glyph loop so the bench's persistence renderer sees every
+       row lit in turn. r8 != 0 skips both verifies + the print above
+       on later passes. */
+    b sweep
 fail:
     ldr r0, =msg_fail
     bl print_cstr

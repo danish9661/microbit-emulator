@@ -1,30 +1,26 @@
 /* Bench theme for the micro:bit v2.2 emulator.
-   One shared sheet for bench (index), docs (doc), about.
-   Subject: a lab bench for a board under test. Paper is cool
-   graph sheet, the instrument band is deep pine, traces are copper,
-   and the only glow on the page is the LED matrix itself. */
+   Subject: the micro:bit itself — matte black PCB, red power LED,
+   screen-printed white legend. The page is the board's bench double:
+   near-black silkscreen surfaces, signal-red reserved for live state
+   (the matrix, the Run key, fault flags), tabular numerals for the
+   readouts. One memorable thing: the DUT slab. Everything else quiet. */
 
 :root {
-  --sheet: #d7e2e9;          /* bench graph paper */
-  --sheet-line: rgba(30, 47, 58, 0.08);
-  --sheet-major: rgba(30, 47, 58, 0.14);
-  --panel: #f1f5f7;          /* washed instrument face */
-  --ink: #1e2f3a;            /* slate ink, not neutral black */
-  --ink-soft: #43565f;       /* secondary text */
-  --pine: #134a5a;           /* instrument band */
-  --pine-deep: #0f3a47;
-  --board: #182a33;          /* device-under-test face */
-  --board-ink: #e9f1f2;
-  --board-soft: #9db4bd;
-  --copper: #a66a1d;         /* traces, rules, active edges */
-  --copper-deep: #7e4f12;    /* small text accents (contrast-safe) */
-  --copper-lit: #f2c063;     /* signal on dark bands */
-  --led: #d92b21;            /* lit matrix red */
-  --well: #22333d;           /* unlit LED wells */
-  --console: #15262e;        /* serial console face */
-  --console-ink: #e9f1f2;
-  --rule: #1e2f3a;
-  --focus: #b97a1f;
+  --pcb: #101315;            /* matte black soldermask */
+  --pcb-2: #171b1e;          /* raised slab face */
+  --slab-line: #2b3237;      /* silkscreen hairline */
+  --paper: #e8e9e6;          /* bench paper behind the slab */
+  --panel: #ffffff;          /* instrument cards */
+  --ink: #16191b;            /* near-black text */
+  --ink-soft: #565d62;       /* secondary text */
+  --legend: #f2f3f1;         /* silkscreen white on pcb */
+  --legend-dim: #a7b0b5;     /* dim legend */
+  --red: #d42a20;            /* signal red: live state only */
+  --red-deep: #a51f16;
+  --amber: #b26a00;          /* warnings, pending states */
+  --green: #1e7e3a;          /* pass states */
+  --trace: #394246;          /* unlit LED wells, console face */
+  --focus: #1a73e8;
 }
 
 html {
@@ -42,21 +38,15 @@ body {
   margin: 0;
   font-family: "Archivo", "Helvetica Neue", Arial, sans-serif;
   font-size: 1rem;
-  line-height: 1.55;
+  line-height: 1.5;
   color: var(--ink);
-  background-color: var(--sheet);
-  background-image:
-    linear-gradient(var(--sheet-line) 1px, transparent 1px),
-    linear-gradient(90deg, var(--sheet-line) 1px, transparent 1px),
-    linear-gradient(var(--sheet-major) 1px, transparent 1px),
-    linear-gradient(90deg, var(--sheet-major) 1px, transparent 1px);
-  background-size: 28px 28px, 28px 28px, 140px 140px, 140px 140px;
+  background: var(--paper);
 }
 
 h1,
 h2,
 h3 {
-  line-height: 1.15;
+  line-height: 1.2;
   letter-spacing: -0.015em;
   margin: 0 0 0.5rem;
 }
@@ -67,44 +57,44 @@ h1 {
 }
 
 h2 {
-  font-size: 1.25rem;
+  font-size: 1.18rem;
   font-weight: 700;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.5rem 0.75rem;
 }
 
 h3 {
-  font-size: 1.02rem;
+  font-size: 1rem;
   font-weight: 700;
 }
 
 p {
-  margin: 0 0 0.75rem;
+  margin: 0 0 0.7rem;
   max-width: 68ch;
 }
 
 code,
 .mono {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 0.9em;
+  font-size: 0.88em;
 }
 
 a {
-  color: var(--pine);
+  color: var(--ink);
   text-decoration-thickness: 1.5px;
   text-underline-offset: 2px;
 }
 
 a:hover {
-  color: var(--copper-deep);
+  color: var(--red-deep);
 }
 
 :focus-visible {
   outline: 3px solid var(--focus);
   outline-offset: 2px;
   border-radius: 2px;
-}
-
-.topbar :focus-visible {
-  outline-color: var(--copper-lit);
 }
 
 .skip {
@@ -124,22 +114,22 @@ a:hover {
   top: 0.75rem;
 }
 
-/* Instrument band */
+/* Masthead: black instrument strip, red index tab */
 
 .topbar {
-  background: var(--pine);
-  color: #fff;
-  border-bottom: 3px solid var(--copper);
+  background: var(--pcb);
+  color: var(--legend);
+  border-bottom: 1px solid #000;
 }
 
 .topbar-inner {
-  max-width: 1120px;
+  max-width: 1180px;
   margin: 0 auto;
-  padding: 0.9rem 1.25rem;
+  padding: 0.85rem 1.25rem;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.9rem 1.5rem;
+  gap: 0.8rem 1.4rem;
 }
 
 .brand {
@@ -154,9 +144,9 @@ a:hover {
   grid-template-columns: repeat(5, 6px);
   gap: 3px;
   padding: 8px;
-  background: var(--pine-deep);
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 8px;
+  background: #000;
+  border: 1px solid var(--slab-line);
+  border-radius: 4px;
   line-height: 0;
 }
 
@@ -164,161 +154,207 @@ a:hover {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.28);
+  background: #3a4146;
 }
 
 .mark i.lit {
-  background: var(--copper-lit);
-  box-shadow: 0 0 5px rgba(242, 192, 99, 0.9);
+  background: var(--red);
+  box-shadow: 0 0 5px rgba(230, 50, 41, 0.9);
 }
 
 .brand-name {
   margin: 0;
   font-weight: 800;
-  font-size: 1.12rem;
+  font-size: 1.1rem;
   letter-spacing: -0.01em;
 }
 
 .brand-sub {
   margin: 0;
-  font-size: 0.82rem;
-  color: #c6d8de;
+  font-size: 0.8rem;
+  color: var(--legend-dim);
 }
 
 .nav {
   display: flex;
-  gap: 0.25rem;
+  gap: 0.15rem;
 }
 
 .nav a {
-  color: #fff;
+  color: var(--legend-dim);
   text-decoration: none;
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.92rem;
   padding: 0.4rem 0.8rem;
-  border-radius: 7px;
-  border: 1.5px solid transparent;
+  border-radius: 6px;
 }
 
 .nav a:hover {
-  color: #fff;
-  border-color: rgba(255, 255, 255, 0.5);
+  color: var(--legend);
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .nav a[aria-current="page"] {
-  background: rgba(255, 255, 255, 0.14);
-  border-color: var(--copper-lit);
+  color: var(--legend);
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 -2px 0 var(--red);
+  border-radius: 6px 6px 0 0;
 }
 
 .meters {
   display: flex;
-  align-items: center;
-  gap: 0.6rem;
+  align-items: baseline;
+  gap: 0.7rem;
   margin-left: auto;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
 }
 
 .pill {
-  font-size: 0.82rem;
-  font-weight: 600;
-  background: rgba(255, 255, 255, 0.13);
-  border: 1px solid rgba(255, 255, 255, 0.4);
-  border-radius: 999px;
-  padding: 0.28rem 0.8rem;
-  max-width: 34ch;
+  font-size: 0.78rem;
+  color: var(--legend-dim);
+  max-width: 40ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .readout {
-  font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 0.82rem;
-  color: var(--copper-lit);
-  min-width: 14ch;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--legend);
+  font-variant-numeric: tabular-nums;
+  min-width: 20ch;
 }
 
-/* Page frame */
+/* Page frame: paper, one slab, quiet cards */
 
 .wrap {
-  max-width: 1120px;
+  max-width: 1180px;
   margin: 0 auto;
-  padding: 1.5rem 1.25rem 3rem;
+  padding: 1.4rem 1.25rem 3rem;
 }
 
 .panel {
   background: var(--panel);
-  border: 2px solid var(--rule);
-  border-radius: 10px;
-  padding: 1.1rem 1.2rem 1.25rem;
-}
-
-.panel > h2:first-child {
-  padding-bottom: 0.45rem;
-  border-bottom: 2px solid var(--copper);
-  margin-bottom: 0.8rem;
+  border: 1px solid #cfd3d1;
+  border-radius: 8px;
+  padding: 1.05rem 1.15rem 1.2rem;
 }
 
 .sub {
   color: var(--ink-soft);
-  font-size: 0.92rem;
-  margin-top: -0.35rem;
+  font-size: 0.9rem;
+  margin-top: -0.3rem;
 }
 
-/* Loader strip */
+/* Bus tag: silkscreen chip label pinned to each section head */
+
+.bustag {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-weight: 400;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
+  border: 1px solid #cfd3d1;
+  border-radius: 4px;
+  padding: 0.1rem 0.45rem;
+  vertical-align: 0.12em;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+/* h2 is flex: the tag is a flex item, so max-width alone cannot shrink
+   it past its nowrap content — min-width:0 lets it wrap inside. */
+h2 .bustag {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.board .bustag {
+  color: var(--legend-dim);
+  border-color: var(--slab-line);
+}
+
+/* Loader: fixed three-row grid — transport keys, preset rail, actions.
+   Rows align even when the viewport wraps; the rail never jumps around. */
 
 .loader {
-  margin-bottom: 1.25rem;
+  margin-bottom: 1.2rem;
 }
 
-.loader-row {
+.loader-grid {
+  display: grid;
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+}
+
+.load-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.6rem;
+  gap: 0.55rem;
   align-items: center;
-  margin-top: 0.8rem;
+  min-height: 2.6rem;
+}
+
+/* Staged readout: silkscreen pill, red-edged while staged-but-not-run. */
+
+.staged-line {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.76rem;
+  color: var(--ink-soft);
+  border: 1px solid #cfd3d1;
+  border-radius: 4px;
+  padding: 0.12rem 0.5rem;
+  white-space: nowrap;
+}
+
+.staged-line.hot {
+  color: var(--red-deep);
+  border-color: var(--red);
+}
+
+/* Preset rail: full-row select, never squeezed beside buttons. */
+
+.load-row select#preset {
+  flex: 1 1 100%;
+  min-width: 0;
+  text-overflow: ellipsis;
 }
 
 .hint {
-  font-size: 0.88rem;
+  font-size: 0.86rem;
   color: var(--ink-soft);
   margin: 0.7rem 0 0;
-  max-width: 76ch;
+  max-width: 78ch;
 }
 
-/* Bench grid */
+/* Bench grid: slab left, instruments right */
 
 .bench {
   display: grid;
-  grid-template-columns: minmax(300px, 400px) minmax(0, 1fr);
-  gap: 1.25rem;
+  grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+  gap: 1.2rem;
   align-items: start;
 }
 
 .side {
   display: grid;
-  gap: 1.25rem;
+  gap: 1.2rem;
 }
 
-/* Device under test: the one memorable thing on the page */
+/* DUT slab: the one memorable thing — black PCB face, red glow only */
 
 .board {
-  background:
-    linear-gradient(rgba(166, 106, 29, 0.09) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(166, 106, 29, 0.09) 1px, transparent 1px),
-    var(--board);
-  background-size: 26px 26px, 26px 26px, auto;
-  border-color: var(--board);
-  border-radius: 14px;
-  color: var(--board-ink);
-  animation: settle 0.5s ease-out both;
-}
-
-.board > h2:first-child {
-  border-bottom-color: var(--copper-lit);
+  background: var(--pcb-2);
+  border: 1px solid #000;
+  border-radius: 12px;
+  color: var(--legend);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.06) inset, 0 12px 32px rgba(0, 0, 0, 0.25);
 }
 
 .board .sub {
-  color: var(--board-soft);
+  color: var(--legend-dim);
 }
 
 .board-tag {
@@ -326,16 +362,13 @@ a:hover {
   justify-content: space-between;
   gap: 1rem;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 0.75rem;
-  color: var(--board-soft);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  color: var(--legend-dim);
+  border-top: 1px solid var(--slab-line);
+  border-bottom: 1px solid var(--slab-line);
+  padding: 0.45rem 0;
   margin-bottom: 0.9rem;
-}
-
-@keyframes settle {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
 }
 
 #matrix {
@@ -343,9 +376,9 @@ a:hover {
   grid-template-columns: repeat(5, 1fr);
   gap: 10px;
   padding: 14px;
-  background: rgba(0, 0, 0, 0.28);
-  border: 1.5px solid rgba(255, 255, 255, 0.16);
-  border-radius: 12px;
+  background: #0a0c0d;
+  border: 1px solid var(--slab-line);
+  border-radius: 8px;
   margin: 0.4rem 0 1rem;
 }
 
@@ -353,41 +386,43 @@ a:hover {
   width: 100%;
   aspect-ratio: 1;
   border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, #3a4f5b, var(--well) 72%);
-  box-shadow:
-    inset 0 2px 5px rgba(0, 0, 0, 0.55),
-    inset 0 -1px 2px rgba(255, 255, 255, 0.08);
+  background: radial-gradient(circle at 35% 30%, #2c3439, var(--trace) 72%);
+  box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.6);
 }
 
 .led.on {
-  background: radial-gradient(circle at 40% 35%, #ff6b57, var(--led) 58%, #8e140d);
+  background: radial-gradient(circle at 40% 35%, #ff6b57, var(--red) 58%, #8e140d);
   box-shadow:
-    0 0 14px rgba(217, 43, 33, 0.75),
-    0 0 3px rgba(217, 43, 33, 0.9),
+    0 0 14px rgba(230, 50, 41, 0.75),
+    0 0 3px rgba(230, 50, 41, 0.9),
     inset 0 -2px 4px rgba(0, 0, 0, 0.35);
 }
 
 .btn-row {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.6rem;
+  gap: 0.55rem;
   align-items: center;
 }
 
 .pin-note {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 0.75rem;
-  color: var(--board-soft);
+  font-size: 0.74rem;
+  color: var(--legend-dim);
+}
+
+.panel .pin-note {
+  color: var(--ink-soft);
 }
 
 .board h3 {
-  margin-top: 1.2rem;
-  color: var(--board-ink);
+  margin-top: 1.15rem;
+  color: var(--legend);
 }
 
 .tilt {
   display: grid;
-  gap: 0.55rem;
+  gap: 0.5rem;
   margin-top: 0.5rem;
 }
 
@@ -397,96 +432,97 @@ a:hover {
   align-items: center;
   gap: 0.7rem;
   font-size: 0.9rem;
-  color: var(--board-ink);
+  color: var(--legend);
 }
 
 .tilt output {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 0.8rem;
-  color: var(--board-soft);
+  color: var(--legend-dim);
   text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
-/* Controls */
+/* Controls: legend-outline keys on the slab, quiet keys elsewhere */
 
 button,
 select {
   font: inherit;
   font-weight: 600;
-  font-size: 0.95rem;
+  font-size: 0.93rem;
 }
 
 button {
   cursor: pointer;
   color: var(--ink);
   background: var(--panel);
-  border: 2px solid var(--ink);
-  border-radius: 8px;
-  padding: 0.5rem 1rem;
-  box-shadow: 2px 2px 0 var(--ink);
+  border: 1px solid #b9bebb;
+  border-radius: 6px;
+  padding: 0.48rem 0.95rem;
 }
 
 button:hover {
-  background: #fff;
+  border-color: var(--ink);
+  background: #f4f5f4;
 }
 
 button:active {
-  transform: translate(2px, 2px);
-  box-shadow: none;
+  transform: translateY(1px);
 }
 
 .board button {
-  color: var(--board-ink);
+  color: var(--legend);
   background: transparent;
-  border-color: var(--board-ink);
-  box-shadow: 2px 2px 0 rgba(233, 241, 242, 0.55);
+  border-color: #4a5358;
 }
 
 .board button:hover {
-  background: rgba(255, 255, 255, 0.1);
-}
-
-.board button:active {
-  transform: translate(2px, 2px);
-  box-shadow: none;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--legend);
 }
 
 button.primary {
-  background: var(--copper);
-  border-color: var(--ink);
+  background: var(--red);
+  border-color: var(--red-deep);
   color: #fff;
 }
 
 button.primary:hover {
-  background: var(--copper-deep);
+  background: var(--red-deep);
 }
 
 select,
 input[type="text"] {
   color: var(--ink);
   background: #fff;
-  border: 2px solid var(--ink);
-  border-radius: 8px;
-  padding: 0.5rem 0.7rem;
+  border: 1px solid #b9bebb;
+  border-radius: 6px;
+  padding: 0.48rem 0.65rem;
   max-width: 100%;
 }
 
+select:focus-visible,
+input[type="text"]:focus-visible {
+  outline: 3px solid var(--focus);
+  outline-offset: 1px;
+}
+
 input[type="range"] {
-  accent-color: var(--copper);
+  accent-color: var(--red);
   width: 100%;
 }
 
-.board input[type="range"] {
-  accent-color: var(--copper-lit);
+/* Serial console: black instrument well, red cursor accent */
+
+.console-panel {
+  border-top: 3px solid var(--pcb);
 }
 
-/* Serial console */
-
 .console-face {
-  background: var(--console);
-  border-radius: 8px;
+  background: #0a0c0d;
+  border-radius: 6px;
   padding: 0.8rem;
-  border: 1.5px solid var(--ink);
+  border: 1px solid var(--pcb);
 }
 
 #uart {
@@ -494,12 +530,13 @@ input[type="range"] {
   height: 190px;
   resize: vertical;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
-  font-size: 0.86rem;
+  font-size: 0.85rem;
   line-height: 1.5;
-  color: var(--console-ink);
+  color: #e8ecec;
   background: transparent;
   border: 0;
   padding: 0;
+  caret-color: var(--red);
 }
 
 #uart:focus {
@@ -513,8 +550,8 @@ input[type="range"] {
 
 .send-row {
   display: flex;
-  gap: 0.6rem;
-  margin-top: 0.8rem;
+  gap: 0.55rem;
+  margin-top: 0.75rem;
 }
 
 .send-row input {
@@ -531,25 +568,31 @@ input[type="range"] {
   height: auto;
   aspect-ratio: 2;
   background: #000;
-  border: 2px solid var(--ink);
-  border-radius: 8px;
+  border: 1px solid var(--pcb);
+  border-radius: 6px;
   image-rendering: pixelated;
+}
+
+/* BLE stack line: tabular readouts */
+
+.stackline {
+  font-variant-numeric: tabular-nums;
 }
 
 /* Prose pages */
 
 .prose {
   background: var(--panel);
-  border: 2px solid var(--rule);
-  border-radius: 10px;
+  border: 1px solid #cfd3d1;
+  border-radius: 8px;
   padding: 1.6rem clamp(1.1rem, 3vw, 2.2rem) 2rem;
   max-width: 880px;
 }
 
 .prose .lede {
-  font-size: 1.12rem;
+  font-size: 1.1rem;
   color: var(--ink);
-  border-left: 4px solid var(--copper);
+  border-left: 4px solid var(--red);
   padding-left: 0.9rem;
   margin: 1rem 0 1.5rem;
   max-width: 62ch;
@@ -558,7 +601,7 @@ input[type="range"] {
 .prose h2 {
   margin-top: 2rem;
   padding-bottom: 0.4rem;
-  border-bottom: 2px solid var(--copper);
+  border-bottom: 2px solid var(--ink);
 }
 
 .prose ul,
@@ -575,6 +618,7 @@ input[type="range"] {
   overflow-x: auto;
   margin: 1rem -0.2rem;
   padding: 0 0.2rem 0.4rem;
+  max-width: 100%;
 }
 
 table {
@@ -583,7 +627,13 @@ table {
   min-width: 640px;
   font-size: 0.9rem;
   background: #fff;
-  border: 2px solid var(--ink);
+  border: 1px solid #b9bebb;
+}
+
+/* Grid blowout guard: a wide table inside .table-scroll still forces
+   the whole .side column wide (grid min-content), so isolate it. */
+.side .table-scroll {
+  contain: inline-size;
 }
 
 caption {
@@ -597,18 +647,18 @@ td {
   text-align: left;
   vertical-align: top;
   padding: 0.55rem 0.7rem;
-  border-bottom: 1px solid #c3cfd5;
+  border-bottom: 1px solid #dfe2df;
 }
 
 thead th {
-  background: var(--pine-deep);
-  color: #fff;
-  border-bottom: 2px solid var(--ink);
+  background: var(--pcb);
+  color: var(--legend);
+  border-bottom: 2px solid #000;
   font-weight: 700;
 }
 
 tbody tr:nth-child(even) {
-  background: #eef3f6;
+  background: #f3f4f3;
 }
 
 td code {
@@ -643,9 +693,9 @@ td code {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-weight: 600;
   font-size: 0.85rem;
-  color: var(--copper-deep);
-  border: 1.5px solid var(--copper);
-  border-radius: 6px;
+  color: var(--ink);
+  border: 1px solid #b9bebb;
+  border-radius: 4px;
   padding: 0.1rem 0.4rem;
   background: #fff;
 }
@@ -653,11 +703,11 @@ td code {
 /* Footer */
 
 .colophon {
-  max-width: 1120px;
+  max-width: 1180px;
   margin: 0 auto;
   padding: 0 1.25rem 2.5rem;
   color: var(--ink-soft);
-  font-size: 0.86rem;
+  font-size: 0.85rem;
 }
 
 .colophon nav {
@@ -674,7 +724,17 @@ td code {
 
 @media (max-width: 900px) {
   .bench {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Depth table keeps a 640px min-width for readability: its own
+     scroller handles it, never the page. */
+  .table-scroll {
+    max-width: 100%;
+  }
+
+  table {
+    min-width: 560px;
   }
 
   .meters {
@@ -687,7 +747,11 @@ td code {
   }
 
   .tilt label {
-    grid-template-columns: 4rem 1fr 3.5rem;
+    grid-template-columns: 4rem minmax(0, 1fr) 3.5rem;
+  }
+
+  .readout {
+    min-width: 0;
   }
 }
 
