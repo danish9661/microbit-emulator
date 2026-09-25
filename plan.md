@@ -3706,4 +3706,68 @@ to `blinky/ble_fw/` + `mc/built/`), fetch URLs now `./firmware/*`,
 `sources-of-truth comment in index.html`, `firmware/` added to npm
 `files[]`, microbitapi §1/§3 + STATUS §6 + COVERAGE §4/§6 synced.
 MakeCode preset boots (scheduler-idle, parked firmware-side per §6.4).
-Uncommitted; needs user approval to commit.
+Committed `e412bb5`, pushed.
+
+## 116. P138 bench redesign + matrix mask fix + JS/TS GPIO examples (2026-09-24/25)
+
+Redesign (frontend-design skill, Playwright-verified, user asked "not
+looking nice", no commit until approved): silkscreen theme (matte-black
+PCB slab, signal-red reserved for live state, tabular-numeral readouts),
+fixed three-row loader grid (transport keys / full-width preset rail /
+actions), staged-line readout + select keeps its value (fixes "select
+does not show selected"), bus-tag chip labels per panel, mobile
+overflow fixed (`contain: inline-size` on the depth-table scroller +
+bustag wrap — real cause was grid min-content, found by sibling
+hide-test). QA 12/12 + mobile + zero page errors.
+Matrix mask fix (user's "nothing showing" report): `matrix_nrf.s`
+DIRSET/OUTSET masks were wrong (`0xD8988000`/`0x48900800` dropped rows
+P0.21/22/24 + col P0.11 → bench rendered 4/25). Correct masks from
+`pins.js`: union `0xD1688800`, cols `0xD0000800`. Firmware now strobes
+the glyph forever (r8-gated: verifies + MATRIX:OK print once, refresh
+loop after); bench adds 3-frame persistence render (multiplexed strobe
+needs it — single-frame level shows one row only); Matrix-demo button
+fixed (render ran only under `if (cpu)`, demo writes GPIO with no cpu).
+Browser: firmware 15/25 (persistence over strobe), demo 5/5, MakeCode
+stays dark (DIR-gated, correct — scroll fiber never starts). Native
+test assert updated to the correct mask. `cargo 238` green.
+JS/TS GPIO examples (user asked "add TS and JS examples"): 
+`gpio_js_example.mjs` + `gpio_ts_example.mts` (matrix via
+WasmCpu+matrix_state: MATRIX:OK, fault-free, pin-render == model,
+strobe ≥10/25), wired as `test:js-example`/`test:ts-example` in the
+`test:wasm` chain + README rows. Full `test:wasm` green incl. examples.
+Committed `c72c979`, pushed.
+
+## 117. P139 JS+TS faces live on the bench (2026-09-25)
+
+User asked "did you add demo firmware for TS and JS in webui" — the
+Node faces existed but nothing in-page. Added a "JS + TS faces" panel:
+Run JS face / Run TS face buttons executing the real SVC contract
+(ENABLE→CONNECT→CONNECTED→READ→87, loopback-resolved) on a scratch
+core without touching booted firmware. Browser-verified both pass,
+zero page errors. Committed `37f6400`, pushed.
+
+## 118. P140 final gate + doc sync (2026-09-25, docs only)
+
+Full gate re-run this turn: cargo 238 + test:wasm 124 ok (incl. the
+two GPIO examples) + E2E 42/42 over air + browser 16/16, zero page
+errors. No model change. This note + agent.md snapshot + doc.html
+(238 count, matrix-strobe row, JS/TS face bullet) are the whole batch.
+
+## 119. P140 probes: MPY x+[3] stall CLOSED as firmware behavior + MakeCode re-parked (2026-09-25, /tmp only, reverted)
+
+MPY mixed-subscript (STATUS P135 open question: "`x+[3]` stalls
+silently — line-reader or parser stall?"): bench-exact pump,
+`x = [1,2,3]` → `x[0]` → `1` (both echo fine), then `x+[3]` →
+`[1, 2, 3, 3]` + prompt, zero faults, pc parked at idle `0x4d939`.
+So list-concat via `+` WORKS on this firmware — the P135 "stall" was
+the old unpaced-drip OVERRUN era (2 lost bytes/line: the `[3]` likely
+arrived garbled as `micrt`-class loss and the line never completed),
+not a parser gap. With RXDRDY-paced drip the line completes and
+evaluates. CLOSED, no model change.
+MakeCode scroll (P106 re-walk on this tree+pkg, 300M): park
+`0x37afb` WFE, runQ ONE fiber `0x20006208`, waitQ EMPTY, sleepQ
+`0x20006198`, flag `0x01`, DIR0 `0x1788000` (init-phase, no strobe —
+TIMER4 CC0 still reset `53333`... actually reads nonzero reset value,
+never armed by firmware), zero faults. Identical to every P92–P106
+walk: scroll fiber never created, display path untouched. Stays
+PARKED per §6.4; reopen only with a faulting config (none exists).

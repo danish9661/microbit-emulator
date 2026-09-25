@@ -4,12 +4,12 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-23, P132+P133+P134 UNCOMMITTED in tree — user approval needed to commit)
+## 0. Snapshot (2026-09-25, tree CLEAN at P139 — final gate green this turn)
 
-- HEAD: `e1a23d2` "P132 OpenHW read APIs: gpio_read_dir + matrix_state + try_borrow hardening (234 green)".
-- Branch: `master`, remote `git@github.com:danish9661/microbit-emulator.git`.
-- Suite: **238 single green** (gate re-run), = 117 cpu (incl. 21 firmware proofs) + 100 peripherals + 14 sd_ble + 3 sd_evt + 4 smp_crypto. Handshake 18/18, smoke OK, browser 16/16 re-verified, both pkgs rebuilt.
-- Working tree: P132 (committed at HEAD) + P133 doc sync + P134 UARTE RX/TX fixes + P135/P136 MPY/MakeCode verdicts + rebuilt pkgs + this doc sync (see §9 log); `?? .openchamber/` + `?? nrf52833-periph-wasm/plan.md` stay untracked (never commit).
+- HEAD: `37f6400` "P139 JS+TS faces live on the bench (in-page SVC demo, scratch core, loopback)".
+- Branch: `master`, in sync with `origin/master`.
+- Suite: **238 single green** + test:wasm 124 ok (incl. js/ts GPIO examples) + E2E 42/42 over air + browser 16/16, all re-verified this turn.
+- Working tree: CLEAN except `?? .openchamber/` (never commit).
 - Big news: **handshake SIGNED WRITE_RSP path FIXED** — the mock asserted the op echo at `body[2]` (conn/status/err zone), but the real wire puts the handle at `body[6..8]` and the op at `body[8]` (see `write_rsp_payload`; native test asserts `0x2000300C == op`). Mock now checks `body[8] === 0x03`. Rust side verified: `complete_gattc_write(conn, handle, op, data)` echoes op/bytes; `resolveJob()` tag-8 passes `(bj[1], bj[3], bj[2], take_data)` in the right order. Full matrix re-green on this tree (see §9).
 
 ## 1. What we did so far (this recovery session)
@@ -138,3 +138,7 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
 - 2026-09-19 (P123 COMMITTED `a525dfb`, 5 files): MPY banner+REPL committed proof (`run_mpy_repl.mjs`, `test:repl` in `test:wasm`): stock-hex boot with bench-exact recipe+pump — 105B banner + `print(1+2)`->`3`, zero faults, ~0.3s. Load-bearing: resets to APP table + TAKE-accumulate UART log. No model change. MakeCode re-verified PARKED.
 - 2026-09-19 (P124 in tree, UNCOMMITTED): no-walls round — radio air (real CRC engine CRCCNF/POLY/INIT + RXCRC latch, nRF LFSR whitening, interference floor heating ED/CCA + RX stamp in log-power; 4 new wasm exports; native `crc_engine_whitening_interference_air` test) + ACL read-gate enforced in mem.rs (MWU-patterned armed flag, try_borrow_mut, bus fault + 0 on blocked reads) + S132 ble_ranges.h range rule (unallocated SVCs in 0x60..=0xBF answer NOT_SUPPORTED/NOT_ENABLED, never fault) + MockRadio154 stage-3 air legs (same surface, strict asserts). Suite 227 single green; handshake 18/18; smoke OK; browser 16/16; both pkgs rebuilt. NEXT: commit per approval.
 - 2026-09-19 (P123 probes only, no code changes): MPY + MakeCode native repro on this tree+pkg with bench-exact pump. MPY: entry memcpy verified, FICR-SD branch correct, NVMC READY passes, NFCPINS skip correct, 0x29CD1 = AIRCR-wait honored with appBoot semantics -> 0x539E7 -> delay-loop park with TWIM flowing (txC=95/rxC=730 at 240M), P116-consistent, no fix indicated. MakeCode: 2 resets honored -> permanent 0x37F4F/0x37F77 park (2995/3000 hits), TIMER4/DIR0 never driven, no faulting config -> stays PARKED. NEXT: commit per approval.
+- 2026-09-25 (P137 COMMITTED `e412bb5`): speed round — 20x20K batch (~24 MIPS meter, ~5s MPY banner), firmware 404 fix (7 vendored bins), microbitapi §1/§3 sync, npm files[] += firmware/.
+- 2026-09-25 (P138 COMMITTED `c72c979`): bench redesign (silkscreen theme, loader grid + staged line, bus tags) + matrix mask fix (0xD8988000 → 0xD1688800, strobing "A", persistence render) + JS/TS GPIO examples in test:wasm.
+- 2026-09-25 (P139 COMMITTED `37f6400`): JS+TS SVC faces live on the bench (in-page panel, scratch core, loopback pass).
+- 2026-09-25 (P140 full final gate, this turn): cargo 238 + test:wasm 124 ok + E2E 42/42 over air + browser 16/16, zero page errors. Doc sync only; no model change.

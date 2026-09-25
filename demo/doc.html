@@ -26,7 +26,7 @@
       <a href="./about.html">About</a>
     </nav>
     <div class="meters">
-      <span class="pill">docs, support matrix, 220 tests green</span>
+      <span class="pill">docs, support matrix, 238 tests green</span>
     </div>
   </div>
 </header>
@@ -63,7 +63,7 @@
           <tr><th scope="col">Board feature</th><th scope="col">Status</th><th scope="col">What works</th><th scope="col">What is left</th><th scope="col">Remark</th></tr>
         </thead>
         <tbody>
-          <tr><td>5×5 LED matrix (TIMER4 + GPIOTE/PPI)</td><td class="grade">F</td><td>DIR+OUT gated render from <code>P0/P1 OUT</code></td><td>Content never drawn pre-scroll</td><td>Init stalls before first show; a toggling latch on an input pin stays dark, as on silicon</td></tr>
+          <tr><td>5×5 LED matrix (TIMER4 + GPIOTE/PPI)</td><td class="grade">F</td><td>DIR+OUT gated render from <code>P0/P1 OUT</code> with 3-frame strobe persistence; <code>matrix_nrf</code> strobes the "A" glyph (correct masks <code>0xD1688800</code>); JS Matrix-demo button drives the same patterns without firmware</td><td>Content never drawn pre-scroll</td><td>Init stalls before first show; a toggling latch on an input pin stays dark, as on silicon</td></tr>
           <tr><td>Buttons A/B (<code>P0.14/P0.23</code>, active-low)</td><td class="grade">F</td><td>Press and release drive inputs; level-poll proof prints <code>BTN:1/0</code></td><td>Nothing</td><td><code>input_state</code> survives re-init, so a held button reads pressed across reset</td></tr>
           <tr><td>LSM303AGR accel <code>0x19</code> + mag <code>0x1E</code> (TWIM1)</td><td class="grade">F</td><td><code>WHO_AM_I 0x33/0x40</code>, STATUS data-ready, CTRL echo, live tilt</td><td>Nothing</td><td>DRDY pulses 60 ms low / 140 ms high on <code>P0.25</code>; a stuck low trips the shared KL27 threshold</td></tr>
           <tr><td>KL27 interface, UIPM <code>0x70</code></td><td class="grade">F</td><td>Valid protocol frames: BOARD_REV <code>0x9904</code>, I2C v2, DAPLink, power/HSB state, LED state, user-event queue; e8777 NOP-wake; unknown → ERR/UNKNOWN</td><td>DAPLink USB itself never emulated (this page is the loader)</td><td><code>parts/kl27.js</code> Kl27Uipm via TWIM1. Mock: protocol frames verified in smoke</td></tr>
@@ -146,7 +146,7 @@
       <li>FIPS-197 AES block, address resolve, CTR plus MIC roundtrip.</li>
       <li>Audio stream silence and capture, NFC tap with frames, I2C and SPI slave engines, edge-display frames over the SPI tap.</li>
       <li>ADC limit edges, USB setup packet, radio CRC-error path, flash program plus erase.</li>
-      <li>BLE stack face: real SVC bytes for enable, table build, connect, all six discovery kinds, read, write, L2CAP, pairing plus peer-pairing with passkey, indicate, scan, RSSI, disconnect — with the self-test button running the same flow on loopback in-page.</li>
+      <li>BLE stack face: real SVC bytes for enable, table build, connect, all six discovery kinds, read, write, L2CAP, pairing plus peer-pairing with passkey, indicate, scan, RSSI, disconnect — with the self-test button running the same flow on loopback in-page, plus Run JS face / Run TS face buttons proving the contract in both languages on a scratch core.</li>
     </ul>
     <p>The KL27 stubs stay handshake by decision: the interface chip is deliberately not emulated, so an empty version frame and a request echo are the whole consumer. The NFC pin-route is modeled (UICR.NFCPINS reserves P0.09/P0.10 + gates field sense); RF physics is not.</p>
 
