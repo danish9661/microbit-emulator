@@ -40,9 +40,43 @@ npm run test:handshake  # node parts/handshake.mjs — 16 mock-consumer checks
   # against a local pkg build (npm run build:handshake first)
 ```
 
-## npm package
+## npm package (`microbit-emu`)
 
-`package.json` (`microbit-v2-emulator`) ships `pkg/ + parts/ +
-index.html + API.md`. Validate with `npm pack --dry-run` (note:
+Install the published core + virtual parts in any JS/TS project:
+
+```bash
+npm install microbit-emu
+```
+
+```js
+import init, * as emu from 'microbit-emu';
+await init();          // loads pkg/nrf52833_periph_wasm_bg.wasm
+emu.reset_state();
+emu.init();            // model live: peripherals, GPIO, NVIC
+const cpu = new emu.WasmCpu(0x20020000, 0x20000001, 512 * 1024, 128 * 1024);
+cpu.load_firmware(bytes, 0x0);
+cpu.set_deliver_irqs(true);
+// pump: cpu.step(N) + emu.tick_peripherals() (+ tick_n + wake on sleep)
+```
+
+The bench page shows the same snippet in its npm panel (copy button
+included). The header pill + npm panel heading track the published
+version (single source of truth: `demo/package.json`); the release
+table lists published GitHub tags live.
+
+Validate with `npm pack --dry-run` (note:
 `pkg/.gitignore` is neutered on purpose — wasm-pack's default would
-hide the built wasm from the tarball).
+hide the built wasm from the tarball). Tarball identity must read
+`microbit-emu-0.1.0.tgz` (37 files).
+
+### Releasing a new version
+
+Releases ship from the `publish.yml` workflow (manual trigger:
+Actions → Publish to Registries → Run workflow, inputs: branch,
+`x.y.z` version, release notes). It rebuilds the wasm from source,
+bumps the version, runs the full gate (Rust suite + all JS faces +
+REPL + 42/42 air E2E + 16/16 browser), publishes to npmjs.org
+(`microbit-emu`) AND GitHub Packages (`@danish9661/microbit-emu`),
+then cuts tag `v<version>` + a GitHub Release. Prereqs: repo secret
+`NPM_TOKEN` (npmjs automation token); Pages keeps serving `demo/`
+unchanged.

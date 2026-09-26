@@ -1,16 +1,44 @@
 {
-  "name": "microbit-v2-emulator",
+  "name": "microbit-emu",
   "version": "0.1.0",
-  "description": "BBC micro:bit v2.2 emulator core (nRF52833 WASM) + virtual parts for Wokwi-style setups",
+  "description": "BBC micro:bit v2.2 emulator core (nRF52833 WASM) + virtual parts for Wokwi-style setups. Boot real firmware in the browser: MicroPython REPL, MakeCode builds, 5x5 LED matrix, sensors, BLE SoftDevice face.",
+  "keywords": [
+    "microbit",
+    "micro-bit",
+    "bbc-microbit",
+    "nrf52833",
+    "nrf52",
+    "nordic",
+    "emulator",
+    "simulator",
+    "cortex-m4",
+    "webassembly",
+    "wasm",
+    "micropython",
+    "makecode",
+    "ble",
+    "bluetooth-low-energy"
+  ],
+  "homepage": "https://danish9661.github.io/microbit-emulator/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danish9661/microbit-emulator.git"
+  },
+  "bugs": {
+    "url": "https://github.com/danish9661/microbit-emulator/issues"
+  },
   "type": "module",
   "files": [
     "pkg/",
     "parts/",
     "firmware/",
+    "assets/",
     "index.html",
     "doc.html",
     "about.html",
     "bench.css",
+    "robots.txt",
+    "sitemap.xml",
     "API.md",
     "README.md"
   ],

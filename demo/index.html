@@ -3,7 +3,25 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Bench — micro:bit v2.2 emulator (nRF52833)</title>
+<meta name="description" content="microbit-emu: free in-browser BBC micro:bit v2.2 (nRF52833) emulator. Boot real MicroPython and MakeCode firmware, drive the 5x5 LED matrix, buttons, sensors and BLE — no hardware needed.">
+<meta name="keywords" content="microbit, micro:bit, bbc microbit, nrf52833, emulator, simulator, webassembly, micropython, makecode, ble">
+<meta name="robots" content="index, follow">
+<meta name="author" content="danish9661">
+<meta name="google-site-verification" content="15oUGn7tDY5qFKh0oX7q0zWcuUJ_nFIIjjZk6ixculo" />
+<link rel="canonical" href="https://danish9661.github.io/microbit-emulator/">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="microbit-emu bench">
+<meta property="og:title" content="microbit-emu — BBC micro:bit v2.2 emulator in the browser">
+<meta property="og:description" content="Boot real MicroPython and MakeCode firmware on an emulated nRF52833: 5x5 matrix, sensors, serial REPL, BLE. Free, no hardware needed.">
+<meta property="og:url" content="https://danish9661.github.io/microbit-emulator/">
+<meta property="og:image" content="https://danish9661.github.io/microbit-emulator/assets/bench-matrix.png">
+<meta property="og:image:alt" content="microbit-emu bench running the matrix proof: loader, strobing 5 by 5 LED slab, MATRIX:OK on the serial console">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="855">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="microbit-emu — BBC micro:bit v2.2 emulator in the browser">
+<meta name="twitter:description" content="Boot real MicroPython and MakeCode firmware on an emulated nRF52833: matrix, sensors, REPL, BLE.">
+<title>microbit-emu — BBC micro:bit v2.2 emulator (nRF52833, MicroPython + MakeCode in browser)</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -28,6 +46,7 @@
     <div class="meters">
       <span class="pill" id="status">loading wasm…</span>
       <span class="readout" id="mips" title="Emulated instructions per wall-clock second"></span>
+      <span class="pill" id="pkgver" title="Published npm package version backing this bench">microbit-emu —</span>
     </div>
   </div>
 </header>
@@ -167,6 +186,27 @@
           <span class="pin-note" id="tsFaceStatus">not run yet</span>
         </div>
       </section>
+      <section class="panel" aria-labelledby="npm-h">
+        <h2 id="npm-h">npm package <span class="bustag" id="npmver">microbit-emu —</span></h2>
+        <p class="sub">Install the published core + virtual parts in any JS/TS project. Same build the bench runs: WASM core, parts, firmware images, bench page.</p>
+        <div class="console-face">
+          <textarea id="npminstall" readonly rows="6" aria-label="npm install commands">npm install microbit-emu
+import init, * as emu from 'microbit-emu';
+await init();
+emu.reset_state();
+emu.init();</textarea>
+        </div>
+        <div class="btn-row" style="margin-top:.5rem">
+          <button id="npmCopy" type="button">Copy install snippet</button>
+          <span class="pin-note" id="npmCopyStatus">copies the snippet above</span>
+        </div>
+        <p class="sub" style="margin-top:.5rem">Releases ship on tag push (<code>publish.yml</code>, dual registry: npmjs.org + GitHub Packages <code>@danish9661/microbit-emu</code>). Version below tracks the last published tag.</p>
+        <div class="table-scroll"><table id="relTable">
+          <caption>Release history (newest first)</caption>
+          <thead><tr><th scope="col">Version</th><th scope="col">Notes</th></tr></thead>
+          <tbody id="relBody"><tr><td colspan="2">loading release history…</td></tr></tbody>
+        </table></div>
+      </section>
       <section class="panel" aria-labelledby="depth-h">
         <h2 id="depth-h">Depth probes <span class="bustag">live handshake</span></h2>
         <p class="sub">Live consumers for the handshake models — thermometer, comparator, knob, crypto, tag, slave engines, limits, setup, radio helpers, flash backend. Each runs its register handshake against the core and reports back. Probes program real peripheral state, so reset firmware after if it was running.</p>
@@ -279,6 +319,54 @@
   });
 
   await init();
+  // Package version tracker: single source of truth is
+  // ../package.json (release workflow bumps it on every publish).
+  // The header pill + npm panel heading show it; the release table
+  // below lists published tags (fetched live from GitHub, with a
+  // static fallback so the page never depends on the network).
+  try {
+    const pkgRes = await fetch('./package.json');
+    if (pkgRes.ok) {
+      const pkg = await pkgRes.json();
+      const tag = `${pkg.name} v${pkg.version}`;
+      const pill = document.getElementById('pkgver');
+      if (pill) pill.textContent = tag;
+      const head = document.getElementById('npmver');
+      if (head) head.textContent = tag;
+    }
+  } catch { /* static fallback text stays */ }
+  try {
+    const relRes = await fetch('https://api.github.com/repos/danish9661/microbit-emulator/releases?per_page=10');
+    const body = document.getElementById('relBody');
+    if (relRes.ok && body) {
+      const rels = await relRes.json();
+      body.replaceChildren();
+      if (!rels.length) {
+        const row = document.createElement('tr');
+        const d = document.createElement('td'); d.colSpan = 2; d.textContent = 'no releases published yet — v0.1.0 ships on first publish workflow run';
+        row.append(d); body.append(row);
+      }
+      for (const r of rels) {
+        const row = document.createElement('tr');
+        const v = document.createElement('td'); v.textContent = r.tag_name;
+        const n = document.createElement('td'); n.textContent = (r.body || '').slice(0, 200);
+        row.append(v, n); body.append(row);
+      }
+    }
+  } catch { /* fallback row stays */ }
+  document.getElementById('npmCopy')?.addEventListener('click', async () => {
+    const el = document.getElementById('npmCopyStatus');
+    const box = document.getElementById('npminstall');
+    try {
+      await navigator.clipboard.writeText(box.value);
+      if (el) el.textContent = 'copied';
+    } catch (e) {
+      // Clipboard needs a secure context + gesture: fall back to
+      // selecting the text so copy is one Ctrl+C away.
+      try { box.focus(); box.select(); if (el) el.textContent = 'selected — press Ctrl+C'; }
+      catch (e2) { if (el) el.textContent = 'copy failed: ' + e.message; }
+    }
+  });
   // Audio sink (I2S TX capture -> WebAudio): created on the Enable
   // gesture (browser autoplay rule), feeds 16-bit mono at 16 kHz.
   // Firmware silence (all-zero captures) is skipped so idle firmware

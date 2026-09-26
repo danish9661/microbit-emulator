@@ -560,6 +560,23 @@ input[type="range"] {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
 }
 
+#npminstall {
+  width: 100%;
+  resize: vertical;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: #e8ecec;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  caret-color: var(--red);
+}
+
+#npminstall:focus {
+  outline: none;
+}
+
 /* OLED scope */
 
 #oled {
@@ -766,4 +783,28 @@ td code {
   .skip {
     transition: none;
   }
+}
+
+/* About-page figures: image + caption, same card language as panels. */
+.prose figure {
+  margin: 1.2rem 0;
+  background: var(--panel);
+  border: 1px solid #cfd3d1;
+  border-radius: 8px;
+  padding: 0.8rem;
+  max-width: 100%;
+}
+
+.prose figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: 4px;
+  border: 1px solid var(--slab-line);
+}
+
+.prose figcaption {
+  font-size: 0.86rem;
+  color: var(--ink-soft);
+  padding-top: 0.55rem;
 }

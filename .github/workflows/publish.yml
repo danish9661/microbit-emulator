@@ -1,0 +1,142 @@
+# Release / publish workflow: dual-registry npm release + GitHub Release.
+#
+# Manual trigger only (Actions tab -> "Publish to Registries" -> Run
+# workflow). Builds the wasm pkg from source (wasm-pack + pinned
+# wasm-opt/binaryen, same as the local `npm run build:wasm` recipe),
+# bumps demo/package.json to the requested version, runs the FULL gate
+# (Rust suite + all JS faces incl. REPL + 42/42 air E2E + 16/16 browser),
+# then publishes demo/ to npmjs.org AND GitHub Packages, and cuts a tag
+# + GitHub Release.
+#
+# Package names:
+#   npmjs.org:       microbit-emu                (demo/package.json)
+#   GitHub Packages: @danish9661/microbit-emu
+#
+# Required repo secrets: NPM_TOKEN (npmjs automation token).
+# GITHUB_TOKEN is provided automatically (packages:write + contents:write).
+name: Publish to Registries
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to publish from'
+        required: true
+        type: choice
+        options:
+          - master
+      version:
+        description: 'Version to publish (e.g. 1.2.0)'
+        required: true
+        type: string
+      description:
+        description: 'Release notes'
+        required: false
+        type: string
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      packages: write
+    defaults:
+      run:
+        working-directory: demo
+    steps:
+      - name: Validate version format
+        run: |
+          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Version must match x.y.z pattern (e.g. 1.2.0)"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@1.97.1
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.14.0
+
+      - name: Install binaryen (pinned wasm-opt)
+        run: |
+          curl -sL -o /tmp/be.tar.gz https://github.com/WebAssembly/binaryen/releases/download/version_132/binaryen-version_132-x86_64-linux.tar.gz
+          tar xzf /tmp/be.tar.gz -C /tmp
+          echo "/tmp/binaryen-version_132/bin" >> "$GITHUB_PATH"
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build WASM package
+        env:
+          RUSTFLAGS: "--remap-path-prefix=/home/runner=/build"
+        run: npm run build:wasm
+
+      - name: Set package version
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          CURRENT=$(node -p "require('./package.json').version")
+          # The version may already be bumped in the tree; npm errors on
+          # a no-op `npm version`, so only bump when it actually differs.
+          if [ "$CURRENT" != "${{ inputs.version }}" ]; then
+            npm version ${{ inputs.version }} --no-git-tag-version
+            git add package.json
+            git commit -m "v${{ inputs.version }}"
+          else
+            echo "package.json already at ${{ inputs.version }}, skipping version bump"
+          fi
+
+      - name: Run test suite
+        run: npm run test:wasm
+
+      - name: Run Rust suite
+        run: cargo test --manifest-path ../nrf52833-periph-wasm/Cargo.toml -- --test-threads=1
+
+      - name: Publish to npmjs.org
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Setup Node.js for GitHub Packages
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          registry-url: 'https://npm.pkg.github.com'
+
+      - name: Publish to GitHub Packages
+        run: |
+          npm pkg set name="@danish9661/microbit-emu"
+          npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create tag and GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_DESC: ${{ inputs.description || format('Release v{0}', inputs.version) }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
+          echo "$RELEASE_DESC" > /tmp/release-notes.txt
+          gh release create "v${{ inputs.version }}" \
+            --title "v${{ inputs.version }}" \
+            --target "${{ inputs.branch }}" \
+            --notes-file /tmp/release-notes.txt

@@ -170,7 +170,7 @@ at STARTTX (thread-local RAM published by `WasmCpu::step`; no trait
 or `src/cpu` change), so the deferred driver take cannot transmit
 the reused N+1 byte (P49 putc-slot drops).
 Parts: matrix pins, LSM303 (WHO_AM_I `0x33`/`0x40`), SSD1306, all
-green via `smoke.mjs`. `microbit-v2-emulator@0.1.0` npm package
+green via `smoke.mjs`. `microbit-emu@0.1.0` npm package
 defined (publish blocked: registry 401). No open driver-API gaps: every
 take/complete pair (incl. ECB/AAR/CCM, I2S, NFCT, QDEC/COMP/TEMP
 driver values) is exported and documented in `demo/API.md`; MWU/NFCT

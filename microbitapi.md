@@ -1,4 +1,4 @@
-# microbitapi.md — micro:bit v2.2 (`microbit-v2-emulator@0.1.0`) API + OpenHW gap spec
+# microbitapi.md — micro:bit v2.2 (`microbit-emu@0.1.0`) API + OpenHW gap spec
 
 Probed from `"board/microbit-v2"` (`demo/pkg/*.d.ts` 157 named exports =
 `WasmCpu` class + `default` init + `initSync` + 155 free fns: 61 `ble_*` + 94 others,
@@ -10,7 +10,7 @@ the built glue; lifecycle order is `API.md` §Lifecycle, verified in
 
 ## 1. Package layout
 
-- `demo/package.json`: `microbit-v2-emulator` 0.1.0, MIT, ESM; scripts
+- `demo/package.json`: `microbit-emu` 0.1.0, MIT, ESM; scripts
   `test:parts/handshake/mpy/js/py/repl/ts/live`, `build:wasm` (wasm-pack web,
   `../nrf52833-periph-wasm → ../demo/pkg`), `bridge` (ble_air_bridge.py).
 - Chip: nRF52833 Cortex-M4F, 512 KB flash @0x0, 128 KB RAM @0x20000000

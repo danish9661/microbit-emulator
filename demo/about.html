@@ -3,7 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>About and scope — micro:bit v2.2 emulator</title>
+<meta name="description" content="microbit-emu: what the BBC micro:bit v2.2 browser emulator is, what it is not, and how to read a run.">
+<meta name="robots" content="index, follow">
+<meta name="google-site-verification" content="15oUGn7tDY5qFKh0oX7q0zWcuUJ_nFIIjjZk6ixculo" />
+<link rel="canonical" href="https://danish9661.github.io/microbit-emulator/about.html">
+<meta property="og:type" content="website">
+<meta property="og:title" content="About microbit-emu — scope and method">
+<meta property="og:description" content="Two layers: Rust nRF52833 core to WASM plus virtual board parts. What it is, what it is not, how to read a run.">
+<meta property="og:url" content="https://danish9661.github.io/microbit-emulator/about.html">
+<meta property="og:image" content="https://danish9661.github.io/microbit-emulator/assets/bench-matrix.png">
+<meta property="og:image:alt" content="microbit-emu bench running the matrix proof: loader, strobing 5 by 5 LED slab, MATRIX:OK on the serial console">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="855">
+<title>About microbit-emu — scope, method, what it is not</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
@@ -34,6 +46,11 @@
   <article class="prose">
     <h1>About this bench</h1>
     <p class="lede">A lab bench for one board: the BBC micro:bit v2.2 and its nRF52833. It boots real firmware built for flash zero and shows what the silicon would do — matrix, buttons, sensors, serial — with nothing simulated beyond the chip and its parts.</p>
+
+    <figure>
+      <img src="./assets/bench-matrix.png" alt="microbit-emu bench running the matrix proof: loader panel, strobing 5 by 5 LED slab, MATRIX:OK on the serial console" width="1200" height="855" loading="lazy">
+      <figcaption>The bench running the <code>matrix</code> preset: loader, strobing slab, <code>MATRIX:OK</code> on the console.</figcaption>
+    </figure>
 
     <h2>What it is</h2>
     <p>The bench is two layers. The chip core is Rust compiled to WASM: Cortex-M4F plus every nRF52833 peripheral, timed off one instruction-count clock. The virtual board is JavaScript: the LED matrix, the LSM303 motion sensor, the OLED add-on, and the serial line. Firmware stages a transfer, the bench moves the bytes, then completes it — the same take/complete round trip for UARTE, TWIM, SAADC, PDM, USBD, NVMC, radio, I2S, NFCT, the crypto engines, and the BLE SVC jobs (GAP/GATTC/L2CAP staged, resolved over the Bumble air bridge or loopback, GATTS answered synchronously).</p>

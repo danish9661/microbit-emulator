@@ -583,7 +583,7 @@ SYSRESETREQ on nRF52833 (ARM core says clear; whether Nordic's
 reset controller clears NVIC enables is unverified -- self-heals in
 practice since firmware re-inits).
 
-npm: `microbit-v2-emulator@0.1.0` publish BLOCKED (registry 401, no
+npm: `microbit-emu@0.1.0` publish BLOCKED (registry 401, no
 credentials in this environment; `npm publish` from demo/ when
 authenticated).
 
