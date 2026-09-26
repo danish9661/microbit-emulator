@@ -377,8 +377,61 @@
   // a scratch core, loopback-resolved. Proves the SVC face is
   // language-agnostic at the machine level, in the user's language.
   function svcFaceRun(label) {
-    // Scratch core: never touches the booted firmware's cpu/mem.
+    // Proven this turn (js-then-ts CONNECTED race, Node repro
+    // repro_staged_clobber.mjs): the teardown MUST go through the
+    // staged job slot, not around it. ble_complete_gap_disconnect()
+    // posts DISCONNECTED but leaves a stale staged GattcRead {conn 1}
+    // in the slot (take log after teardown: `{"0":0,...}`); the next
+    // run's CONNECT take then eats the stale read job instead of its
+    // own GapConnect. Fix (same shape as the mock teardown): disconnect
+    // via SVC 0x76 (stages GapDisconnect), take it, complete it, THEN
+    // drain the queue. Slot clean, queue clean — verified 4x repeat.
+    // Drain loader is the SHORT 5-halfword form (3 ldr + svc + b.)
+    // with step(8): the svc is instruction 3. The 10-halfword 8-reg form
+    // needs step(12) — with step(8) the svc never executes, rc reads
+    // stale r0, and the drain spins 64 no-ops while q stays 1 (proven
+    // this turn: 64x `rc0q1id0x36` trace on the matrix-booted page).
     const c = new wasm.WasmCpu(0x20020000, 0x20000001, 512 * 1024, 128 * 1024);
+    const svcPre = (num, r0 = 0, r1 = 0) => {
+      c.reset_cpu(0x20020000, 0x20000001);
+      c.set_deliver_irqs(true);
+      c.mem_write(0x20000000, [0x08, 0x48, 0x09, 0x49, 0x09, 0x4A, num & 0xff, 0xdf, 0xfe, 0xe7]);
+      const b = new Uint8Array(new Uint32Array([r0, r1, 0, 0]).buffer);
+      c.mem_write(0x20000024, [...b]);
+      c.step(8);
+      return c.get_regs()[0] >>> 0;
+    };
+    for (const h of [...wasm.ble_conn_handles()]) {
+      svcPre(0x76, h, 19);
+      const t = wasm.ble_take_job();
+      if (t.length && t[0] === 2) wasm.ble_complete_gap_disconnect(t[1], 19);
+    }
+    // Drain stale events. Room MUST be re-written before EVERY drain:
+    // evt_get overwrites *len with the drained event's size (silicon
+    // contract), so a one-time room write starves the second drain
+    // (DATA_SIZE without popping — proven: the drain loop spun 64x on
+    // the same 0x36 while q stayed 1, and run2 then read the stale
+    // DISCONNECTED 0x11 instead of its CONNECTED).
+    // Loader is the SHORT 5-halfword form (3 ldr + svc + b.) with
+    // step(8): the svc is instruction 3. The 10-halfword 8-reg form
+    // needs step(12) — with step(8) the svc never executes, rc reads
+    // stale r0, and the drain spins 64 no-ops while q stays 1 (proven
+    // this turn: Node repro_loader_len.mjs LONG+step8 rc=536883200 q=1
+    // vs LONG+step12 rc=0 q=0; the 64x `rc0q1id0x36` page trace was the
+    // same class). Same class as the room bug.
+    {
+      c.reset_cpu(0x20020000, 0x20000001);
+      c.set_deliver_irqs(true);
+      for (let i = 0; i < 64; i++) {
+        c.mem_write(0x20000000, [0x08, 0x48, 0x09, 0x49, 0x09, 0x4A, 0x61, 0xdf, 0xfe, 0xe7]);
+        const b = new Uint8Array(new Uint32Array([0x20003000, 0x20003ff0, 0, 0]).buffer);
+        c.mem_write(0x20000024, [...b]);
+        c.mem_write(0x20003ff0, [128, 0]); // fresh room every drain (see above)
+        c.step(8);
+        if (c.fault_pc() !== 0xFFFFFFFF) break;
+        if ((c.get_regs()[0] >>> 0) === 5) break; // NOT_FOUND: queue empty
+      }
+    }
     const steps = [];
     const svc = (num, r0 = 0, r1 = 0, r2 = 0) => {
       c.reset_cpu(0x20020000, 0x20000001);
@@ -403,10 +456,30 @@
     c.mem_write(0x20003ff0, [128, 0]);
     if (svc(0x61, 0x20003000, 0x20003ff0) !== 0) return 'evt_get FAIL';
     const evt = [...c.mem_read(0x20003000, 32)];
-    if (le16(evt, 0) !== 0x10 || evt[4 + 16] !== 2) return 'CONNECTED FAIL';
+    if (le16(evt, 0) !== 0x10 || evt[4 + 16] !== 2) {
+      return 'CONNECTED FAIL id=0x' + le16(evt, 0).toString(16) + ' evt20=' + evt[20]
+        + ' q=' + wasm.ble_queue_len() + ' handles=' + [...wasm.ble_conn_handles()].join(',');
+    }
     steps.push('connected');
-    if (svc(0x96, 1, 0x13, 0) !== 0) return 'read FAIL';
-    wasm.ble_complete_gattc_read(1, 0x13, 0, [87]);
+    // Use THIS run's handle from the CONNECTED event (links persist
+    // across runs by design, so handles increment: run1 = 1, run2 = 2.
+    // Hardcoding 1 reads INVALID_STATE on every repeat — proven: the
+    // second face run failed its read with rc 8 on conn 1 while its
+    // own link was conn 2. Same rule the mock follows: never hardcode.)
+    const conn = le16(evt, 4);
+    if (svc(0x96, conn, 0x13, 0) !== 0) return 'read FAIL';
+    // Drain the read's staged GattcRead job BEFORE completing it: the
+    // js run's take slot still holds its own read job here (proven:
+    // take=[0,1,19,0] right after the read SVC), and completing posts
+    // the READ_RSP the final drain expects. Without this take the slot
+    // keeps the stale read across the run boundary (q=1 leftover), and
+    // the next run's CONNECT take eats the stale tag-0 instead of its
+    // own GapConnect — the js-then-ts CONNECTED race (id 0x11).
+    {
+      const rt = wasm.ble_take_job();
+      if (!rt.length || rt[0] !== 0) return 'read-take FAIL tag=' + (rt.length ? rt[0] : 'empty');
+    }
+    wasm.ble_complete_gattc_read(conn, 0x13, 0, [87]);
     c.mem_write(0x20003ff0, [128, 0]);
     if (svc(0x61, 0x20003000, 0x20003ff0) !== 0) return 'evt_get read FAIL';
     const rr = [...c.mem_read(0x20003000, 17)];
