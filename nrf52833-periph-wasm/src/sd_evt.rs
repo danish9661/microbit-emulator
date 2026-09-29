@@ -18,11 +18,14 @@
 //! radio / timeslot events in phase 1 — HFCLKSTARTED (id 0) is owned by
 //! the CLOCK model and is never queued here.
 //!
-//! Numbers: SOC_SVC_BASE 0x20 → ENABLE 16, EVT_GET 82; NRF_SOC_EVTS
-//! FLASH_OPERATION_SUCCESS 2, FLASH_OPERATION_ERROR 3 (S132 headers;
-//! S140-stable; MPY/MC binaries contain zero `DF52` sites, so this hook
-//! is dead code for shipped firmware — it exists for the demo/BLE path
-//! that DOES stage flash ops through the SD, plan P24–P26).
+//! Numbers: SD-manager SVCs live at SDM_SVC_BASE 0x10 (ENABLE 16,
+//! DISABLE 17, IS_ENABLED 18 — callable with the SD DISABLED, which is
+//! exactly why firmware probes it); SoC SVCs at SOC_SVC_BASE 0x20
+//! (EVT_GET 82; NRF_SOC_EVTS FLASH_OPERATION_SUCCESS 2,
+//! FLASH_OPERATION_ERROR 3; S132 headers; S140-stable; MPY/MC binaries
+//! contain zero `DF52` sites, so the EVT_GET hook is dead code for
+//! shipped firmware — it exists for the demo/BLE path that DOES stage
+//! flash ops through the SD, plan P24–P26).
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -31,6 +34,9 @@ use crate::cpu::mem::Memory;
 
 /// SoC SVC numbers (SOC_SVC_BASE 0x20 + enum position).
 pub const SVC_SOC_ENABLE: u8 = 16;
+/// SD-manager query (SDM_SVC_BASE 0x10 + 2): valid with the SD
+/// DISABLED — the probe both firmwares use before touching the SD.
+pub const SVC_SDM_IS_ENABLED: u8 = 18;
 pub const SVC_SOC_EVT_GET: u8 = 82;
 
 /// SoC event ids (NRF_SOC_EVTS from 0).
@@ -104,6 +110,31 @@ pub fn queue_len() -> usize {
     with_sd_evt(|s| s.queue.len())
 }
 
+/// Handle `sd_softdevice_is_enabled` (SVC 18): r0 = app u8-out address.
+/// Silicon answers WITHOUT entering the SD (this SVC is valid with the
+/// SD disabled — S140 `nrf_sdm.h`: "@param[out] p_softdevice_enabled.
+/// If the SoftDevice is enabled: 1 else 0", retval NRF_SUCCESS). The
+/// model answers the same from the SD-enable flag (set by observed SVC
+/// 16): with the SD disabled (both shipped firmwares build BLE out and
+/// never call SVC 16 — verified: two SVC-16 sites each, never reached
+/// on the direct-app boot path) it writes 0 and returns SUCCESS, so the
+/// firmware's SD-probe branch reads the honest state instead of
+/// faulting into an unmapped SD vector (the MakeCode direct-app boot
+/// parked at the SVC18 loop, retpc 0x27ed2, before this hook existed).
+/// Non-RAM r0 is INVALID_PARAM on silicon; the model returns 7.
+pub fn handle_is_enabled(mem: &mut dyn Memory, out: u32) -> Option<u32> {
+    fn is_ram(addr: u32) -> bool {
+        (0x2000_0000..0x2002_0000).contains(&addr)
+    }
+    with_sd_evt(|s| {
+        if !is_ram(out) {
+            return Some(7); // NRF_ERROR_INVALID_PARAM
+        }
+        mem.write8(out, s.sd_enabled as u8);
+        Some(SOC_SUCCESS)
+    })
+}
+
 /// Handle `sd_evt_get` (SVC 82): r0 = app word-buffer address (may be
 /// any RAM; 0 = length-query convention is NOT part of the SoC
 /// contract — a NULL buffer with events pending is INVALID_PARAM on
@@ -170,5 +201,25 @@ mod tests {
         assert_eq!(queue_len(), 0);
         post_flash_op(true);
         assert_eq!(queue_len(), 0, "disarmed again");
+    }
+
+    #[test]
+    fn is_enabled_reports_sd_state() {
+        // SVC 18 = SD_SOFTDEVICE_IS_ENABLED (SDM_SVC_BASE 0x10 + 2):
+        // valid with the SD DISABLED (S140 nrf_sdm.h). Direct-app boots
+        // skip the MBR→SD handoff (SVC 16 never runs), so the firmware
+        // SD probe (MakeCode retpc 0x27ed2) must read 0 + SUCCESS, not
+        // fault into the SD vector. Enabled path reads 1.
+        use crate::system::lock_boot;
+        let _g = lock_boot();
+        reset_sd_evt();
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        assert_eq!(handle_is_enabled(&mut mem, 0x20001000), Some(SOC_SUCCESS));
+        assert_eq!(mem.read8(0x20001000), 0, "disabled reads 0");
+        note_sd_enable();
+        assert_eq!(handle_is_enabled(&mut mem, 0x20001000), Some(SOC_SUCCESS));
+        assert_eq!(mem.read8(0x20001000), 1, "enabled reads 1");
+        assert_eq!(handle_is_enabled(&mut mem, 0x1000), Some(7), "non-RAM = INVALID_PARAM");
+        reset_sd_evt();
     }
 }

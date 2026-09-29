@@ -3640,6 +3640,7 @@ Firmware proof: `blinky/uarte1_nrf.s/.bin` ENDRX poll moved 0x4002810C->0x400281
 Driver: RXDRDY-paced drip restored in `demo/index.html` + `run_mpy_repl.mjs`
 (no-gate drip overran RXD, 2 lost bytes/line — 'microbit' arrived as 'micrt').
 Suite 238 green (= 117 cpu/21 proofs + 100 periph + 14 sd_ble + 3 sd_evt + 4 smp_crypto).
+(P144: 239 with the SVC 18 `is_enabled_reports_sd_state` test — sd_evt goes 3→4.)
 MPY REPL: banner 105B + print(1+2)->3, zero faults. MPY namespaces: module/attr
 reads verified (`microbit` module, `microbit.display` MicroBitDisplay, bound methods);
 dotted method CALLS with args raise firmware-side int-not-callable (needs CODAL-DAL
@@ -3771,3 +3772,45 @@ TIMER4 CC0 still reset `53333`... actually reads nonzero reset value,
 never armed by firmware), zero faults. Identical to every P92–P106
 walk: scroll fiber never created, display path untouched. Stays
 PARKED per §6.4; reopen only with a faulting config (none exists).
+
+## 120. P144 SVC18 + MPY radio TX + MakeCode gate correction (2026-09-29)
+
+SVC 18 (`sd_softdevice_is_enabled`, SDM_SVC_BASE 0x10 + 2): S140
+`nrf_sdm.h` ground truth — valid with the SD DISABLED ("@param[out]
+p_softdevice_enabled. If the SoftDevice is enabled: 1 else 0", retval
+NRF_SUCCESS). Both shipped firmwares carry two SVC-18 sites each
+(MPY `0x4db32`/`0x4ebf0`, MC `0x258a4`/`0x27ed0`) and two SVC-16 sites
+each (never reached on the direct-app boot path — the MBR→SD handoff
+is skipped by construction), and zero SVC-82 sites each (re-scanned
+this turn). Model: `sd_evt.rs` gains `SVC_SDM_IS_ENABLED` +
+`handle_is_enabled` (answers 0 + SUCCESS from the enable flag when
+disabled, 1 when enabled, 7/INVALID_PARAM on non-RAM r0) + thumb.rs
+hook (same skip-SD pattern as the EVT_GET hook) + native test
+`is_enabled_reports_sd_state`. Suite 239 green (was 238: 117 cpu +
+100 periph + 4 sd_evt + 14 sd_ble + 4 smp_crypto); both pkgs rebuilt
+(`demo/pkg` committed, `pkg-test-handshake` gitignored).
+MPY radio TX (stock hex DOCUMENTED API): new `test:mpy-radio`
+(`run_mpy_radio.mjs`, in the `test:wasm` chain, 128 ok total):
+`from radio import *` + `on()` + `send('ping')` all return cleanly,
+`send` stages exactly one bare-metal RADIO TX job (take/complete),
+zero faults. RX leg (`receive()`) parked: IRQ handler runs (ipsr==17)
+and consumes the completion (END clears) but the packet never reaches
+the MPY RX queue — producer/consumer handoff mismatch, no faulting
+config, no model change.
+MakeCode gate CORRECTION (bench hex re-verified this turn, same park):
+WITHDRAW the "second table `0x20002358`" theory — that table holds only
+the one-shot init guard `0x207e5`, already consumed by the first
+`main()` loop pass; `0x42170` returns (`0x42192 pop {r4,r5,r6,pc}`)
+before any second dispatch, so `0x42148`/`pxt::start()`/`exec_binary`
+are provably unreachable on this path. The TRUE gate is one level
+earlier: CODAL init tail `post1` (`0x2504c`: `bl 0x210d8` →
+`bl 0x24bac`) never returns — its subtree runs the SVC18 probe
+(`0x27ed0`, now answered 0 + SUCCESS, no fault) then parks the main
+fiber in event-waiter `0x2e5f4` (event `61`/`250`, lock `0x20004378`),
+which goes straight to scheduler idle (`0x20002078` @+959 steps,
+fault-free). `post1`'s return (`0x2086e`), the dispatcher, the exec
+entry (`0x24b24`), and user section (`0x47000`+) get 0 hits in 1M
+steps on BOTH the `mc/built` hex and the vendored bench hex. NEXT:
+name the event the waiter blocks on and which producer should fire it.
+STATUS §5 MakeCode bullet rewritten with this chain; §3/§7/§8 counts
+synced (239, mpy-radio, SVC 18).

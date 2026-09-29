@@ -910,10 +910,12 @@ emu.init();</textarea>
   // MakeCode direct-app preset: vendored demo/firmware/mbcodal-binary.hex
   // (copy of mc/built/mbcodal-binary.hex, same reason as above:
   // ../mc does not exist under the demo/ site root).
-  // (basic.showString("A"), S140 + CODAL app at 0x1C000) through the
+  // (basic.showLeds smiley, S140 + CODAL app at 0x1C000) through the
   // same staged path as a dropped file; Run continues into the
   // direct-app boot (same recipe as MicroPython). Boots to scheduler
-  // idle; display content parks firmware-side pre-scroll.
+  // idle; the user program never runs (CODAL init tail post1 0x2504c
+  // never returns — event-wait 61/250 parks the main fiber, idle @+959
+  // steps; see STATUS §5). Matrix stays dark, zero faults.
   async function bootPresetMakeCode() {
     status.textContent = 'loading built-in MakeCode…';
     try {
@@ -1003,14 +1005,15 @@ emu.init();</textarea>
     appBoot = { sp, pc };
     uartBox.value = '';
     status.textContent = label === 'MakeCode'
-      ? `${label} app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}): scheduler-idle, no UART output by design — the scroll fiber never starts (see Docs)`
+      ? `${label} app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}): scheduler-idle, no UART output by design — the user program never runs (CODAL init parks the main fiber; see Docs)`
       : `${label} app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}), banner follows`;
   }
   // MakeCode direct-app boot: same recipe as MicroPython (S140 +
   // CODAL app at 0x1C000, MBR params hand-installed). Boots to
-  // scheduler idle (display content parks firmware-side pre-scroll —
-  // STATUS §6.4): TIMER4/DIR/matrix prove init ran, scroll fiber not
-  // yet created. Same path the native probes use.
+  // scheduler idle (user program never runs — CODAL init tail post1
+  // 0x2504c never returns, event 61/250 parks the main fiber; see
+  // STATUS §5): TIMER4/DIR/matrix prove init ran, user fiber never
+  // created. Same path the native probes use.
   function bootMakeCodeApp() {
     bootDirectApp('MakeCode');
   }

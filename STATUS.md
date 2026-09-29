@@ -67,7 +67,7 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 238 green (`cargo test`)
+## 3. Tests — 239 green (`cargo test`)
 
 - 117 cpu (`src/cpu/tests.rs`: 117 listed = 21 GCC-built firmware
   proofs incl. `matrix_nrf` + handshake/marker/2nd-run checks —
@@ -76,7 +76,7 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   `i2s_nrf`, `wdt_nrf`, `nfct_nrf`, `ble_conformance.c`,
   `c_ble_face.bin`, `ble_cpp_face.cpp`, `ble_pairing_fw.c`, `ble_roles_fw.c`, `uarte1_nrf`, `spim23_nrf`,
   `sd_evt_nrf`, `matrix_nrf`, +2nd-run reset-state checks each).
-- 100 peripherals + 3 sd_evt + 14 sd_ble + 4 smp_crypto unit tests (register handshake,
+- 100 peripherals + 4 sd_evt + 14 sd_ble + 4 smp_crypto unit tests (register handshake,
   SHORTS/NACK/OVERRUN/CAPTURE, FIPS-197, reboot latch, TXSTOPPED,
   SPIM RXD MISO, GPIO CNF→DIR, UARTE TX STARTTX-snapshot,
   TWIM shifted-ADDR match, SCB AIRCR SYSRESETREQ,
@@ -89,12 +89,13 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   write path, radio link-budget RSSI, +P120 SC-gated indication,
   scan/adv slot + whitelist arbitration, +P122 C++ face, +P124 radio CRC/whiten/interference air, ACL read-gate, S132 NOT_SUPPORTED range rule,
   +P132 OpenHW read APIs (`gpio_read_dir` PIN_CNF.DIR bit + `matrix_state()` 25B row-major pixels, `openhw_matrix_read_path` test) + take/complete `try_borrow_mut` hardening (P108 family: comp/ecb/aar/i2s/nfct/pdm/qdec/qspi/radio/saadc/temp/twim/usbd),
-  +P134 UARTE RX (ENDRX at SVD 0x110, was 0x10C — MPY ISR clear never landed; SHORTS ENDRX_STARTRX/STOPRX model + `shorts_endrx_startrx_rearms_receiver` test) + UARTE TX snapshot keyed by TXD.PTR + STOPTX-preserve (`tx_snapshot_fifo_preserves_per_transfer_order`, `stoptx_preserves_queued_snapshot`)).
+  +P134 UARTE RX (ENDRX at SVD 0x110, was 0x10C — MPY ISR clear never landed; SHORTS ENDRX_STARTRX/STOPRX model + `shorts_endrx_startrx_rearms_receiver` test) + UARTE TX snapshot keyed by TXD.PTR + STOPTX-preserve (`tx_snapshot_fifo_preserves_per_transfer_order`, `stoptx_preserves_queued_snapshot`))
+  +P144 SVC 18 `sd_softdevice_is_enabled` (SDM_SVC_BASE 0x10 + 2, valid with the SD DISABLED per S140 `nrf_sdm.h`): model answers from the SD-enable flag (writes 0 + SUCCESS when disabled) instead of faulting into the SD vector; `is_enabled_reports_sd_state` test (disabled→0, enabled→1, non-RAM→INVALID_PARAM 7)).
 - Parallel-test flake (CLOSED P108; open pre-existing before that):
   stock multi-threaded `cargo test` intermittently failed sd_ble/MWU
   tests with `RefCell already borrowed` at `peripherals/mod.rs:457` /
   `mwu_nrf.rs:237` (~1/4 runs pre-P105; ~2/15 post-P105;
-   single-threaded `-- --test-threads=1` always 238/238). Two
+   single-threaded `-- --test-threads=1` always 239/239). Two
   mechanisms, separated by evidence (P105+P108):
   (a) DETERMINISTIC order-dependence (fixed P105): the MPU ENABLE +
   programmed regions live in the INSTALLED model and outlive the test
@@ -187,6 +188,17 @@ beyond proof-level driving remain future work.
   transact; fixed via `norm7_addr` + request-echo stub). REPL exec
   (`print(1+2)` → `3`) verified end to end (P116+P117 native + bench,
   P123 committed proof `run_mpy_repl.mjs`, re-green this tree).
+  Radio (stock hex DOCUMENTED API, P144 committed proof
+  `run_mpy_radio.mjs`, `test:mpy-radio` in the `test:wasm` chain):
+  `from radio import *` + `on()` + `send('ping')` all return cleanly and
+  `send` stages exactly one bare-metal RADIO TX job (take/complete),
+  zero faults. RX leg (`receive()`) parked: the MPY IRQ handler runs
+  (ipsr==17 observed) and consumes the completion, but the packet never
+  reaches the MPY RX queue on this pump — producer/consumer mismatch
+  (model delivers decoded wire bytes to PACKETPTR RAM; MPY's
+  `microbit_radio_irq_handler` copies `pkt[0]`-gated bytes into its own
+  `radio_buf` queue and something in that handoff drops it). No model
+  change without a faulting config; reopen with one.
   P135 REPL grammar map (2026-09-23, fresh pkg, RXDRDY-paced drip,
   0 overruns, zero faults): builtins/slices/operators all execute
   (`len([1,2,3])`→`3`, `str(42)`→`'42'`, `print('hi')`→`hi`,
@@ -215,20 +227,40 @@ beyond proof-level driving remain future work.
   RX/TX IRQ paths, TX pacing, drip, parts, UICR, image, MBR pre-roll
   all excluded. Prime suspect: audio/speaker tick path (pin-toggle
   virtuals @`0x28744`, P0.00) into an MP call with no source.
-- MakeCode (`basic.showString("A")`, rebuilt 2026-09-12 with makecode
+- MakeCode (`basic.showLeds` smiley, rebuilt 2026-09-29 with makecode
   1.3.6, recipe in plan P19; project in `mc/`, gitignored): boots to
   scheduler idle (decoded as the normal CODAL idle fiber, not a
-  hang), but the display never enables. P135 re-verified on the fresh
-  pkg (2026-09-23): parks at `0x37afb` (WFE, lr=`0x2e0f5`), runQ holds
-  exactly ONE fiber (`0x2000621c`), event-wait queue EMPTY — the scroll
-  fiber is never CREATED, so no strobe timer / DIR / photons exist to
-  drive (TIMER4 runs when sampled via CAPTURE, T4 INTEN=`0x10000`,
-  DIR0=`0x1788000` from init, matrix 0 lit). Manually clearing the
-  wait-flag byte wakes to `0x2000207b`, proving the scheduler (not the
-  model) is the gate. Older notes (TIMER4 COUNTER 0 over 620M, fiber
-  walk NEXT) are superseded by the queue walk: there is no waiter to
-  walk to. Firmware-side, parked per the §6.4 rule (no faulting config
-  exists).
+  hang), but the user program never runs. Root cause (2026-09-29,
+  objdump + live single-step trace): the CODAL init tail `post1`
+  (`0x2504c`: `bl 0x210d8` → `bl 0x24bac`, then `movs r0,#0; pop
+  {r3,pc}`) never returns — its subtree (`0x210d8` → `0x1c5d0` →
+  `0x2b5dc` → `0x2bdbc` → `0x28048` → SVC18-probe `0x27ef8` →
+  `0x430a8` → `0x27f0c` → `0x27ed0` → `0x25e84` → `0x2e530` →
+  `0x25e40` → `0x25d5c` → `0x27354` → `0x272a8` → `0x34450` →
+  `0x34404` → `0x2e6f0` → `0x2e654` → irq-off `0x37ae8` → irq-on
+  `0x37acc` → `0x34854` → … → `0x3575c` → `0x2e99c`) parks the main
+  fiber in the event-waiter `0x2e5f4` (event-wait `61`/`250`, lock
+  `0x20004378`, count `0x2000437c`, table `0x20003b2c`), and from there
+  the fiber goes straight to scheduler idle (`0x20002078` @+959 steps
+  after `post1` entry, fault-free). `post1`'s own return (`0x2086e`),
+  the pxt `main()` second-table dispatcher (`0x42148`), the pxt
+  `exec_binary` entry (`0x24b24`, version check `0x4210` at `0x433c0`),
+  and the user-code section (`0x47000`+, `_main` + smiley literal at
+  `0x4788e`) are NEVER reached — 0 hits in 1M steps. Corrected 2026-09-29:
+  the "second table" at `0x20002358` theory is WITHDRAWN (that table holds
+  only the one-shot init guard `0x207e5`, already consumed by the FIRST
+  `main()` loop pass; `0x42170` returns before any second dispatch —
+  `0x42192 pop {r4,r5,r6,pc}` — so `0x42148` is provably unreachable on
+  this path and `pxt::start()`/`exec_binary` are never called because the
+  C-runtime never gets past CODAL init). TIMER4/DIR/matrix prove init ran
+  (T4 INTEN=`0x10000`, CC0=`53333` reset value, DIR0=`0x1788000`);
+  matrix 0 lit; zero faults throughout. NEXT: name the event the
+  `0x2e5f4` waiter blocks on (`61`/`250`: id/value at `0x200043a8`) and
+  which producer should fire it. Firmware-side until a faulting config
+  exists (§6.4 rule); reopen only with one. (Supersedes the withdrawn
+  "scroll fiber never created" framing: the scroll fiber is never
+  created BECAUSE the user fiber that would create it is never created
+  BECAUSE CODAL init never finishes.)
 - Espruino 2v29: boots (needed the CoreSight PID map); console is
   P0.06 bit-bang serial, nothing transmitted in early windows.
 - Bootloader chain (P22–P23 + Sept-12 anchor): entry decoded at BL
@@ -487,9 +519,9 @@ beyond proof-level driving remain future work.
      post_lesc_dhkey_request/enabled/queue_len/batt_level/conn_handles/
      conn_sec/tx_power/adv_state/post_sec_request/post_timeouts/
      post_user_mem/post_rw_authorize/post_sys_attr/post_sc_confirm/
-     complete_service_changed` exports + SMP toolbox (`ble_lesc_dhkey`,
-     `ble_lesc_public_key`, `ble_smp_f4/f5/f6/g2`, P125); 14 native tests + SVC-hook proof
-      in cpu/tests.rs (238 green); headless `MockBleSvc` executes REAL SVC
+      complete_service_changed` exports + SMP toolbox (`ble_lesc_dhkey`,
+      `ble_lesc_public_key`, `ble_smp_f4/f5/f6/g2`, P125); 14 native tests + SVC-hook proof
+       in cpu/tests.rs (239 green); headless `MockBleSvc` executes REAL SVC
      bytes on a WasmCpu end to end (enable→table→connect→disc×6→read→
      write→L2CAP→pairing→peer-pairing(passkey)→HVX-indicate→
      service-changed→ADV/SCAN roles→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
@@ -529,7 +561,7 @@ beyond proof-level driving remain future work.
 
 | Item | Owner if ever revisited | Why it stays out |
 |---|---|---|
-| SoftDevice event synthesis (full BLE pump) | BLE-face owner (new workstream) | Phase-1 flash-only CLOSED P114 (`sd_evt.rs`, SVC 16/82, NVMC-posted id 2/3, `sd_evt_nrf.s/.bin` proof); zero `svc 82` callers in MPY/MC so no shipped firmware observes it — full BLE/timeslot event synthesis stays out (P32/P51). |
+| SoftDevice event synthesis (full BLE pump) | BLE-face owner (new workstream) | Phase-1 flash-only CLOSED P114 (`sd_evt.rs`, SVC 16/82, NVMC-posted id 2/3, `sd_evt_nrf.s/.bin` proof); zero `svc 82` callers in MPY/MC so no shipped firmware observes it — full BLE/timeslot event synthesis stays out (P32/P51). P144 adds the SVC 18 `sd_softdevice_is_enabled` query (SDM_SVC_BASE 0x10 + 2, valid with the SD disabled): both firmwares probe it before touching the SD, the model answers 0 + SUCCESS from the enable flag instead of faulting into the SD vector. |
 | STM32 / UNO R4 / M0+ / DAPLink targets | Nobody (deleted) | Only comment references remain; Nordic TASKS/EVENTS/SHORTS has zero register overlap. |
 | Third-party-framework boot quirks (Arduino Primo nRF52832 bootloader) | Framework owner | Needs an nRF52832 bootloader image, not an 833 model gap. |
 | Lazy FPU stacking | — (closed P114: was already implemented; stale comment fixed) | `cpu/thumb.rs` FPU hook + `cpu/mod.rs` take/return reserve/complete/pop; `fpu_lazy_*` + `fpu_eager_*` green. |
@@ -539,13 +571,13 @@ beyond proof-level driving remain future work.
 | ACL/SPU protection | ACL owner (done: model + enforcement) / SPU n/a | ACL modeled + write-enforced + read-enforced in mem.rs (MWU-patterned armed flag, no cpu/ edits); borrows via try_borrow_mut (no RefCell panic). No SPU exists on nRF52833 (SVD-verified) — nothing to model. |
 | Publish to npm | Release owner | Blocked: registry 401, no credentials in this environment. |
 | BLE bond store / TX-flow / peripheral-role / param enforcement | — (closed P114: bond store + TX_COMPLETE + dial-in CONNECTED + param-update event) | Keys stored per peer (hit/miss/delete), TX tokens refill on air drain, PERIPH role byte, update completion posted; bridge `bond_keys` leg persists air keys. Crypto itself stays driver-side by design. |
-| sd_evt flash transport | — (closed P114 phase 1: `sd_evt.rs`, SVC 16/82) | NVMC complete posts id 2/3 while SD enabled; `sd_evt_get` answers from model queue else falls through; firmware proof `sd_evt_nrf.s/.bin`. |
+| sd_evt flash transport | — (closed P114 phase 1: `sd_evt.rs`, SVC 16/82; P144 adds the SVC 18 `sd_softdevice_is_enabled` query) | NVMC complete posts id 2/3 while SD enabled; `sd_evt_get` answers from model queue else falls through; firmware proof `sd_evt_nrf.s/.bin`. |
 
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 238 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
-npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY/JS/PY/TS-idiom faces + REPL, all vs the BUILT pkg
+cargo test -- --test-threads=1    # 239 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
+npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY/JS/PY/TS-idiom faces + REPL + MPY-radio TX, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)
 python3 -m http.server 8080 --directory demo &  # bench

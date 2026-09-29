@@ -51,8 +51,8 @@ cpu.set_deliver_irqs(true);
 ## Verify
 
 ```bash
-cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # 238 green
-npm run test:wasm --prefix demo      # 124 checks: handshake 18/18, smoke, MPY/JS/PY/TS faces, REPL, GPIO examples
+cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # 239 green
+npm run test:wasm --prefix demo      # 128 checks: handshake 18/18, smoke, MPY/JS/PY/TS faces, REPL, MPY-radio TX, GPIO examples
 python3 tools/ble_air_bridge.py --port 18771 &
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771   # 42/42 over air
 python3 -m http.server 8080 --directory demo &

@@ -1466,6 +1466,13 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut dyn Memory, op: u16, pc
         if svc == crate::sd_evt::SVC_SOC_ENABLE {
             crate::sd_evt::note_sd_enable();
         }
+        if svc == crate::sd_evt::SVC_SDM_IS_ENABLED {
+            if let Some(r0) = crate::sd_evt::handle_is_enabled(mem, cpu.regs.r[0]) {
+                cpu.regs.r[0] = r0;
+                adv(cpu, pc, 2);
+                return cpu.fault.is_none();
+            }
+        }
         adv(cpu, pc, 2);
         cpu.raise_sync(sys, mem, -5);
         return cpu.fault.is_none();

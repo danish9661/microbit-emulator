@@ -4,13 +4,13 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-25, tree CLEAN at P139 — final gate green this turn)
+## 0. Snapshot (2026-09-29, P144 in tree — SVC18 + mpy-radio + MC gate correction)
 
-- HEAD: `37f6400` "P139 JS+TS faces live on the bench (in-page SVC demo, scratch core, loopback)".
+- HEAD: `86f5329` "P143 bench part demos + publish workflow fix (browser 11/11, 238 green)".
 - Branch: `master`, in sync with `origin/master`.
-- Suite: **238 single green** + test:wasm 124 ok (incl. js/ts GPIO examples) + E2E 42/42 over air + browser 16/16, all re-verified this turn.
-- Working tree: CLEAN except `?? .openchamber/` (never commit).
-- Big news: **handshake SIGNED WRITE_RSP path FIXED** — the mock asserted the op echo at `body[2]` (conn/status/err zone), but the real wire puts the handle at `body[6..8]` and the op at `body[8]` (see `write_rsp_payload`; native test asserts `0x2000300C == op`). Mock now checks `body[8] === 0x03`. Rust side verified: `complete_gattc_write(conn, handle, op, data)` echoes op/bytes; `resolveJob()` tag-8 passes `(bj[1], bj[3], bj[2], take_data)` in the right order. Full matrix re-green on this tree (see §9).
+- Suite: **239 single green** (SVC 18 `is_enabled_reports_sd_state` new) + test:wasm 128 ok (incl. new `test:mpy-radio`) + E2E 42/42 over air + browser 16/16, all re-verified this turn.
+- Working tree: P144 batch (model + wasm pkg + radio proof + docs).
+- Big news: **SVC 18 answered + MPY radio TX proven + MakeCode gate corrected** — `sd_softdevice_is_enabled` (SDM_SVC_BASE 0x10+2, valid SD-disabled per S140 `nrf_sdm.h`) now answers 0 + SUCCESS from the enable flag instead of faulting into the SD vector; stock-hex `from radio import *` + `on()` + `send('ping')` stages exactly one bare-metal RADIO TX job (new `test:mpy-radio`); MakeCode "second table" theory WITHDRAWN — the true gate is CODAL init tail `post1` (`0x2504c`) never returning (idle @+959, `0x2086e`/`0x42148`/`0x24b24`/user all 0 hits in 1M steps on both hexes).
 
 ## 1. What we did so far (this recovery session)
 
@@ -91,7 +91,7 @@ session, not a real gap:
 ## 6. Verify matrix (run in order, stop on red)
 
 ```
-cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 238 green
+cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 239 green
 cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml --lib -- --list 2>/dev/null | grep -c ": test"
 node demo/parts/handshake.mjs          # 18/18 (rebuild via npm run build:handshake --prefix demo after Rust changes)
 npm run test:parts --prefix demo ; npm run test:mpy --prefix demo
@@ -142,3 +142,4 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
 - 2026-09-25 (P138 COMMITTED `c72c979`): bench redesign (silkscreen theme, loader grid + staged line, bus tags) + matrix mask fix (0xD8988000 → 0xD1688800, strobing "A", persistence render) + JS/TS GPIO examples in test:wasm.
 - 2026-09-25 (P139 COMMITTED `37f6400`): JS+TS SVC faces live on the bench (in-page panel, scratch core, loopback pass).
 - 2026-09-25 (P140 full final gate, this turn): cargo 238 + test:wasm 124 ok + E2E 42/42 over air + browser 16/16, zero page errors. Doc sync only; no model change.
+- 2026-09-29 (P144 in tree, UNCOMMITTED): SVC 18 `sd_softdevice_is_enabled` + `test:mpy-radio` + MakeCode gate correction + doc sync. Suite 239 single green; test:wasm 128 ok; bench hex re-verified (MPY banner/REPL/radio-on, MC same park). NEXT: commit per approval.
