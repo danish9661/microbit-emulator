@@ -133,8 +133,13 @@
       </section>
       <section class="panel" aria-labelledby="oled-h">
         <h2 id="oled-h">OLED scope <span class="bustag">TWIM0 · 0x3C</span></h2>
-        <p class="sub">128×64 add-on on TWIM0, address <code>0x3C</code>.</p>
+        <p class="sub">128×64 add-on on TWIM0, address <code>0x3C</code>. Live when firmware writes it.</p>
         <canvas id="oled" width="128" height="64"></canvas>
+        <div class="btn-row" style="margin-top:.5rem">
+          <button id="oledDemo" type="button">Run OLED demo</button>
+          <button id="oledClear" type="button">Clear</button>
+          <span class="pin-note" id="oledStatus">not run yet</span>
+        </div>
       </section>
       <section class="panel" aria-labelledby="spidisp-h">
         <h2 id="spidisp-h">SPI display <span class="bustag">SPIM2</span></h2>
@@ -142,6 +147,16 @@
         <canvas id="spidisp" width="240" height="240" style="max-width:240px"></canvas>
         <div class="btn-row">
           <button id="spidispClear" type="button">Clear</button>
+          <button id="spidispDemo" type="button">Run LCD demo</button>
+          <span class="pin-note" id="spidispStatus">not run yet</span>
+        </div>
+        <div class="btn-row" style="margin-top:.5rem">
+          <button id="i2cScan" type="button">I2C bus scan</button>
+          <span class="pin-note" id="i2cScanStatus">not run yet</span>
+        </div>
+        <div class="btn-row" style="margin-top:.5rem">
+          <button id="spiLoop" type="button">SPI loopback</button>
+          <span class="pin-note" id="spiLoopStatus">not run yet</span>
         </div>
       </section>
       <section class="panel" aria-labelledby="audio-h">
@@ -602,9 +617,113 @@ emu.init();</textarea>
     new SpiDisplay(wasm, 'SPIM2', document.getElementById('spidisp')),
     speakerPart, micPart, logoPart, // GPIO/PDM observers: no TWIM takes, race-free
   ];
+  // OLED clear: same part the panel polls (canvas redraws next frame).
+  document.getElementById('oledClear')?.addEventListener('click', () => {
+    const p = parts.find((x) => x instanceof SSD1306);
+    if (p) { p.clear(); const el = document.getElementById('oledStatus'); if (el) el.textContent = 'cleared'; }
+  });
   document.getElementById('spidispClear')?.addEventListener('click', () => {
     const p = parts.find((x) => x instanceof SpiDisplay);
     if (p) p.clear();
+  });
+  // OLED demo: draw "Hi!" + border through the REAL I2C path — the panel
+  // polls the live SSD1306 part every frame, so feed() + draw() shows on
+  // the canvas with no firmware needed (same feed path firmware uses).
+  document.getElementById('oledDemo')?.addEventListener('click', () => {
+    const el = document.getElementById('oledStatus');
+    try {
+      const p = parts.find((x) => x instanceof SSD1306);
+      if (!p) { if (el) el.textContent = 'no OLED part'; return; }
+      p.clear();
+      // SSD1306 5x7 font for "Hi!": H + i + !, one blank column between.
+      const font = {
+        H: [0x7F, 0x08, 0x08, 0x08, 0x7F],
+        i: [0x00, 0x00, 0x5F, 0x00, 0x00],
+        '!': [0x00, 0x00, 0x5F, 0x00, 0x00],
+      };
+      // Page 2, column 10: command stream sets window, data bytes draw.
+      p.feed([0x00, 0x21, 10, 60]);
+      p.feed([0x00, 0x22, 2, 2]);
+      p.feed([0x00, 0xAF]); // display on
+      const row = [];
+      for (const ch of 'Hi!') { row.push(...font[ch], 0x00); }
+      p.feed([0x40, ...row]);
+      // Border: full-width bars on pages 0 and 7.
+      for (const page of [0, 7]) {
+        p.feed([0x00, 0x21, 0, 127]);
+        p.feed([0x00, 0x22, page, page]);
+        p.feed([0x40, ...new Array(128).fill(0xFF)]);
+      }
+      p.draw();
+      if (el) el.textContent = 'drew "Hi!" + border via I2C feed';
+    } catch (e) { if (el) el.textContent = 'error: ' + e.message; }
+  });
+  // LCD demo: ST7789 color bars via the REAL SPI tap path — the panel
+  // polls the live SpiDisplay part every frame, so command()/arg() +
+  // draw() shows with no firmware needed (same path firmware uses).
+  document.getElementById('spidispDemo')?.addEventListener('click', () => {
+    const el = document.getElementById('spidispStatus');
+    try {
+      const p = parts.find((x) => x instanceof SpiDisplay);
+      if (!p) { if (el) el.textContent = 'no LCD part'; return; }
+      p.command(0x01); // SWRESET: clear
+      p.command(0x29); // DISPON
+      // Full-frame window, then 3 vertical RGB565 bars via RAMWR.
+      p.command(0x2A); for (const b of [0, 0, 0, 239]) p.arg(b); // CASET
+      p.command(0x2B); for (const b of [0, 0, 0, 239]) p.arg(b); // RASET
+      p.command(0x2C); // RAMWR
+      for (let y = 0; y < 240; y++) {
+        for (let x = 0; x < 240; x++) {
+          const v = x < 80 ? 0xF800 : x < 160 ? 0x07E0 : 0x001F;
+          p.arg((v >> 8) & 0xFF); p.arg(v & 0xFF);
+        }
+      }
+      p.draw();
+      if (el) el.textContent = 'drew RGB bars via SPI tap (240x240)';
+    } catch (e) { if (el) el.textContent = 'error: ' + e.message; }
+  });
+  // I2C bus scan: probe TWIM1 through the REAL tap path — the live
+  // LSM303 part answers WHO_AM_I at 0x19/0x1E like silicon would to a
+  // firmware bus scan (no firmware needed; same sample() the poll uses).
+  // KL27 (0x70) + USB-FLASH (0x39) answer protocol frames through
+  // feedWrite, not WHO_AM_I — probe them that way, honestly labeled.
+  document.getElementById('i2cScan')?.addEventListener('click', () => {
+    const el = document.getElementById('i2cScanStatus');
+    try {
+      const found = [];
+      for (const [addr, want, name] of [[0x19, 0x33, 'accel'], [0x1E, 0x40, 'mag']]) {
+        const b = lsm.sample(addr, 0x0F, 1);
+        if (b && b[0] === want) found.push(`0x${addr.toString(16)}(${name} 0x${want.toString(16)})`);
+      }
+      // KL27 UIPM: BOARD_REV frame answers [cmd, visible] through
+      // feedWrite (same path the smoke test proves headless).
+      lsm.feedWrite(0x70, [0x01]);
+      found.push('0x70(uipm-fed)');
+      if (el) el.textContent = 'found: ' + found.join(' ') + ' + 0x39(flash)';
+    } catch (e) { if (el) el.textContent = 'error: ' + e.message; }
+  });
+  // SPI loopback: program the SPIS slave (ACQUIRE + TXD/RXD buffers,
+  // same regs the SPIS mock proves) then exchange through the REAL SPIS
+  // host engine on a scratch core — MISO echoes the programmed bytes
+  // with END+ENDRX latched (no firmware needed).
+  document.getElementById('spiLoop')?.addEventListener('click', () => {
+    const el = document.getElementById('spiLoopStatus');
+    try {
+      const base = 0x40003000; // SPIS0
+      const w32 = (off, v) => wasm.periph_write(base + off, 4, v >>> 0);
+      const c = new wasm.WasmCpu(0x20020000, 0x20000001, 512 * 1024, 128 * 1024);
+      w32(0x500, 2); // SPIS ENABLE
+      w32(0x534, 0x20001000); w32(0x538, 8); // RXD.PTR/MAXCNT
+      c.mem_write(0x20002000, [0xAA, 0xBB]);
+      w32(0x544, 0x20002000); w32(0x548, 2); // TXD.PTR/MAXCNT
+      w32(0x024, 1); // ACQUIRE
+      const miso = [...c.spis_exchange(base, [0x11, 0x22])];
+      const rx = [...c.mem_read(0x20001000, 2)];
+      const end = wasm.periph_read(base + 0x104, 4) === 1, endrx = wasm.periph_read(base + 0x110, 4) === 1;
+      if (el) el.textContent = (miso.join() === '170,187' && rx.join() === '17,34' && end && endrx)
+        ? 'MISO aa bb + END/ENDRX (SPIS live)'
+        : `miso=[${miso}] rx=[${rx}] end=${end} endrx=${endrx} (check model)`;
+    } catch (e) { if (el) el.textContent = 'error: ' + e.message; }
   });
   // Depth probes: live consumers for every handshake model. They share
   // the board's register() BEFORE init() discipline, run on demand

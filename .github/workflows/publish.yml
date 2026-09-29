@@ -41,9 +41,11 @@ jobs:
       contents: write
       id-token: write
       packages: write
-    defaults:
-      run:
-        working-directory: demo
+    # NOTE: no defaults.run.working-directory here on purpose. It applies
+    # to EVERY run step including the first one, but `demo/` does not
+    # exist until the Checkout step creates the workspace — so the very
+    # first step failed with "No such file or directory". Each step that
+    # needs demo/ declares its own `working-directory: demo` below.
     steps:
       - name: Validate version format
         run: |
@@ -58,8 +60,9 @@ jobs:
           ref: ${{ inputs.branch }}
 
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@1.97.1
+        uses: dtolnay/rust-toolchain@stable
         with:
+          toolchain: 1.97.1
           targets: wasm32-unknown-unknown
 
       - name: Install wasm-pack
@@ -80,14 +83,17 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
+        working-directory: demo
         run: npm ci
 
       - name: Build WASM package
+        working-directory: demo
         env:
           RUSTFLAGS: "--remap-path-prefix=/home/runner=/build"
         run: npm run build:wasm
 
       - name: Set package version
+        working-directory: demo
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -103,12 +109,14 @@ jobs:
           fi
 
       - name: Run test suite
+        working-directory: demo
         run: npm run test:wasm
 
       - name: Run Rust suite
-        run: cargo test --manifest-path ../nrf52833-periph-wasm/Cargo.toml -- --test-threads=1
+        run: cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1
 
       - name: Publish to npmjs.org
+        working-directory: demo
         run: npm publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -120,6 +128,7 @@ jobs:
           registry-url: 'https://npm.pkg.github.com'
 
       - name: Publish to GitHub Packages
+        working-directory: demo
         run: |
           npm pkg set name="@danish9661/microbit-emu"
           npm publish
