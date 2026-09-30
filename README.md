@@ -35,8 +35,8 @@ cpu.set_deliver_irqs(true);
 
 - **Real firmware**: MicroPython v2.1.2 boots to a 105-byte banner and a
   live `>>>` REPL (`print(1+2)` → `3`, zero faults); MakeCode
-  `basic.showString` builds boot to scheduler idle (display content
-  parks firmware-side, pre-scroll — documented, not a model gap).
+  `basic.showLeds` builds boot to scheduler idle (the user program never
+  runs — CODAL init tail parks the main fiber, documented, not a model gap).
 - **21 GCC-built firmware proofs** (C, C++, BLE conformance/pairing/roles,
   matrix sweep, DMA, USB, sensors…) run natively in the Rust suite.
 - **BLE**: all 67 S132 SoftDevice SVC numbers answered (GAP/GATTC/GATTS/

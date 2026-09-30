@@ -4,12 +4,12 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-30, P145 in tree — vendored MC hex + label fix)
+## 0. Snapshot (2026-09-30, tree CLEAN at P145 — gates green this turn)
 
-- HEAD: `f1ea2bb` "P144 SVC18 is_enabled + MPY radio TX proof + MakeCode gate correction (239 green, 128 ok)".
+- HEAD: `81a33a2` "P145 vendored MakeCode hex refresh + label fix (shipped park 7/7, 239 green, 128 ok)".
 - Branch: `master`, in sync with `origin/master`.
 - Suite: **239 single green** + test:wasm 128 ok (incl. `test:mpy-radio`) + E2E 42/42 over air + browser 16/16, all re-verified this turn.
-- Working tree: P145 batch (vendored `demo/firmware/mbcodal-binary.hex` from `mc/built` + preset label `showLeds`).
+- Working tree: CLEAN.
 - Big news: **shipped artifact now matches source** — the stale Sept-23 `showString` vendored hex is replaced by the Sept-29 `showLeds` smiley build (1247 differing bytes, user section `0x47000`+); the bench hex parks identically (idle `0x2000207b`, 2 resets, zero faults, DIR0 `0x1788000`, T4 INTEN `0x10000`, matrix dark — 7/7 probe).
 
 ## 1. What we did so far (this recovery session)
@@ -145,3 +145,5 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
 - 2026-09-29 (P144 in tree, UNCOMMITTED): SVC 18 `sd_softdevice_is_enabled` + `test:mpy-radio` + MakeCode gate correction + doc sync. Suite 239 single green; test:wasm 128 ok; bench hex re-verified (MPY banner/REPL/radio-on, MC same park). NEXT: commit per approval.
 - 2026-09-29 (P144 COMMITTED `f1ea2bb`, 13 files): SVC18 model + rebuilt `demo/pkg` wasm + `test:mpy-radio` + MakeCode gate correction (post1-never-returns) + full doc sync (STATUS/plan/agent/doc/about/index/package/README/ble_lang). Suite 239 + test:wasm 128 ok.
 - 2026-09-30 (P145 in tree, UNCOMMITTED): vendored fresh `mc/built` smiley hex into `demo/firmware` (1247 differing bytes, user section `0x47000`+) + preset label `showString`→`showLeds`; shipped-artifact park probe 7/7 (idle, 2 resets, zero faults, DIR0/T4/matrix dark); stock limits re-verified (bluetooth 0 hits, SVC82 0 in both hexes; radio TX proof green). NEXT: commit per approval.
+- 2026-09-30 (P145 COMMITTED `81a33a2`, 4 files): vendored hex + label + agent/plan sync. Suite 239 + test:wasm 128 ok re-verified.
+- 2026-09-30 (P146 in tree, UNCOMMITTED): README `showString`→`showLeds` + agent snapshot to P145-committed state. NEXT: commit per approval.
