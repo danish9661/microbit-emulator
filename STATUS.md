@@ -239,10 +239,18 @@ beyond proof-level driving remain future work.
   `0x25e40` → `0x25d5c` → `0x27354` → `0x272a8` → `0x34450` →
   `0x34404` → `0x2e6f0` → `0x2e654` → irq-off `0x37ae8` → irq-on
   `0x37acc` → `0x34854` → … → `0x3575c` → `0x2e99c`) parks the main
-  fiber in the event-waiter `0x2e5f4` (event-wait `61`/`250`, lock
-  `0x20004378`, count `0x2000437c`, table `0x20003b2c`), and from there
-  the fiber goes straight to scheduler idle (`0x20002078` @+959 steps
-  after `post1` entry, fault-free). `post1`'s own return (`0x2086e`),
+  fiber in the event-waiter `0x2e5f4` and from there the fiber goes
+  straight to scheduler idle (`0x20002078` @+959 steps after `post1`
+  entry, fault-free). Waiter mechanics (2026-09-30, pure-CPU
+  single-step write-watch, no tick pumping): `0x2e5f4` stores the
+  tagged slot `0x80006d16` into `[0x200043a8]` at `0x2e618`, then the
+  queue-scan helper `0x2e654` rewrites the cell to the plain wait
+  code `0x3d` (61) at `0x2e6ee`; the PARKED value is `0x3d`, and no
+  `0x00FA003D` (250<<16|61) context word exists anywhere in RAM — the
+  earlier "`61`/`250`" label conflated a TRANSIENT store observed at
+  the waiter with the parked state. Producer of the wake event is
+  still unnamed (no DAL device-ID 61 exists; value 250 unmapped).
+  `post1`'s own return (`0x2086e`),
   the pxt `main()` second-table dispatcher (`0x42148`), the pxt
   `exec_binary` entry (`0x24b24`, version check `0x4210` at `0x433c0`),
   and the user-code section (`0x47000`+, `_main` + smiley literal at
@@ -255,7 +263,8 @@ beyond proof-level driving remain future work.
   C-runtime never gets past CODAL init). TIMER4/DIR/matrix prove init ran
   (T4 INTEN=`0x10000`, CC0=`53333` reset value, DIR0=`0x1788000`);
   matrix 0 lit; zero faults throughout. NEXT: name the event the
-  `0x2e5f4` waiter blocks on (`61`/`250`: id/value at `0x200043a8`) and
+  `0x2e5f4` waiter blocks on (parked cell `0x3d`=61 at `0x200043a8`;
+  lock `0x20004378`, count `0x2000437c`, table `0x20003b2c`) and
   which producer should fire it. Firmware-side until a faulting config
   exists (§6.4 rule); reopen only with one. (Supersedes the withdrawn
   "scroll fiber never created" framing: the scroll fiber is never

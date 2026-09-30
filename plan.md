@@ -3806,7 +3806,8 @@ are provably unreachable on this path. The TRUE gate is one level
 earlier: CODAL init tail `post1` (`0x2504c`: `bl 0x210d8` →
 `bl 0x24bac`) never returns — its subtree runs the SVC18 probe
 (`0x27ed0`, now answered 0 + SUCCESS, no fault) then parks the main
-fiber in event-waiter `0x2e5f4` (event `61`/`250`, lock `0x20004378`),
+fiber in event-waiter `0x2e5f4` (wait code `0x3d`=61 parked at
+`0x200043a8`, lock `0x20004378`),
 which goes straight to scheduler idle (`0x20002078` @+959 steps,
 fault-free). `post1`'s return (`0x2086e`), the dispatcher, the exec
 entry (`0x24b24`), and user section (`0x47000`+) get 0 hits in 1M

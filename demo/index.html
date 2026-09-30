@@ -914,7 +914,7 @@ emu.init();</textarea>
   // same staged path as a dropped file; Run continues into the
   // direct-app boot (same recipe as MicroPython). Boots to scheduler
   // idle; the user program never runs (CODAL init tail post1 0x2504c
-  // never returns — event-wait 61/250 parks the main fiber, idle @+959
+  // never returns — wait code 0x3d parks the main fiber, idle @+959
   // steps; see STATUS §5). Matrix stays dark, zero faults.
   async function bootPresetMakeCode() {
     status.textContent = 'loading built-in MakeCode…';
@@ -1011,7 +1011,7 @@ emu.init();</textarea>
   // MakeCode direct-app boot: same recipe as MicroPython (S140 +
   // CODAL app at 0x1C000, MBR params hand-installed). Boots to
   // scheduler idle (user program never runs — CODAL init tail post1
-  // 0x2504c never returns, event 61/250 parks the main fiber; see
+  // 0x2504c never returns, wait code 0x3d parks the main fiber; see
   // STATUS §5): TIMER4/DIR/matrix prove init ran, user fiber never
   // created. Same path the native probes use.
   function bootMakeCodeApp() {
