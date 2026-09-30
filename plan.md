@@ -3814,3 +3814,18 @@ steps on BOTH the `mc/built` hex and the vendored bench hex. NEXT:
 name the event the waiter blocks on and which producer should fire it.
 STATUS §5 MakeCode bullet rewritten with this chain; §3/§7/§8 counts
 synced (239, mpy-radio, SVC 18).
+
+## 121. P145 vendored MakeCode hex refresh + label fix (2026-09-30)
+
+The vendored `demo/firmware/mbcodal-binary.hex` was STALE (Sept-23
+`showString` build) while `mc/built/mbcodal-binary.hex` is the Sept-29
+`showLeds` smiley build: 1247 differing bytes starting at the user
+section `0x47018`+. Vendored the fresh build in (`cp mc/built/…hex
+demo/firmware/…hex`, byte-identical after copy) and fixed the preset
+label `showString`→`showLeds`. Shipped-artifact park probe (vendored
+hex through the shipped `demo/pkg` wasm, 60M): idle `0x2000207b`, 2
+SD-handshake resets, zero faults, DIR0 `0x1788000`, T4 INTEN `0x10000`,
+matrix dark — 7/7, identical to the source-hex park. Stock limits
+re-verified on the shipped pair: `bluetooth` 0 hits in both hexes,
+SVC-82 0 sites in both, MPY radio TX proof green (`test:mpy-radio`).
+No model change; docs (agent log) + commit only.

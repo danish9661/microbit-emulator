@@ -4,13 +4,13 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-29, P144 in tree — SVC18 + mpy-radio + MC gate correction)
+## 0. Snapshot (2026-09-30, P145 in tree — vendored MC hex + label fix)
 
-- HEAD: `86f5329` "P143 bench part demos + publish workflow fix (browser 11/11, 238 green)".
+- HEAD: `f1ea2bb` "P144 SVC18 is_enabled + MPY radio TX proof + MakeCode gate correction (239 green, 128 ok)".
 - Branch: `master`, in sync with `origin/master`.
-- Suite: **239 single green** (SVC 18 `is_enabled_reports_sd_state` new) + test:wasm 128 ok (incl. new `test:mpy-radio`) + E2E 42/42 over air + browser 16/16, all re-verified this turn.
-- Working tree: P144 batch (model + wasm pkg + radio proof + docs).
-- Big news: **SVC 18 answered + MPY radio TX proven + MakeCode gate corrected** — `sd_softdevice_is_enabled` (SDM_SVC_BASE 0x10+2, valid SD-disabled per S140 `nrf_sdm.h`) now answers 0 + SUCCESS from the enable flag instead of faulting into the SD vector; stock-hex `from radio import *` + `on()` + `send('ping')` stages exactly one bare-metal RADIO TX job (new `test:mpy-radio`); MakeCode "second table" theory WITHDRAWN — the true gate is CODAL init tail `post1` (`0x2504c`) never returning (idle @+959, `0x2086e`/`0x42148`/`0x24b24`/user all 0 hits in 1M steps on both hexes).
+- Suite: **239 single green** + test:wasm 128 ok (incl. `test:mpy-radio`) + E2E 42/42 over air + browser 16/16, all re-verified this turn.
+- Working tree: P145 batch (vendored `demo/firmware/mbcodal-binary.hex` from `mc/built` + preset label `showLeds`).
+- Big news: **shipped artifact now matches source** — the stale Sept-23 `showString` vendored hex is replaced by the Sept-29 `showLeds` smiley build (1247 differing bytes, user section `0x47000`+); the bench hex parks identically (idle `0x2000207b`, 2 resets, zero faults, DIR0 `0x1788000`, T4 INTEN `0x10000`, matrix dark — 7/7 probe).
 
 ## 1. What we did so far (this recovery session)
 
@@ -143,3 +143,5 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
 - 2026-09-25 (P139 COMMITTED `37f6400`): JS+TS SVC faces live on the bench (in-page panel, scratch core, loopback pass).
 - 2026-09-25 (P140 full final gate, this turn): cargo 238 + test:wasm 124 ok + E2E 42/42 over air + browser 16/16, zero page errors. Doc sync only; no model change.
 - 2026-09-29 (P144 in tree, UNCOMMITTED): SVC 18 `sd_softdevice_is_enabled` + `test:mpy-radio` + MakeCode gate correction + doc sync. Suite 239 single green; test:wasm 128 ok; bench hex re-verified (MPY banner/REPL/radio-on, MC same park). NEXT: commit per approval.
+- 2026-09-29 (P144 COMMITTED `f1ea2bb`, 13 files): SVC18 model + rebuilt `demo/pkg` wasm + `test:mpy-radio` + MakeCode gate correction (post1-never-returns) + full doc sync (STATUS/plan/agent/doc/about/index/package/README/ble_lang). Suite 239 + test:wasm 128 ok.
+- 2026-09-30 (P145 in tree, UNCOMMITTED): vendored fresh `mc/built` smiley hex into `demo/firmware` (1247 differing bytes, user section `0x47000`+) + preset label `showString`→`showLeds`; shipped-artifact park probe 7/7 (idle, 2 resets, zero faults, DIR0/T4/matrix dark); stock limits re-verified (bluetooth 0 hits, SVC82 0 in both hexes; radio TX proof green). NEXT: commit per approval.
