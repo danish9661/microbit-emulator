@@ -3,7 +3,7 @@ use super::Peripheral;
 
 /// EGU0-5 @ 0x40014000 + n*0x1000 (IRQs 20-25, SWI/EGU software interrupts).
 /// TASKS_TRIGGER[n] 0x000+n*4 (n=0..15), EVENTS_TRIGGERED[n] 0x100+n*4,
-/// INTENSET 0x304/CLR 0x308. TRIGGER sets TRIGGERED + fires the instance
+/// INTEN 0x300 / SET 0x304 / CLR 0x308. TRIGGER sets TRIGGERED + fires the instance
 /// IRQ when enabled. Used by SDKs/SoftDevice-less stacks for deferred work.
 pub struct EguNrf {
     irq: i32,
@@ -31,6 +31,7 @@ impl Peripheral for EguNrf {
     fn read(&mut self, _sys: &System, offset: u32) -> u32 {
         match offset {
             0x100..=0x13C => self.ev[((offset - 0x100) >> 2) as usize] as u32,
+            0x300 => self.intenset, // INTEN reads the enable word
             0x304 => self.intenset,
             _ => 0,
         }
@@ -45,6 +46,7 @@ impl Peripheral for EguNrf {
                 }
             }
             0x100..=0x13C => if value == 0 { self.ev[((offset - 0x100) >> 2) as usize] = false; }
+            0x300 => self.intenset = value & 0xFFFF, // INTEN absolute
             0x304 => self.intenset |= value & 0xFFFF,
             0x308 => self.intenset &= !value,
             _ => {}

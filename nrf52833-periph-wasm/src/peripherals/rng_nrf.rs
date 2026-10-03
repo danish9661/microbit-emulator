@@ -2,7 +2,10 @@ use crate::system::{System, instruction_count};
 use super::Peripheral;
 
 /// RNG @ 0x4000D000 (IRQ 13 per nrf52833.svd). TASKS_START 0x000, TASKS_STOP 0x004,
-/// EVENTS_VALRDY 0x100, SHORTS 0x200, INTENSET 0x304/CLR 0x308,
+/// EVENTS_VALRDY 0x100, SHORTS 0x200 (VALRDY_STOP bit0), INTENSET 0x304/CLR 0x308
+/// (VALRDY bit0), CONFIG 0x504 (DERCEN bit0: bias correction — stored;
+/// it conditions the analog noise source, which the deterministic LCG
+/// stands in for, so the bit has no value-domain effect by construction),
 /// VALUE 0x508. Deterministic LCG seeded from INSTRUCTION_COUNT.
 /// SHORTS bit0 = shortcut VALRDY->STOP.
 pub struct RngNrf {
@@ -11,11 +14,12 @@ pub struct RngNrf {
     value: u32,
     shorts: u32,
     intenset: u32,
+    config: u32,
 }
 
 impl Default for RngNrf {
     fn default() -> Self {
-        Self { running: false, ev_valrdy: false, value: 0, shorts: 0, intenset: 0 }
+        Self { running: false, ev_valrdy: false, value: 0, shorts: 0, intenset: 0, config: 0 }
     }
 }
 
@@ -49,6 +53,7 @@ impl Peripheral for RngNrf {
             }
             0x200 => self.shorts,
             0x304 => self.intenset,
+            0x504 => self.config,
             0x508 => {
                 let v = self.value;
                 self.ev_valrdy = false;
@@ -68,8 +73,9 @@ impl Peripheral for RngNrf {
             0x004 => { self.running = false; }
             0x100 => if value == 0 { self.ev_valrdy = false; },
             0x200 => self.shorts = value & 1,
-            0x304 => self.intenset |= value,
+            0x304 => self.intenset |= value & 1,
             0x308 => self.intenset &= !value,
+            0x504 => self.config = value & 1, // DERCEN
             _ => {}
         }
     }
@@ -111,5 +117,20 @@ mod tests {
         assert_eq!(r2.read(&sys, 0x100), 1, "re-armed VALRDY");
         assert!(r2.running, "still running without SHORTS");
         let _ = a;
+    }
+    #[test]
+    fn config_dercen_stores_and_inten_masked() {
+        // CONFIG.DERCEN stores + reads back (bias-correction select has
+        // no value-domain effect on the deterministic LCG); INTEN keeps
+        // bit 0 only.
+        let sys = test_dummy_system();
+        let mut r = RngNrf::default();
+        r.write(&sys, 0x504, 1);
+        assert_eq!(r.read(&sys, 0x504), 1, "DERCEN");
+        r.write(&sys, 0x304, 0xFFFF_FFFF);
+        assert_eq!(r.read(&sys, 0x304), 1, "INTEN mask");
+        r.write(&sys, 0x000, 1);
+        assert_ne!(r.read(&sys, 0x508), 0, "values flow with DERCEN set");
+        assert_eq!(RngNrf::default().config, 0, "fresh default");
     }
 }

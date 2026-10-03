@@ -2,29 +2,36 @@ use crate::system::System;
 use super::Peripheral;
 
 /// QDEC @ 0x40012000 (IRQ 18, quadrature decoder, edge connector P13-15).
-/// Offsets from nrf52833.svd (note: STOPPED is 0x110 and SAMPLE is 0x50C;
-/// earlier stubs had 0x114/0x504): TASKS_START 0x000, TASKS_STOP 0x004,
-/// TASKS_READCLRACC 0x008, TASKS_RDDBLS 0x00C, TASKS_RDDBL 0x010,
-/// TASKS_RDDBLACC 0x014, EVENTS_SAMPLERDY 0x100, EVENTS_REPORTRDY 0x104,
+/// Offsets from nrf52833.svd (note: STOPPED is 0x110 and SAMPLE is 0x50C):
+/// TASKS_START 0x000, TASKS_STOP 0x004, TASKS_READCLRACC 0x008
+/// (ACCREAD <- ACC, ACC <- 0), TASKS_RDCLRACC 0x00C (ACCREAD <- ACCDBL,
+/// ACC <- 0), TASKS_RDCLRDBL 0x010 (ACCDBLREAD <- ACCDBL, ACCDBL <- 0,
+/// raises DBLRDY), EVENTS_SAMPLERDY 0x100, EVENTS_REPORTRDY 0x104,
 /// EVENTS_ACCOF 0x108, EVENTS_DBLRDY 0x10C, EVENTS_STOPPED 0x110,
-/// INTENSET 0x304 (SAMPLERDY 0, REPORTRDY 1, ACCOF 2, DBLRDY 3,
-/// STOPPED 4) / CLR 0x308, ENABLE 0x500, LEDPOL 0x504, SAMPLEPER 0x508
-/// (128us units), SAMPLE 0x50C, REPORTPER 0x510, ACC 0x514,
-/// ACCREAD 0x518, PSELLED 0x51C, PSELA 0x520, PSELB 0x524, DBFEN 0x528,
-/// LEDPRE 0x540.
+/// SHORTS 0x200 (REPORTRDY_READCLRACC 0, SAMPLERDY_STOP 1,
+/// REPORTRDY_RDCLRACC 2, REPORTRDY_STOP 3, DBLRDY_RDCLRDBL 4,
+/// DBLRDY_STOP 5, SAMPLERDY_READCLRACC 6), INTENSET 0x304 (SAMPLERDY 0,
+/// REPORTRDY 1, ACCOF 2, DBLRDY 3, STOPPED 4) / CLR 0x308, ENABLE 0x500,
+/// LEDPOL 0x504, SAMPLEPER 0x508 (128us units), SAMPLE 0x50C,
+/// REPORTPER 0x510, ACC 0x514, ACCREAD 0x518, PSELLED 0x51C, PSELA 0x520,
+/// PSELB 0x524, DBFEN 0x528, LEDPRE 0x540, ACCDBL 0x544,
+/// ACCDBLREAD 0x548.
 ///
 /// Protocol: START begins sampling every (SAMPLEPER+1)*8192 instructions.
 /// Each sample reads PSELA/PSELB GPIO levels (when connected, i.e. not
 /// `0xFFFFFFFF`) and Gray-decodes transitions into the accumulator
-/// (`00->01->11->10` = +1 step each edge); with DBFEN set, a new level
-/// pair must read stable twice before it counts (documented
+/// (`00->01->11->10` = +1 step each edge); the double-read accumulator
+/// ACCDBL mirrors the same edges for atomic reads. With DBFEN set, a new
+/// level pair must read stable twice before it counts (documented
 /// simplification of the hardware debounce filter). The host can also
 /// drive steps directly via `qdec_step` (JS knob/encoder parts).
 /// SAMPLERDY fires per sample (+IRQ); when `samples_since_report`
 /// reaches REPORTPER (>0), REPORTRDY fires. ACCOF fires on true i32
-/// accumulator wrap (checked_add). READCLRACC snapshots ACC->ACCREAD
-/// and clears ACC; RDDBLS snapshots for an atomic read, RDDBL raises
-/// DBLRDY, RDDBLACC snapshots the accumulator; STOP raises STOPPED.
+/// accumulator wrap (checked_add, shared by ACC and ACCDBL). SHORTS
+/// consume inline at the event quantum (single pass, no recursion):
+/// REPORTRDY/SAMPLERDY auto-read ACC or ACCDBL into ACCREAD, the _STOP
+/// shorts halt with STOPPED, DBLRDY_RDCLRDBL snapshots ACCDBL into
+/// ACCDBLREAD.
 pub struct QdecNrf {
     enabled: bool,
     running: bool,
@@ -34,12 +41,14 @@ pub struct QdecNrf {
     ev_dblrdy: bool,
     ev_stopped: bool,
     intenset: u32,
+    shorts: u32,
     sampleper: u32,
     reportper: u32,
     sample: i32,
     acc: i32,
     accread: i32,
-    dblsnap: i32,
+    accdbl: i32,
+    accdblread: i32,
     pselled: u32,
     psela: u32,
     pselb: u32,
@@ -59,8 +68,9 @@ impl Default for QdecNrf {
         Self {
             enabled: false, running: false, ev_samplerdy: false,
             ev_reportrdy: false, ev_accof: false, ev_dblrdy: false,
-            ev_stopped: false, intenset: 0, sampleper: 0, reportper: 0,
-            sample: 0, acc: 0, accread: 0, dblsnap: 0,
+            ev_stopped: false, intenset: 0, shorts: 0,
+            sampleper: 0, reportper: 0,
+            sample: 0, acc: 0, accread: 0, accdbl: 0, accdblread: 0,
             pselled: 0xFFFF_FFFF, psela: 0xFFFF_FFFF, pselb: 0xFFFF_FFFF,
             dbfen: false, ledpol: 0, ledpre: 0,
             last_tick: crate::system::instruction_count(),
@@ -95,13 +105,26 @@ impl QdecNrf {
         }
     }
     fn add_acc(&mut self, sys: &System, delta: i32) {
+        // Both accumulators mirror the edge; a true i32 wrap on either
+        // raises the shared ACCOF event.
+        let mut overflow = false;
         match self.acc.checked_add(delta) {
             Some(v) => self.acc = v,
             None => {
                 self.acc = self.acc.wrapping_add(delta);
-                self.ev_accof = true;
-                self.fire(sys, 1 << 2);
+                overflow = true;
             }
+        }
+        match self.accdbl.checked_add(delta) {
+            Some(v) => self.accdbl = v,
+            None => {
+                self.accdbl = self.accdbl.wrapping_add(delta);
+                overflow = true;
+            }
+        }
+        if overflow {
+            self.ev_accof = true;
+            self.fire(sys, 1 << 2);
         }
     }
     fn pin_level(sys: &System, psel: u32) -> Option<bool> {
@@ -177,15 +200,44 @@ impl QdecNrf {
             self.sample = self.acc;
             self.ev_samplerdy = true;
             self.fire(sys, 1 << 0);
+            // SHORTS consume inline, single pass: SAMPLERDY_READCLRACC
+            // snapshots ACC, SAMPLERDY_STOP halts.
+            if self.shorts & (1 << 6) != 0 {
+                self.accread = self.acc;
+                self.acc = 0;
+            }
+            if self.shorts & (1 << 1) != 0 {
+                self.do_stop(sys);
+            }
             if self.reportper > 0 {
                 self.samples_since_report += 1;
                 if self.samples_since_report >= self.reportper {
                     self.samples_since_report = 0;
                     self.ev_reportrdy = true;
                     self.fire(sys, 1 << 1);
+                    // REPORTRDY_READCLRACC snapshots ACC, _RDCLRACC
+                    // snapshots ACCDBL, _STOP halts.
+                    if self.shorts & (1 << 0) != 0 {
+                        self.accread = self.acc;
+                        self.acc = 0;
+                    }
+                    if self.shorts & (1 << 2) != 0 {
+                        self.accread = self.accdbl;
+                        self.acc = 0;
+                    }
+                    if self.shorts & (1 << 3) != 0 {
+                        self.do_stop(sys);
+                    }
                 }
             }
         }
+    }
+    /// TASKS_STOP effect shared by the task arm and the _STOP shorts:
+    /// halt with STOPPED (+IRQ 4 when INTENabled).
+    fn do_stop(&mut self, sys: &System) {
+        self.running = false;
+        self.ev_stopped = true;
+        self.fire(sys, 1 << 4);
     }
 }
 
@@ -199,6 +251,7 @@ impl Peripheral for QdecNrf {
             0x108 => self.ev_accof as u32,
             0x10C => self.ev_dblrdy as u32,
             0x110 => self.ev_stopped as u32,
+            0x200 => self.shorts,
             0x304 => self.intenset,
             0x500 => self.enabled as u32,
             0x504 => self.ledpol,
@@ -212,6 +265,8 @@ impl Peripheral for QdecNrf {
             0x524 => self.pselb,
             0x528 => self.dbfen as u32,
             0x540 => self.ledpre,
+            0x544 => self.accdbl as u32,
+            0x548 => self.accdblread as u32,
             _ => 0,
         }
     }
@@ -222,33 +277,39 @@ impl Peripheral for QdecNrf {
                 self.running = true;
                 self.last_tick = crate::system::instruction_count();
             }
-            0x004 => {
-                self.running = false;
-                self.ev_stopped = true;
-                self.fire(sys, 1 << 4);
-            }
+            0x004 => self.do_stop(sys), // TASKS_STOP
             0x008 => {
+                // READCLRACC: snapshot ACC, clear ACC.
                 self.accread = self.acc;
                 self.acc = 0;
             }
             0x00C => {
-                self.dblsnap = self.acc;
+                // RDCLRACC: snapshot ACCDBL, clear ACC.
+                self.accread = self.accdbl;
+                self.acc = 0;
             }
             0x010 => {
-                self.accread = self.dblsnap;
+                // RDCLRDBL: snapshot ACCDBL, clear ACCDBL, raise DBLRDY.
+                self.accdblread = self.accdbl;
+                self.accdbl = 0;
                 self.ev_dblrdy = true;
                 self.fire(sys, 1 << 3);
-            }
-            0x014 => {
-                self.accread = self.acc;
-                self.ev_dblrdy = true;
-                self.fire(sys, 1 << 3);
+                // DBLRDY_RDCLRDBL re-snapshots (single pass: the event is
+                // already set, no re-fire); DBLRDY_STOP halts.
+                if self.shorts & (1 << 4) != 0 {
+                    self.accdblread = self.accdbl;
+                    self.accdbl = 0;
+                }
+                if self.shorts & (1 << 5) != 0 {
+                    self.do_stop(sys);
+                }
             }
             0x100 => if value == 0 { self.ev_samplerdy = false; }
             0x104 => if value == 0 { self.ev_reportrdy = false; }
             0x108 => if value == 0 { self.ev_accof = false; }
             0x10C => if value == 0 { self.ev_dblrdy = false; }
             0x110 => if value == 0 { self.ev_stopped = false; }
+            0x200 => self.shorts = value & 0x7F,
             0x304 => self.intenset |= value & 0x1F,
             0x308 => self.intenset &= !value,
             0x500 => self.enabled = value & 1 == 1,
@@ -286,18 +347,29 @@ fn with_qdec<R>(sys: &System, f: impl FnOnce(&mut QdecNrf) -> R) -> Option<R> {
 
 /// Drive quadrature steps from the host (knob/encoder parts, tests):
 /// positive = forward detents, negative = reverse. Always honored
-/// (like real pin edges), independent of the sampling clock.
+/// (like real pin edges), independent of the sampling clock. Both
+/// accumulators mirror the steps, like sampled edges.
 pub fn qdec_step(sys: &System, dir: i32) {
     let accof = with_qdec(sys, |q| {
-        let (acc, accof) = match q.acc.checked_add(dir) {
-            Some(v) => (v, false),
-            None => (q.acc.wrapping_add(dir), true),
-        };
-        q.acc = acc;
-        if accof {
+        let mut overflow = false;
+        match q.acc.checked_add(dir) {
+            Some(v) => q.acc = v,
+            None => {
+                q.acc = q.acc.wrapping_add(dir);
+                overflow = true;
+            }
+        }
+        match q.accdbl.checked_add(dir) {
+            Some(v) => q.accdbl = v,
+            None => {
+                q.accdbl = q.accdbl.wrapping_add(dir);
+                overflow = true;
+            }
+        }
+        if overflow {
             q.ev_accof = true;
         }
-        accof
+        overflow
     })
     .unwrap_or(false);
     if accof {
@@ -394,5 +466,44 @@ mod tests {
         sys.p.write(&sys, 0x40012004, 4, 1);
         assert_eq!(sys.p.read(&sys, 0x40012110, 4), 1, "STOPPED at 0x110");
         assert!(sys.p.nvic.borrow().has_pending(), "IRQ 18 pends");
+    }
+    #[test]
+    fn accdbl_mirror_shorts_rdclracc_rdclrdbl() {
+        // ACCDBL mirrors sampled + host steps; RDCLRACC snapshots ACCDBL
+        // while clearing ACC; RDCLRDBL snapshots/clears ACCDBL with
+        // DBLRDY; REPORTRDY_READCLRACC auto-reads; SAMPLERDY_STOP halts.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x40012500, 4, 1); // ENABLE
+        sys.p.write(&sys, 0x40012000, 4, 1); // START
+        qdec_step(&sys, 7);
+        assert_eq!(sys.p.read(&sys, 0x40012544, 4) as i32, 7, "ACCDBL mirrors steps");
+        sys.p.write(&sys, 0x4001200C, 4, 1); // RDCLRACC
+        assert_eq!(sys.p.read(&sys, 0x40012518, 4) as i32, 7, "ACCREAD from ACCDBL");
+        assert_eq!(sys.p.read(&sys, 0x40012514, 4), 0, "ACC cleared");
+        assert_eq!(sys.p.read(&sys, 0x40012544, 4) as i32, 7, "ACCDBL kept");
+        qdec_step(&sys, 3); // ACC=3, ACCDBL=10
+        sys.p.write(&sys, 0x40012010, 4, 1); // RDCLRDBL
+        assert_eq!(sys.p.read(&sys, 0x4001210C, 4), 1, "DBLRDY");
+        assert_eq!(sys.p.read(&sys, 0x40012548, 4) as i32, 10, "ACCDBLREAD");
+        assert_eq!(sys.p.read(&sys, 0x40012544, 4), 0, "ACCDBL cleared");
+        assert_eq!(sys.p.read(&sys, 0x40012514, 4) as i32, 3, "ACC kept");
+        // SHORTS: REPORTRDY_READCLRACC auto-reads into ACCREAD.
+        sys.p.write(&sys, 0x40012510, 4, 1); // REPORTPER=1
+        sys.p.write(&sys, 0x40012200, 4, 1 << 0); // REPORTRDY_READCLRACC
+        qdec_step(&sys, 5); // ACC=8 now
+        step_clock(8192);
+        let _ = sys.p.read(&sys, 0x40012100, 4); // pump the sample
+        assert_eq!(sys.p.read(&sys, 0x40012104, 4), 1, "REPORTRDY");
+        assert_eq!(sys.p.read(&sys, 0x40012518, 4) as i32, 8, "auto-read ACC");
+        assert_eq!(sys.p.read(&sys, 0x40012514, 4), 0, "auto-cleared");
+        // SHORTS: SAMPLERDY_STOP halts with STOPPED.
+        sys.p.write(&sys, 0x40012200, 4, 1 << 1); // SAMPLERDY_STOP
+        sys.p.write(&sys, 0x40012110, 4, 0);
+        step_clock(8192);
+        let _ = sys.p.read(&sys, 0x40012100, 4);
+        assert_eq!(sys.p.read(&sys, 0x40012110, 4), 1, "STOPPED via short");
+        // 2nd run: fresh defaults.
+        let q2 = QdecNrf::default();
+        assert_eq!((q2.accdbl, q2.shorts), (0, 0));
     }
 }

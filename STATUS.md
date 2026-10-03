@@ -67,7 +67,7 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 239 green (`cargo test`)
+## 3. Tests — 259 green (`cargo test`)
 
 - 117 cpu (`src/cpu/tests.rs`: 117 listed = 21 GCC-built firmware
   proofs incl. `matrix_nrf` + handshake/marker/2nd-run checks —
@@ -76,7 +76,7 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   `i2s_nrf`, `wdt_nrf`, `nfct_nrf`, `ble_conformance.c`,
   `c_ble_face.bin`, `ble_cpp_face.cpp`, `ble_pairing_fw.c`, `ble_roles_fw.c`, `uarte1_nrf`, `spim23_nrf`,
   `sd_evt_nrf`, `matrix_nrf`, +2nd-run reset-state checks each).
-- 100 peripherals + 4 sd_evt + 14 sd_ble + 4 smp_crypto unit tests (register handshake,
+- 120 peripherals + 4 sd_evt + 14 sd_ble + 4 smp_crypto unit tests (register handshake,
   SHORTS/NACK/OVERRUN/CAPTURE, FIPS-197, reboot latch, TXSTOPPED,
   SPIM RXD MISO, GPIO CNF→DIR, UARTE TX STARTTX-snapshot,
   TWIM shifted-ADDR match, SCB AIRCR SYSRESETREQ,
@@ -91,11 +91,39 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   +P132 OpenHW read APIs (`gpio_read_dir` PIN_CNF.DIR bit + `matrix_state()` 25B row-major pixels, `openhw_matrix_read_path` test) + take/complete `try_borrow_mut` hardening (P108 family: comp/ecb/aar/i2s/nfct/pdm/qdec/qspi/radio/saadc/temp/twim/usbd),
   +P134 UARTE RX (ENDRX at SVD 0x110, was 0x10C — MPY ISR clear never landed; SHORTS ENDRX_STARTRX/STOPRX model + `shorts_endrx_startrx_rearms_receiver` test) + UARTE TX snapshot keyed by TXD.PTR + STOPTX-preserve (`tx_snapshot_fifo_preserves_per_transfer_order`, `stoptx_preserves_queued_snapshot`))
   +P144 SVC 18 `sd_softdevice_is_enabled` (SDM_SVC_BASE 0x10 + 2, valid with the SD DISABLED per S140 `nrf_sdm.h`): model answers from the SD-enable flag (writes 0 + SUCCESS when disabled) instead of faulting into the SD vector; `is_enabled_reports_sd_state` test (disabled→0, enabled→1, non-RAM→INVALID_PARAM 7)).
+  +P148 full-face pass (no stubs left: every SVD register modeled — 20 new
+  proofs): RADIO BC tasks + RATEBOOST/SYNC/PHYEND/CTE + DFE block + DACNF-gated
+  match + SVD PDUSTAT + CCAMODE carrier + STOP/Idle states (`air_edge_events_bcmatch_dfe_pdustat`,
+  `txen_start_stop_chain` re-proven); CLOCK CAL/CT + POF/sleep/USB edge events +
+  SYSTEMOFF + INTEN refire (`cal_ct_timer_events_and_irq`,
+  `power_mode_systemoff_pof_sleep_usbremove`); TIMER COUNT/SHUTDOWN/MODE + STOP
+  shorts + INTEN mask (`count_task_counter_mode_and_stop_short`); RTC TRIGOVRFLW +
+  EVTEN (`trigovrflw_and_evten_routing`); UARTE FLUSHRX/CTS/NCTS/RXTO/STARTED +
+  INTEN/CONFIG/ERRORSRC (`full_face_flushrx_cts_rxto_started_config_errorsrc`);
+  TWIM PSEL/FREQUENCY/LIST/SPIM-CFG/ORC + INTEN union + SPIS STATUS
+  (`serial_psel_frequency_list_spimcfg_orc_inten_status`); SAADC STATUS + INTEN
+  (`status_busy_latch_and_inten_absolute`); NVMC ERASEPCR0/PARTIAL/UICR/ICACHE
+  (`erase_aliases_partial_uicr_icache`); PWM NEXTSTEP/LOOP/SHORTS/CONFIG/SEQ/PSEL +
+  SVD event offsets 0x118/0x11C (`nextstep_loop_shorts_config_seq_psel`); PDM SVD
+  offsets (SAMPLE 0x560/0x564) + full config + IRQ 29 (`config_psel_inten_irqs`,
+  `i2s_nrf.bin` rebuilt); I2S SVD clusters (shared MAXCNT 0x550, CONFIG/PSEL,
+  RXEN/TXEN gating — `i2s_nrf.s/.bin` + `mocks.js` rebuilt); COMP SHORTS/REFSEL/
+  AREF/INTEN (`shorts_refsel_inten_absolute`); QDEC SVD tasks + ACCDBL + SHORTS
+  (`accdbl_mirror_shorts_rdclracc_rdclrdbl`); RNG DERCEN + INTEN mask; WDT CONFIG
+  SLEEP/HALT with freeze-resume (`config_sleep_halt_pause_and_resume`); GPIO SENSE
+  LATCH/DETECTMODE (`sense_latch_and_detectmode`); NFCT SHORTS/TAGSTATE/ID block/
+  collision (`shorts_tagstate_id_config_collision`); TEMP factory cal + FICR full
+  face (ER/IR/ADDR/PRODTEST/trim/TAGHEADER — `ficr_full_face_roots_addr_trim_tag`);
+  EGU INTEN; USBD SVD task base 0x004 + ISO/SOF/USBEVENT/EPDATA/EPSTATUS/SIZE/
+  SHORTS (`full_face_epout_iso_sof_usbevent_epdata_status`, `usbep_nrf.s`,
+  `usbdev_nrf.c`, `stubs_nrf.s` rebuilt to SVD offsets). Dead duplicate MWU model
+  removed from `misc_nrf.rs`; stale "stub/unmodeled" comments corrected to the
+  modeled behavior throughout.
 - Parallel-test flake (CLOSED P108; open pre-existing before that):
   stock multi-threaded `cargo test` intermittently failed sd_ble/MWU
   tests with `RefCell already borrowed` at `peripherals/mod.rs:457` /
   `mwu_nrf.rs:237` (~1/4 runs pre-P105; ~2/15 post-P105;
-   single-threaded `-- --test-threads=1` always 239/239). Two
+   single-threaded `-- --test-threads=1` always 259/259). Two
   mechanisms, separated by evidence (P105+P108):
   (a) DETERMINISTIC order-dependence (fixed P105): the MPU ENABLE +
   programmed regions live in the INSTALLED model and outlive the test
@@ -530,7 +558,7 @@ beyond proof-level driving remain future work.
      post_user_mem/post_rw_authorize/post_sys_attr/post_sc_confirm/
       complete_service_changed` exports + SMP toolbox (`ble_lesc_dhkey`,
       `ble_lesc_public_key`, `ble_smp_f4/f5/f6/g2`, P125); 14 native tests + SVC-hook proof
-       in cpu/tests.rs (239 green); headless `MockBleSvc` executes REAL SVC
+       in cpu/tests.rs (259 green); headless `MockBleSvc` executes REAL SVC
      bytes on a WasmCpu end to end (enable→table→connect→disc×6→read→
      write→L2CAP→pairing→peer-pairing(passkey)→HVX-indicate→
      service-changed→ADV/SCAN roles→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
@@ -585,7 +613,7 @@ beyond proof-level driving remain future work.
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 239 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
+cargo test -- --test-threads=1    # 259 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY/JS/PY/TS-idiom faces + REPL + MPY-radio TX, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)

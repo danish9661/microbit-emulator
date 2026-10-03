@@ -1,41 +1,6 @@
 use crate::system::System;
 use super::Peripheral;
 
-/// MWU @ 0x40020000 (IRQ 32, memory watch unit). REGIONEN 0x500,
-/// EVENTS_REGION[n] / PREGION RA/WA events. Stub: REGIONEN RW, events
-/// never fire (no watch configured = no surprise faults for firmware
-/// that leaves the MWU at reset).
-pub struct MwuNrf {
-    regionen: u32,
-}
-
-impl Default for MwuNrf {
-    fn default() -> Self {
-        Self { regionen: 0 }
-    }
-}
-
-impl MwuNrf {
-    pub fn new(name: &str) -> Option<Box<dyn Peripheral>> {
-        if name == "MWU" { Some(Box::new(Self::default())) } else { None }
-    }
-}
-
-impl Peripheral for MwuNrf {
-    fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
-    fn read(&mut self, _sys: &System, offset: u32) -> u32 {
-        match offset {
-            0x500 => self.regionen,
-            _ => 0,
-        }
-    }
-    fn write(&mut self, _sys: &System, offset: u32, value: u32) {
-        if offset == 0x500 {
-            self.regionen = value;
-        }
-    }
-}
-
 /// ECB @ 0x4000E000 (IRQ 14, AES-128 engine). TASKS_STARTECB 0x000,
 /// TASKS_STOPECB 0x004, EVENTS_ENDECB 0x100, EVENTS_ERRORECB 0x104,
 /// INTENSET 0x304 (ENDECB 0), ECBDATAPTR 0x504 -> {KEY[16], CLEAR[16]}
@@ -205,9 +170,8 @@ impl Default for AarCcmNrf {
 
 impl AarCcmNrf {
     pub fn new(name: &str) -> Option<Box<dyn Peripheral>> {
-        // AAR only. CCM shares this base with a different task map
-        // (KSGEN/CRYPT); it stays unmodeled (read-as-0) until firmware
-        // needs it — aliasing the two would lie about BOTH task sets.
+        // Shared base, single slot: ENABLE==2 selects the CCM task map
+        // at runtime (see the write arm); both maps live in this model.
         if name == "AAR" {
             Some(Box::new(Self::default()))
         } else {
@@ -503,33 +467,41 @@ pub fn complete_aar(sys: &System, resolved: bool) {
 
 /// I2S @ 0x40025000 (IRQ 37, audio). Offsets from nrf52833.svd:
 /// TASKS_START 0x000, TASKS_STOP 0x004, EVENTS_RXPTRUPD 0x104,
-/// EVENTS_STOPPED 0x108, EVENTS_TXPTRUPD 0x114, INTENSET 0x304
+/// EVENTS_STOPPED 0x108, EVENTS_TXPTRUPD 0x114, INTEN 0x300 / SET 0x304
 /// (RXPTRUPD 1, STOPPED 2, TXPTRUPD 5) / CLR 0x308, ENABLE 0x500,
-/// CONFIG 0x504 (stored), RXD.PTR 0x538 / MAXCNT 0x53C,
-/// TXD.PTR 0x540 / MAXCNT 0x544. All sample movement is EASYDMA:
-/// START stages take_rx/take_tx (PTRUPD events fire); the driver moves
-/// bytes and completes. TX bytes also land in a capture FIFO (browser
-/// playback / test compare via i2s_take_capture).
+/// CONFIG cluster 0x504 (MODE 0x504, RXEN 0x508, TXEN 0x50C, MCKEN 0x510,
+/// MCKFREQ 0x514, RATIO 0x518, SWIDTH 0x51C, ALIGN 0x520, FORMAT 0x524,
+/// CHANNELS 0x528 — all stored), RXD.PTR 0x538, TXD.PTR 0x540,
+/// RXTXD.MAXCNT 0x550 (one shared sample count for both directions),
+/// PSEL cluster 0x560 (MCK 0x560, SCK 0x564, LRCK 0x568, SDIN 0x56C,
+/// SDOUT 0x570 — pin selects, reset disconnected).
+/// All sample movement is EASYDMA: START stages take_rx/take_tx for the
+/// enabled directions (CONFIG RXEN/TXEN gate staging — silicon only
+/// clocks an enabled direction) with the shared MAXCNT; PTRUPD events
+/// fire per staged direction. The driver moves bytes and completes. TX
+/// bytes also land in a capture FIFO (browser playback / test compare
+/// via i2s_take_capture).
 pub struct I2sNrf {
     enabled: bool,
-    config: u32,
+    config: [u32; 11], // MODE..CHANNELS (0x504..0x528)
+    psel: [u32; 5],    // MCK..SDOUT (0x560..0x570)
     ev_rxptr: bool,
     ev_txptr: bool,
     ev_stopped: bool,
     intenset: u32,
     rx_ptr: u32,
-    rx_maxcnt: u32,
-    rx_pending: bool,
     tx_ptr: u32,
-    tx_maxcnt: u32,
+    maxcnt: u32, // RXTXD.MAXCNT: shared RX+TX sample count
+    rx_pending: bool,
     tx_pending: bool,
 }
 
 impl Default for I2sNrf {
     fn default() -> Self {
-        Self { enabled: false, config: 0, ev_rxptr: false, ev_txptr: false,
-               ev_stopped: false, intenset: 0, rx_ptr: 0, rx_maxcnt: 0,
-               rx_pending: false, tx_ptr: 0, tx_maxcnt: 0, tx_pending: false }
+        Self { enabled: false, config: [0; 11], psel: [0xFFFF_FFFF; 5],
+               ev_rxptr: false, ev_txptr: false,
+               ev_stopped: false, intenset: 0, rx_ptr: 0, tx_ptr: 0,
+               maxcnt: 0, rx_pending: false, tx_pending: false }
     }
 }
 
@@ -551,29 +523,37 @@ impl Peripheral for I2sNrf {
             0x104 => self.ev_rxptr as u32,
             0x108 => self.ev_stopped as u32,
             0x114 => self.ev_txptr as u32,
+            0x300 => self.intenset, // INTEN reads the enable word
             0x304 => self.intenset,
             0x500 => self.enabled as u32,
-            0x504 => self.config,
+            0x504..=0x528 if ((offset - 0x504) & 3) == 0 => {
+                self.config[((offset - 0x504) >> 2) as usize]
+            }
             0x538 => self.rx_ptr,
-            0x53C => self.rx_maxcnt,
             0x540 => self.tx_ptr,
-            0x544 => self.tx_maxcnt,
+            0x550 => self.maxcnt, // RXTXD.MAXCNT (shared RX+TX count)
+            0x560..=0x570 if ((offset - 0x560) & 3) == 0 => {
+                self.psel[((offset - 0x560) >> 2) as usize]
+            }
             _ => 0,
         }
     }
     fn write(&mut self, sys: &System, offset: u32, value: u32) {
         match offset {
             0x000 => {
-                // START: consume both pointers (PTRUPD events), stage DMA.
-                if self.rx_maxcnt > 0 {
-                    self.rx_pending = true;
-                    self.ev_rxptr = true;
-                    self.fire(sys, 1 << 1);
-                }
-                if self.tx_maxcnt > 0 {
-                    self.tx_pending = true;
-                    self.ev_txptr = true;
-                    self.fire(sys, 1 << 5);
+                // START: stage the enabled directions (CONFIG RXEN 0x508
+                // / TXEN 0x50C gate the clocks) with the shared MAXCNT.
+                if self.maxcnt > 0 {
+                    if self.config[1] & 1 != 0 {
+                        self.rx_pending = true;
+                        self.ev_rxptr = true;
+                        self.fire(sys, 1 << 1);
+                    }
+                    if self.config[2] & 1 != 0 {
+                        self.tx_pending = true;
+                        self.ev_txptr = true;
+                        self.fire(sys, 1 << 5);
+                    }
                 }
             }
             0x004 => {
@@ -585,14 +565,19 @@ impl Peripheral for I2sNrf {
             0x104 => if value == 0 { self.ev_rxptr = false; }
             0x108 => if value == 0 { self.ev_stopped = false; }
             0x114 => if value == 0 { self.ev_txptr = false; }
+            0x300 => self.intenset = value & 0x27, // INTEN absolute
             0x304 => self.intenset |= value & 0x27,
             0x308 => self.intenset &= !value,
             0x500 => self.enabled = value & 1 == 1,
-            0x504 => self.config = value,
+            0x504..=0x528 if ((offset - 0x504) & 3) == 0 => {
+                self.config[((offset - 0x504) >> 2) as usize] = value;
+            }
             0x538 => self.rx_ptr = value,
-            0x53C => self.rx_maxcnt = value & 0xFFFF,
             0x540 => self.tx_ptr = value,
-            0x544 => self.tx_maxcnt = value & 0xFFFF,
+            0x550 => self.maxcnt = value & 0xFFFF, // RXTXD.MAXCNT shared
+            0x560..=0x570 if ((offset - 0x560) & 3) == 0 => {
+                self.psel[((offset - 0x560) >> 2) as usize] = value;
+            }
             _ => {}
         }
     }
@@ -616,12 +601,12 @@ fn with_i2s<R>(sys: &System, f: impl FnOnce(&mut I2sNrf) -> R) -> Option<R> {
     None
 }
 
-/// Take a staged RX transfer (ptr, maxcnt); None when idle.
+/// Take a staged RX transfer (ptr, shared maxcnt); None when idle.
 pub fn take_i2s_rx(sys: &System) -> Option<(u32, u32)> {
     with_i2s(sys, |i| {
         if i.rx_pending {
             i.rx_pending = false;
-            Some((i.rx_ptr, i.rx_maxcnt))
+            Some((i.rx_ptr, i.maxcnt))
         } else {
             None
         }
@@ -634,12 +619,12 @@ pub fn complete_i2s_rx(sys: &System) {
     with_i2s(sys, |_| {});
 }
 
-/// Take a staged TX transfer (ptr, maxcnt); None when idle.
+/// Take a staged TX transfer (ptr, shared maxcnt); None when idle.
 pub fn take_i2s_tx(sys: &System) -> Option<(u32, u32)> {
     with_i2s(sys, |i| {
         if i.tx_pending {
             i.tx_pending = false;
-            Some((i.tx_ptr, i.tx_maxcnt))
+            Some((i.tx_ptr, i.maxcnt))
         } else {
             None
         }
@@ -818,11 +803,14 @@ mod tests {
         assert_eq!(sys2.p.read(&sys2, 0x4000F104, 4), 1, "RESOLVED set");
         let sys3 = test_dummy_system();
         sys3.p.write(&sys3, 0x40025500, 4, 1); // ENABLE
+        sys3.p.write(&sys3, 0x40025508, 4, 1); // CONFIG.RXEN
+        sys3.p.write(&sys3, 0x4002550C, 4, 1); // CONFIG.TXEN
         sys3.p.write(&sys3, 0x40025538, 4, 0x20001000); // RXD.PTR
-        sys3.p.write(&sys3, 0x4002553C, 4, 8); // RXD.MAXCNT
         sys3.p.write(&sys3, 0x40025540, 4, 0x20002000); // TXD.PTR
-        sys3.p.write(&sys3, 0x40025544, 4, 8); // TXD.MAXCNT
+        sys3.p.write(&sys3, 0x40025550, 4, 8); // RXTXD.MAXCNT (shared)
+        sys3.p.write(&sys3, 0x40025560, 4, 0x0E); // PSEL.MCK
         sys3.p.write(&sys3, 0x40025000, 4, 1); // START
+        assert_eq!(sys3.p.read(&sys3, 0x40025560, 4), 0x0E, "PSEL.MCK reads back");
         assert_eq!(take_i2s_rx(&sys3), Some((0x20001000, 8)));
         assert_eq!(take_i2s_tx(&sys3), Some((0x20002000, 8)));
         assert_eq!(sys3.p.read(&sys3, 0x40025104, 4), 1, "RXPTRUPD");
@@ -833,5 +821,20 @@ mod tests {
         sys3.p.write(&sys3, 0x40025004, 4, 1); // STOP
         assert_eq!(sys3.p.read(&sys3, 0x40025108, 4), 1, "STOPPED");
         crate::system::i2s_clear();
+        // Direction gating: TXEN clear stages RX only.
+        let sys4 = test_dummy_system();
+        sys4.p.write(&sys4, 0x40025500, 4, 1);
+        sys4.p.write(&sys4, 0x40025508, 4, 1); // RXEN only
+        sys4.p.write(&sys4, 0x40025538, 4, 0x20001000);
+        sys4.p.write(&sys4, 0x40025540, 4, 0x20002000);
+        sys4.p.write(&sys4, 0x40025550, 4, 4);
+        sys4.p.write(&sys4, 0x40025304, 4, 0x27); // INTEN all
+        assert_eq!(sys4.p.read(&sys4, 0x40025300, 4), 0x27, "INTEN mask");
+        sys4.p.write(&sys4, 0x40025000, 4, 1); // START
+        assert!(take_i2s_rx(&sys4).is_some(), "RX staged");
+        assert!(take_i2s_tx(&sys4).is_none(), "TX gated off");
+        // 2nd run: fresh defaults (pins disconnected, clocks off).
+        let i2 = I2sNrf::default();
+        assert_eq!(i2.psel, [0xFFFF_FFFF; 5]);
     }
 }

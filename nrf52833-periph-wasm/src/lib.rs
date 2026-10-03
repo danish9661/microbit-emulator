@@ -250,6 +250,63 @@ pub fn uarte_complete_rxdma(amount: u32) {
     crate::peripherals::uarte_nrf::complete_rxdma(sys(), amount);
 }
 
+/// Drive the UARTE CTS pin level (board flow-control edge): asserting
+/// latches CTS, deasserting latches NCTS.
+#[wasm_bindgen]
+pub fn uarte_cts_asserted(asserted: bool) {
+    crate::peripherals::uarte_nrf::cts_asserted(sys(), asserted);
+}
+
+/// Latch a UARTE receiver timeout (bridge-driven): EVENTS_RXTO.
+#[wasm_bindgen]
+pub fn uarte_rx_timeout() {
+    crate::peripherals::uarte_nrf::rx_timeout(sys());
+}
+
+/// Latch UARTE line-error bits (bit1 parity, bit2 framing, bit3 break).
+#[wasm_bindgen]
+pub fn uarte_rx_error(bits: u32) {
+    crate::peripherals::uarte_nrf::rx_error(sys(), bits);
+}
+
+// ── CLOCK/POWER host API (board analog + sleep edges + System OFF) ──
+/// Drive the power-fail warning (supply vs POFCON threshold).
+#[wasm_bindgen]
+pub fn power_pof_warn(present: bool) {
+    crate::peripherals::clock_nrf::pof_warn(sys(), present);
+}
+
+/// Publish a WFI/WFE sleep edge (SLEEPENTER latch).
+#[wasm_bindgen]
+pub fn power_notify_sleep_enter() {
+    crate::peripherals::clock_nrf::notify_sleep_enter(sys());
+}
+
+/// Publish the WFI/WFE wake edge (SLEEPEXIT latch).
+#[wasm_bindgen]
+pub fn power_notify_sleep_exit() {
+    crate::peripherals::clock_nrf::notify_sleep_exit(sys());
+}
+
+/// Take an armed System OFF request (firmware wrote SYSTEMOFF=1).
+#[wasm_bindgen]
+pub fn power_take_systemoff() -> bool {
+    crate::peripherals::clock_nrf::take_systemoff(sys())
+}
+
+// ── WDT sleep/halt gates ──
+/// Publish the CPU-sleep state for the WDT SLEEP gate.
+#[wasm_bindgen]
+pub fn wdt_set_sleeping(sleeping: bool) {
+    crate::peripherals::wdt_nrf::wdt_set_sleeping(sys(), sleeping);
+}
+
+/// Publish the debugger-halt state for the WDT HALT gate.
+#[wasm_bindgen]
+pub fn wdt_set_debug_halt(halted: bool) {
+    crate::peripherals::wdt_nrf::wdt_set_debug_halt(sys(), halted);
+}
+
 #[wasm_bindgen]
 pub fn twim_take_txdma(peripheral: &str) -> Vec<u32> {
     crate::peripherals::twim_nrf::take_txdma(sys(), peripheral)
@@ -296,6 +353,42 @@ pub fn pdm_complete_sample() {
 #[wasm_bindgen]
 pub fn usbd_signal_reset() {
     crate::peripherals::usbd_nrf::signal_usbreset(sys());
+}
+
+/// Host-side SOF injection (1 ms USB frame): EVENTS_SOF + FRAMECNTR.
+#[wasm_bindgen]
+pub fn usbd_signal_sof() {
+    crate::peripherals::usbd_nrf::signal_sof(sys());
+}
+
+/// Host-side USB event injection (suspend/resume/wakeup-ready cause bits).
+#[wasm_bindgen]
+pub fn usbd_signal_usbevent(cause: u32) {
+    crate::peripherals::usbd_nrf::signal_usbevent(sys(), cause);
+}
+
+/// Take a staged ISOIN transfer [ptr, maxcnt]; empty when idle.
+#[wasm_bindgen]
+pub fn usbd_take_isoin() -> Vec<u32> {
+    crate::peripherals::usbd_nrf::take_isoin(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+/// Complete ISOIN with the on-air bytes.
+#[wasm_bindgen]
+pub fn usbd_complete_isoin(data: &[u8]) {
+    crate::peripherals::usbd_nrf::complete_isoin(sys(), data);
+}
+
+/// Take a staged ISOOUT transfer [ptr, maxcnt]; empty when idle.
+#[wasm_bindgen]
+pub fn usbd_take_isoout() -> Vec<u32> {
+    crate::peripherals::usbd_nrf::take_isoout(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+/// Complete ISOOUT with the received byte count.
+#[wasm_bindgen]
+pub fn usbd_complete_isoout(amount: u32) {
+    crate::peripherals::usbd_nrf::complete_isoout(sys(), amount);
 }
 
 #[wasm_bindgen]
@@ -414,6 +507,36 @@ pub fn radio_set_ed_dbm(dbm: i32) {
     crate::peripherals::radio_nrf::set_ed_dbm(sys(), dbm);
 }
 
+/// Host-inject RATEBOOST (Ble_LR125Kbit CI switches the link to LR500).
+#[wasm_bindgen]
+pub fn radio_inject_rateboost() {
+    crate::peripherals::radio_nrf::inject_rateboost(sys());
+}
+
+/// Host-inject SYNC (preamble sync word received).
+#[wasm_bindgen]
+pub fn radio_inject_sync() {
+    crate::peripherals::radio_nrf::inject_sync(sys());
+}
+
+/// Host-inject CTEPRESENT (CTE follows the packet, DFE active).
+#[wasm_bindgen]
+pub fn radio_inject_ctepresent() {
+    crate::peripherals::radio_nrf::inject_ctepresent(sys());
+}
+
+/// Take a staged DFE IQ-sample transfer [ptr, maxcnt]; empty when idle.
+#[wasm_bindgen]
+pub fn radio_take_dfe_sample() -> Vec<u32> {
+    crate::peripherals::radio_nrf::take_dfe_sample(sys()).map(|(p, n)| vec![p, n]).unwrap_or_default()
+}
+
+/// Complete DFE sampling with `amount` IQ samples at DFEPACKET.PTR.
+#[wasm_bindgen]
+pub fn radio_complete_dfe(amount: u32) {
+    crate::peripherals::radio_nrf::complete_dfe(sys(), amount);
+}
+
 // ── I2S streaming driver API ──
 #[wasm_bindgen]
 pub fn i2s_take_rx() -> Vec<u32> {
@@ -464,6 +587,12 @@ pub fn nfct_take_rx() -> Vec<u32> {
 #[wasm_bindgen]
 pub fn nfct_complete_rx(amount: u32) {
     crate::peripherals::nfct_nrf::complete_nfct_rx(sys(), amount);
+}
+
+/// Host-inject an NFC modulation collision (two tags answering at once).
+#[wasm_bindgen]
+pub fn nfct_inject_collision() {
+    crate::peripherals::nfct_nrf::inject_collision(sys());
 }
 
 // ── SAADC limit-monitor driver API ──
@@ -521,6 +650,12 @@ pub fn ecb_complete() {
 #[wasm_bindgen]
 pub fn comp_set_input_mv(mv: u32) {
     crate::peripherals::comp_nrf::comp_set_input_mv(sys(), mv);
+}
+
+/// Drive the COMP external reference level in mV (REFSEL ARef path).
+#[wasm_bindgen]
+pub fn comp_set_aref_mv(mv: u32) {
+    crate::peripherals::comp_nrf::comp_set_aref_mv(sys(), mv);
 }
 
 #[wasm_bindgen]

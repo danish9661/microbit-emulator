@@ -221,8 +221,10 @@ export class MockI2s {
     const w = this.wasm;
     if (this.done) return;
     w32(w, I2S_BASE, 0x500, 1); // ENABLE
-    w32(w, I2S_BASE, 0x538, 0x20001000); w32(w, I2S_BASE, 0x53C, 8);
-    w32(w, I2S_BASE, 0x540, 0x20002000); w32(w, I2S_BASE, 0x544, 8);
+    w32(w, I2S_BASE, 0x508, 1); // CONFIG.RXEN
+    w32(w, I2S_BASE, 0x50C, 1); // CONFIG.TXEN
+    w32(w, I2S_BASE, 0x538, 0x20001000); w32(w, I2S_BASE, 0x550, 8); // RXD.PTR + shared MAXCNT (SVD)
+    w32(w, I2S_BASE, 0x540, 0x20002000); // TXD.PTR
     w32(w, I2S_BASE, 0x000, 1); // START
     const rx = w.i2s_take_rx(), tx = w.i2s_take_tx();
     if (!rx.length || !tx.length) return;
@@ -474,6 +476,7 @@ export class MockRadio154 {
       // Address match + MHR + FRAMESTART on RX completion.
       w32(w, RADIO_BASE, 0x600, 0xEF); // DAB[0]
       w32(w, RADIO_BASE, 0x530, 1); // RXADDRESSES: listen addr 0
+      w32(w, RADIO_BASE, 0x640, 1); // DACNF: ENA0 (SVD gate)
       w32(w, RADIO_BASE, 0x644, 0xBEEF); // MHRMATCHCONF
       w32(w, RADIO_BASE, 0x648, 0xFFFF); // MHRMATCHMAS
       const ptr = this.oneRx([0xEF, 0xBE, 0x01], false);

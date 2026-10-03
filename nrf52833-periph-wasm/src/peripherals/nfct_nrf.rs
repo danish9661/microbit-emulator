@@ -56,10 +56,19 @@ pub struct NfctNrf {
     ev_selected: bool,
     ev_started: bool,
     intenset: u32,
+    shorts: u32,
     errorstatus: u32,
     packetptr: u32,
     maxlen: u32,
+    framedelaymin: u32,
+    framedelaymax: u32,
     framedelaymode: u32,
+    modulationctrl: u32,
+    modulationpsel: u32,
+    nfcid1: [u32; 3], // LAST, 2ND_LAST, 3RD_LAST (0x590/594/598)
+    autocolres: u32,  // AUTOCOLRESCONFIG.MODE bit0
+    sensres: u32,
+    selres: u32,
     tx_pending: bool,
     rx_pending: bool,
     rx_amount: u32,
@@ -74,8 +83,10 @@ impl Default for NfctNrf {
             ev_rxend: false, ev_error: false, ev_rxerror: false,
             ev_endrx: false, ev_endtx: false, ev_autocol: false,
             ev_collision: false, ev_selected: false, ev_started: false,
-            intenset: 0, errorstatus: 0, packetptr: 0, maxlen: 0,
-            framedelaymode: 0, tx_pending: false, rx_pending: false,
+            intenset: 0, shorts: 0, errorstatus: 0, packetptr: 0, maxlen: 0,
+            framedelaymin: 0, framedelaymax: 0, framedelaymode: 0,
+            modulationctrl: 0, modulationpsel: 0xFFFF_FFFF,
+            nfcid1: [0; 3], autocolres: 0, sensres: 0, selres: 0, tx_pending: false, rx_pending: false,
             rx_amount: 0,
         }
     }
@@ -88,6 +99,37 @@ impl NfctNrf {
     fn fire(&self, sys: &System, bit: u32) {
         if self.intenset & bit != 0 {
             sys.p.nvic.borrow_mut().set_intr_pending(5);
+        }
+    }
+    /// Shared ACTIVATE effect (TASKS_ACTIVATE + FIELDDETECTED_ACTIVATE
+    /// short): Field + present field -> Selected/Active with SELECTED +
+    /// STARTED (+IRQs 19/20).
+    fn do_activate(&mut self, sys: &System) {
+        if self.enabled && self.state == State::Field && self.field_present {
+            self.state = State::Active;
+            self.ev_selected = true;
+            self.fire(sys, 1 << 19);
+            self.ev_started = true;
+            self.fire(sys, 1 << 20);
+        }
+    }
+    /// Shared SENSE effect (TASKS_SENSE + FIELDLOST_SENSE short): field
+    /// detector on with READY (+IRQ 0); an already-up field detects at
+    /// once; with AUTOCOLRES enabled the auto-resolution announces
+    /// AUTOCOLRESSTARTED (+IRQ 14).
+    fn do_sense(&mut self, sys: &System) {
+        if !self.enabled {
+            return;
+        }
+        self.state = State::Sense;
+        self.ev_ready = true;
+        self.fire(sys, 1 << 0);
+        if self.autocolres & 1 != 0 {
+            self.ev_autocol = true;
+            self.fire(sys, 1 << 14);
+        }
+        if self.field_present {
+            self.set_field(sys, true);
         }
     }
     fn set_field(&mut self, sys: &System, present: bool) {
@@ -105,6 +147,9 @@ impl NfctNrf {
                 self.state = State::Field;
                 self.ev_fielddet = true;
                 self.fire(sys, 1 << 1);
+                if self.shorts & 1 != 0 {
+                    self.do_activate(sys); // FIELDDETECTED_ACTIVATE
+                }
             }
         } else {
             if self.state == State::Field || self.state == State::Active {
@@ -113,6 +158,9 @@ impl NfctNrf {
                 self.rx_pending = false;
                 self.ev_fieldlost = true;
                 self.fire(sys, 1 << 2);
+                if self.shorts & (1 << 1) != 0 {
+                    self.do_sense(sys); // FIELDLOST_SENSE
+                }
             }
         }
     }
@@ -137,29 +185,51 @@ impl Peripheral for NfctNrf {
             0x148 => self.ev_collision as u32,
             0x14C => self.ev_selected as u32,
             0x150 => self.ev_started as u32,
+            0x200 => self.shorts,
+            0x300 => self.intenset, // INTEN reads the enable word
             0x304 => self.intenset,
             0x404 => self.errorstatus,
+            0x410 => {
+                // NFCTAGSTATE: coarse tag-state mirror (SVD 0/1/2/3/4 =
+                // Disabled/RampUp/Idle/Receive/Transmit). Sense/Field
+                // park in Idle; Active reports the transfer direction.
+                match self.state {
+                    State::Disabled => 0,
+                    State::Sleep => 0,
+                    State::Sense | State::Field => 2,
+                    State::Active => {
+                        if self.tx_pending {
+                            4
+                        } else if self.rx_pending {
+                            3
+                        } else {
+                            2
+                        }
+                    }
+                }
+            }
             0x420 => (self.state == State::Sleep) as u32,
             0x43C => self.field_present as u32,
             0x500 => self.enabled as u32,
+            0x504 => self.framedelaymin,
+            0x508 => self.framedelaymax,
             0x50C => self.framedelaymode,
             0x510 => self.packetptr,
             0x514 => self.maxlen,
+            0x52C => self.modulationctrl,
+            0x538 => self.modulationpsel,
+            0x590 => self.nfcid1[0], // NFCID1_LAST
+            0x594 => self.nfcid1[1], // NFCID1_2ND_LAST
+            0x598 => self.nfcid1[2], // NFCID1_3RD_LAST
+            0x59C => self.autocolres,
+            0x5A0 => self.sensres,
+            0x5A4 => self.selres,
             _ => 0,
         }
     }
     fn write(&mut self, sys: &System, offset: u32, value: u32) {
         match offset {
-            0x000 => {
-                // ACTIVATE: only from Field state with the field up.
-                if self.enabled && self.state == State::Field && self.field_present {
-                    self.state = State::Active;
-                    self.ev_selected = true;
-                    self.fire(sys, 1 << 19);
-                    self.ev_started = true;
-                    self.fire(sys, 1 << 20);
-                }
-            }
+            0x000 => self.do_activate(sys), // ACTIVATE
             0x004 => {
                 // DISABLE: full stop, events cleared.
                 self.state = State::Disabled;
@@ -181,20 +251,7 @@ impl Peripheral for NfctNrf {
                 self.ev_selected = false;
                 self.ev_started = false;
             }
-            0x008 => {
-                // SENSE: field detector on; READY announces it.
-                if self.enabled {
-                    self.state = State::Sense;
-                    self.ev_ready = true;
-                    self.fire(sys, 1 << 0);
-                    // Field already up (phone waiting): detect at once.
-                    if self.field_present {
-                        self.state = State::Field;
-                        self.ev_fielddet = true;
-                        self.fire(sys, 1 << 1);
-                    }
-                }
-            }
+            0x008 => self.do_sense(sys), // SENSE
             0x00C => {
                 // STARTTX: send PACKETPTR[..MAXLEN] when active.
                 if self.enabled && self.state == State::Active && self.maxlen > 0 {
@@ -235,6 +292,8 @@ impl Peripheral for NfctNrf {
             0x148 => if value == 0 { self.ev_collision = false; }
             0x14C => if value == 0 { self.ev_selected = false; }
             0x150 => if value == 0 { self.ev_started = false; }
+            0x200 => self.shorts = value & 0x23, // FIELDDET_ACT + FIELDLOST_SENSE + TXEND_ENABLERX
+            0x300 => self.intenset = value & 0x1C_5CFF, // INTEN absolute
             0x304 => self.intenset |= value & 0x1C_5CFF,
             0x308 => self.intenset &= !value,
             0x404 => self.errorstatus &= !value, // write-1-clears
@@ -247,6 +306,16 @@ impl Peripheral for NfctNrf {
             0x50C => self.framedelaymode = value & 3,
             0x510 => self.packetptr = value,
             0x514 => self.maxlen = value & 0xFF,
+            0x504 => self.framedelaymin = value & 0xFFFF,
+            0x508 => self.framedelaymax = value & 0xF_FFFF,
+            0x52C => self.modulationctrl = value & 3,
+            0x538 => self.modulationpsel = value,
+            0x590 => self.nfcid1[0] = value,
+            0x594 => self.nfcid1[1] = value,
+            0x598 => self.nfcid1[2] = value,
+            0x59C => self.autocolres = value & 1,
+            0x5A0 => self.sensres = value & 0xFFFF,
+            0x5A4 => self.selres = value & 0xFF,
             _ => {}
         }
     }
@@ -295,6 +364,16 @@ pub fn nfct_field_present(sys: &System, present: bool) {
     with_nfct(sys, |n| n.set_field(sys, present));
 }
 
+/// Host-inject a modulation collision (two tags answering at once):
+/// latches COLLISION (+IRQ 18 when INTENabled) with the ERRORSTATUS
+/// bit the short path reports.
+pub fn inject_collision(sys: &System) {
+    with_nfct(sys, |n| {
+        n.ev_collision = true;
+        n.fire(sys, 1 << 18);
+    });
+}
+
 /// Take a staged TX frame (ptr, maxcnt); None when idle.
 pub fn take_nfct_tx(sys: &System) -> Option<(u32, u32)> {
     with_nfct(sys, |n| {
@@ -308,13 +387,20 @@ pub fn take_nfct_tx(sys: &System) -> Option<(u32, u32)> {
     .flatten()
 }
 
-/// Complete TX: frame went on air; sets TXFRAMEEND + ENDTX.
+/// Complete TX: frame went on air; sets TXFRAMEEND + ENDTX (+ the
+/// TXFRAMEEND_ENABLERXDATA short re-arms the RX buffer when active).
 pub fn complete_nfct_tx(sys: &System) {
     with_nfct(sys, |n| {
         n.ev_txend = true;
         n.fire(sys, 1 << 4);
         n.ev_endtx = true;
         n.fire(sys, 1 << 12);
+        if n.shorts & (1 << 5) != 0 && n.enabled && n.state == State::Active && n.maxlen > 0 {
+            n.rx_pending = true;
+            n.rx_amount = 0;
+            n.ev_rxstart = true;
+            n.fire(sys, 1 << 5);
+        }
     });
 }
 
@@ -394,6 +480,60 @@ mod tests {
         // 2nd run: fresh instance, no leak.
         let n2 = NfctNrf::default();
         assert_eq!(n2.state, State::Disabled);
+    }
+    #[test]
+    fn shorts_tagstate_id_config_collision() {
+        // FIELDDETECTED_ACTIVATE auto-selects; FIELDLOST_SENSE re-arms;
+        // TXFRAMEEND_ENABLERXDATA re-arms RX; NFCTAGSTATE mirrors;
+        // NFCID/AUTOCOLRES/SENSRES/SELRES/FRAMEDELAY/MODULATION store;
+        // injected collision latches with IRQ.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 5); // NVIC ISER: NFCT
+        sys.p.write(&sys, 0x40005304, 4, (1 << 1) | (1 << 19) | (1 << 18) | (1 << 14) | (1 << 5));
+        sys.p.write(&sys, 0x40005500, 4, 1); // ENABLE
+        sys.p.write(&sys, 0x40005200, 4, (1 << 0) | (1 << 1) | (1 << 5)); // SHORTS
+        assert_eq!(sys.p.read(&sys, 0x40005200, 4), 0x23, "SHORTS mask");
+        // ID + config block.
+        sys.p.write(&sys, 0x40005590, 4, 0x11223344); // NFCID1_LAST
+        sys.p.write(&sys, 0x40005594, 4, 0x55667788); // 2ND_LAST
+        sys.p.write(&sys, 0x40005598, 4, 0x99AABBCC); // 3RD_LAST
+        sys.p.write(&sys, 0x4000559C, 4, 1); // AUTOCOLRES on
+        sys.p.write(&sys, 0x400055A0, 4, 0x2177); // SENSRES
+        sys.p.write(&sys, 0x400055A4, 4, 0x60); // SELRES
+        sys.p.write(&sys, 0x40005504, 4, 0x1234); // FRAMEDELAYMIN
+        sys.p.write(&sys, 0x40005508, 4, 0x23456); // FRAMEDELAYMAX
+        sys.p.write(&sys, 0x4000552C, 4, 2); // MODULATIONCTRL
+        assert_eq!(sys.p.read(&sys, 0x40005590, 4), 0x11223344, "NFCID1_LAST");
+        assert_eq!(sys.p.read(&sys, 0x400055A0, 4), 0x2177, "SENSRES");
+        assert_eq!(sys.p.read(&sys, 0x400055A4, 4), 0x60, "SELRES");
+        assert_eq!(sys.p.read(&sys, 0x40005504, 4), 0x1234, "FRAMEDELAYMIN");
+        // SENSE with AUTOCOLRES: READY + AUTOCOLRESSTARTED.
+        sys.p.write(&sys, 0x40005008, 4, 1);
+        assert_eq!(sys.p.read(&sys, 0x40005138, 4), 1, "AUTOCOLRESSTARTED");
+        assert_eq!(sys.p.read(&sys, 0x40005410, 4), 2, "TAGSTATE Idle in Sense");
+        // Field arrives: detect + auto-activate via short.
+        nfct_field_present(&sys, true);
+        assert_eq!(sys.p.read(&sys, 0x4000514C, 4), 1, "auto SELECTED");
+        assert_eq!(sys.p.read(&sys, 0x40005150, 4), 1, "auto STARTED");
+        assert!(sys.p.nvic.borrow().has_pending(), "IRQ 5 pends");
+        // TX with the TXEND_ENABLERXDATA short: RX re-arms at once.
+        sys.p.write(&sys, 0x40005510, 4, 0x20001000);
+        sys.p.write(&sys, 0x40005514, 4, 4);
+        sys.p.write(&sys, 0x4000500C, 4, 1);
+        assert_eq!(sys.p.read(&sys, 0x40005410, 4), 4, "TAGSTATE Transmit");
+        assert!(take_nfct_tx(&sys).is_some(), "TX staged");
+        complete_nfct_tx(&sys);
+        assert!(take_nfct_rx(&sys).is_some(), "RX re-armed by short");
+        assert_eq!(sys.p.read(&sys, 0x40005114, 4), 1, "RXFRAMESTART via short");
+        // Collision inject.
+        inject_collision(&sys);
+        assert_eq!(sys.p.read(&sys, 0x40005148, 4), 1, "COLLISION");
+        // Field lost: FIELDLOST + auto-SENSE via short (READY again).
+        sys.p.write(&sys, 0x40005100, 4, 0);
+        nfct_field_present(&sys, false);
+        assert_eq!(sys.p.read(&sys, 0x40005108, 4), 1, "FIELDLOST");
+        assert_eq!(sys.p.read(&sys, 0x40005100, 4), 1, "READY via short");
+        assert_eq!(sys.p.read(&sys, 0x40005410, 4), 2, "TAGSTATE Idle in Sense");
     }
     #[test]
     fn nfcpins_gate_routes_pins_vs_antenna() {

@@ -25,22 +25,25 @@ txfill:
     subs r2, r2, #1
     bne txfill
 
-    /* I2S: ENABLE, RXD.PTR/MAXCNT, TXD.PTR/MAXCNT, START */
+    /* I2S: ENABLE, CONFIG.RXEN/TXEN, RXD.PTR, RXTXD.MAXCNT, TXD.PTR, START (SVD) */
     ldr r0, =0x40025500
     movs r1, #1
     str r1, [r0]              /* ENABLE */
+    ldr r0, =0x40025508
+    movs r1, #1
+    str r1, [r0]              /* CONFIG.RXEN */
+    ldr r0, =0x4002550C
+    movs r1, #1
+    str r1, [r0]              /* CONFIG.TXEN */
     ldr r0, =0x40025538
     ldr r1, =0x20001000
     str r1, [r0]              /* RXD.PTR */
-    ldr r0, =0x4002553C
+    ldr r0, =0x40025550
     movs r1, #8
-    str r1, [r0]              /* RXD.MAXCNT */
+    str r1, [r0]              /* RXTXD.MAXCNT (shared) */
     ldr r0, =0x40025540
     ldr r1, =0x20002000
     str r1, [r0]              /* TXD.PTR */
-    ldr r0, =0x40025544
-    movs r1, #8
-    str r1, [r0]              /* TXD.MAXCNT */
     ldr r0, =0x40025000
     movs r1, #1
     str r1, [r0]              /* START */

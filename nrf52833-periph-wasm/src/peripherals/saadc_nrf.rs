@@ -6,8 +6,9 @@ use super::Peripheral;
 /// TASKS_CALIBRATEOFFSET 0x010, EVENTS_STARTED 0x100, EVENTS_END 0x104,
 /// EVENTS_DONE 0x108, EVENTS_RESULTDONE 0x10C, EVENTS_CALIBRATEDONE 0x110,
 /// EVENTS_STOPPED 0x114, EVENTS_CH[n].LIMITH 0x118+8n / LIMITL 0x11C+8n
-/// (n=0..7), INTENSET 0x304 (STARTED 0, END 1, DONE 2, RESULTDONE 3,
+/// (n=0..7), INTEN 0x300 / SET 0x304 (STARTED 0, END 1, DONE 2, RESULTDONE 3,
 /// CALIBRATEDONE 4, STOPPED 5, CHnLIMITH 6+2n, CHnLIMITL 7+2n) / CLR 0x308,
+/// STATUS 0x400 (conversion busy latch: START sets, STOP/completion clears),
 /// ENABLE 0x500, CH[n].PSELP 0x510+16n / PSELN 0x514+16n / CONFIG 0x518+16n
 /// / LIMIT 0x51C+16n (LOW[15:0], HIGH[31:16], signed), RESOLUTION 0x5F0,
 /// OVERSAMPLE 0x5F4, SAMPLERATE 0x5F8, RESULT.PTR 0x62C, RESULT.MAXCNT 0x630,
@@ -29,6 +30,9 @@ pub struct Saadc {
     ev_limith: [bool; 8],
     ev_limitl: [bool; 8],
     intenset: u32,
+    /// Conversion busy latch for STATUS (SVD 0x400): set by START,
+    /// cleared by STOP or by the RESULT completion.
+    busy: bool,
     ch_pselp: [u32; 8],
     ch_pseln: [u32; 8],
     ch_config: [u32; 8],
@@ -48,7 +52,7 @@ impl Default for Saadc {
         Self { enabled: false, ev_started: false, ev_end: false,
                ev_done: false, ev_resultdone: false, ev_cal: false,
                ev_stopped: false, ev_limith: [false; 8], ev_limitl: [false; 8],
-               intenset: 0, ch_pselp: [0xFFFFFFFF; 8], ch_pseln: [0xFFFFFFFF; 8],
+               intenset: 0, busy: false, ch_pselp: [0xFFFFFFFF; 8], ch_pseln: [0xFFFFFFFF; 8],
                ch_config: [0; 8], ch_limlo: [0; 8], ch_limhi: [0; 8],
                resolution: 1, oversample: 0, samplerate: 0,
                res_ptr: 0, res_maxcnt: 0, res_amount: 0, res_pending: false }
@@ -89,6 +93,8 @@ impl Peripheral for Saadc {
                 }
             }
             0x304 => self.intenset,
+            0x300 => self.intenset, // INTEN reads the enable word
+            0x400 => self.busy as u32, // STATUS: conversion in progress
             0x500 => self.enabled as u32,
             0x510..=0x58F if ((offset - 0x510) & 0xF) < 0xD => {
                 // CH[n] block: PSELP+0, PSELN+4, CONFIG+8, LIMIT+12.
@@ -116,19 +122,21 @@ impl Peripheral for Saadc {
     }
     fn write(&mut self, sys: &System, offset: u32, value: u32) {
         match offset {
-            0x000 => { self.ev_started = true; self.fire(sys, 1); }
+            0x000 => { self.ev_started = true; self.busy = true; self.fire(sys, 1); }
             0x004 => {
                 if self.res_maxcnt > 0 {
                     self.res_pending = true; // driver completes
                     self.res_amount = 0;
                 } else {
                     self.ev_end = true; self.ev_done = true;
+                    self.busy = false;
                     let _ = instruction_count();
                     self.fire(sys, 1 << 1); self.fire(sys, 1 << 2);
                 }
             }
             0x008 => {
                 self.ev_started = false;
+                self.busy = false;
                 self.ev_stopped = true;
                 self.fire(sys, 1 << 5);
             }
@@ -151,7 +159,9 @@ impl Peripheral for Saadc {
                     }
                 }
             }
-            0x304 => self.intenset |= value,
+            // INTEN absolute write (SVD 0x300); all bits 0-21 defined.
+            0x300 => self.intenset = value & 0x3F_FFFF,
+            0x304 => self.intenset |= value & 0x3F_FFFF,
             0x308 => self.intenset &= !value,
             0x500 => self.enabled = value & 1 == 1,
             0x510..=0x58F if ((offset - 0x510) & 0xF) < 0xD => {
@@ -217,6 +227,7 @@ pub fn complete_result(sys: &System, amount: u32) {
                 s.ev_end = true;
                 s.ev_done = true;
                 s.ev_resultdone = true;
+                s.busy = false;
                 if s.intenset & 0xE != 0 {
                     sys.p.nvic.borrow_mut().set_intr_pending(7);
                 }
@@ -339,5 +350,28 @@ mod tests {
         sys.p.write(&sys, 0x40007004, 4, 1);
         complete_result(&sys, 1);
         assert!(sys.p.nvic.borrow().has_pending(), "END IRQ pends");
+    }
+    #[test]
+    fn status_busy_latch_and_inten_absolute() {
+        // STATUS (0x400) reads busy: set by START, cleared by STOP and
+        // by RESULT completion; INTEN (0x300) writes the enable word
+        // absolutely (all bits 0-21 defined).
+        let sys = test_dummy_system();
+        assert_eq!(sys.p.read(&sys, 0x40007400, 4), 0, "idle at reset");
+        sys.p.write(&sys, 0x40007300, 4, 0xFFFF_FFFF);
+        assert_eq!(sys.p.read(&sys, 0x40007300, 4), 0x3F_FFFF, "INTEN mask");
+        sys.p.write(&sys, 0x40007000, 4, 1); // START
+        assert_eq!(sys.p.read(&sys, 0x40007400, 4), 1, "busy after START");
+        sys.p.write(&sys, 0x40007008, 4, 1); // STOP
+        assert_eq!(sys.p.read(&sys, 0x40007400, 4), 0, "idle after STOP");
+        sys.p.write(&sys, 0x4000762C, 4, 0x20002000);
+        sys.p.write(&sys, 0x40007630, 4, 1);
+        sys.p.write(&sys, 0x40007000, 4, 1); // START
+        sys.p.write(&sys, 0x40007004, 4, 1); // SAMPLE stages driver job
+        assert_eq!(sys.p.read(&sys, 0x40007400, 4), 1, "busy while staged");
+        complete_result(&sys, 1);
+        assert_eq!(sys.p.read(&sys, 0x40007400, 4), 0, "idle after complete");
+        // 2nd run: fresh default idle.
+        assert!(!Saadc::default().busy);
     }
 }

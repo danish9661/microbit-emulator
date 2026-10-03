@@ -64,13 +64,15 @@ _start:
     ldr r0, =0x40029104
     bl spin_until_set
 
-    /* USBD: ENABLE, PULLUP, STARTEPIN0, poll STARTED */
+    /* USBD: ENABLE, PULLUP, EPINEN, STARTEPIN0, poll STARTED */
     ldr r0, =0x40027500
     movs r1, #1
     str r1, [r0]
     ldr r0, =0x40027504
     str r1, [r0]
-    ldr r0, =0x40027000
+    ldr r0, =0x40027510
+    str r1, [r0]
+    ldr r0, =0x40027004
     str r1, [r0]
     ldr r0, =0x40027104
     bl spin_until_set

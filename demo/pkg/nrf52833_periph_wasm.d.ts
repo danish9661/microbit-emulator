@@ -392,6 +392,11 @@ export function ccm_complete(mic_ok: boolean): void;
 
 export function ccm_take_job(): Uint32Array;
 
+/**
+ * Drive the COMP external reference level in mV (REFSEL ARef path).
+ */
+export function comp_set_aref_mv(mv: number): void;
+
 export function comp_set_input_mv(mv: number): void;
 
 export function ecb_complete(): void;
@@ -482,6 +487,11 @@ export function nfct_complete_tx(): void;
 
 export function nfct_field_present(present: boolean): void;
 
+/**
+ * Host-inject an NFC modulation collision (two tags answering at once).
+ */
+export function nfct_inject_collision(): void;
+
 export function nfct_take_rx(): Uint32Array;
 
 export function nfct_take_tx(): Uint32Array;
@@ -497,6 +507,26 @@ export function pdm_take_sample(): Uint32Array;
 export function periph_read(addr: number, width: number): number;
 
 export function periph_write(addr: number, width: number, value: number): void;
+
+/**
+ * Publish a WFI/WFE sleep edge (SLEEPENTER latch).
+ */
+export function power_notify_sleep_enter(): void;
+
+/**
+ * Publish the WFI/WFE wake edge (SLEEPEXIT latch).
+ */
+export function power_notify_sleep_exit(): void;
+
+/**
+ * Drive the power-fail warning (supply vs POFCON threshold).
+ */
+export function power_pof_warn(present: boolean): void;
+
+/**
+ * Take an armed System OFF request (firmware wrote SYSTEMOFF=1).
+ */
+export function power_take_systemoff(): boolean;
 
 export function qdec_step(dir: number): void;
 
@@ -525,6 +555,11 @@ export function radio_air_rssi_dbm(tx_code: number, path_loss_db: number): numbe
  */
 export function radio_clear_interference(): void;
 
+/**
+ * Complete DFE sampling with `amount` IQ samples at DFEPACKET.PTR.
+ */
+export function radio_complete_dfe(amount: number): void;
+
 export function radio_complete_rx(): void;
 
 /**
@@ -543,6 +578,16 @@ export function radio_complete_tx(): void;
 export function radio_crc32(body: Uint8Array, poly: number, init: number, len: number): number;
 
 export function radio_inject_corrupt(bytes: Uint8Array): void;
+
+/**
+ * Host-inject CTEPRESENT (CTE follows the packet, DFE active).
+ */
+export function radio_inject_ctepresent(): void;
+
+/**
+ * Host-inject RATEBOOST (Ble_LR125Kbit CI switches the link to LR500).
+ */
+export function radio_inject_rateboost(): void;
 
 export function radio_inject_rx(bytes: Uint8Array): void;
 
@@ -567,6 +612,11 @@ export function radio_inject_rx_to(dab_idx: number, bytes: Uint8Array): void;
 export function radio_inject_rx_to_lossy(dab_idx: number, bytes: Uint8Array, path_loss_db: number): void;
 
 /**
+ * Host-inject SYNC (preamble sync word received).
+ */
+export function radio_inject_sync(): void;
+
+/**
  * Set the 802.15.4 energy-detect sample level in dBm (negative).
  * Reported via EDSAMPLE on the next EDSTART; defaults to RSSI level.
  */
@@ -579,6 +629,11 @@ export function radio_set_ed_dbm(dbm: number): void;
 export function radio_set_interference_dbm(dbm: number): void;
 
 export function radio_set_rssi_dbm(dbm: number): void;
+
+/**
+ * Take a staged DFE IQ-sample transfer [ptr, maxcnt]; empty when idle.
+ */
+export function radio_take_dfe_sample(): Uint32Array;
 
 export function radio_take_rx(): Uint32Array;
 
@@ -647,6 +702,22 @@ export function uarte_complete_rxdma(amount: number): void;
 export function uarte_complete_txdma(bytes: Uint8Array): void;
 
 /**
+ * Drive the UARTE CTS pin level (board flow-control edge): asserting
+ * latches CTS, deasserting latches NCTS.
+ */
+export function uarte_cts_asserted(asserted: boolean): void;
+
+/**
+ * Latch UARTE line-error bits (bit1 parity, bit2 framing, bit3 break).
+ */
+export function uarte_rx_error(bits: number): void;
+
+/**
+ * Latch a UARTE receiver timeout (bridge-driven): EVENTS_RXTO.
+ */
+export function uarte_rx_timeout(): void;
+
+/**
  * Take a staged UARTE RX transfer [ptr, maxcnt]; driver writes bytes to
  * guest RAM at ptr, then calls uarte_complete_rxdma(amount).
  */
@@ -658,13 +729,53 @@ export function usbd_complete_epin(ep: number, bytes: Uint8Array): void;
 
 export function usbd_complete_epout(ep: number, amount: number): void;
 
+/**
+ * Complete ISOIN with the on-air bytes.
+ */
+export function usbd_complete_isoin(data: Uint8Array): void;
+
+/**
+ * Complete ISOOUT with the received byte count.
+ */
+export function usbd_complete_isoout(amount: number): void;
+
 export function usbd_inject_setup(bytes: Uint8Array): void;
 
 export function usbd_signal_reset(): void;
 
+/**
+ * Host-side SOF injection (1 ms USB frame): EVENTS_SOF + FRAMECNTR.
+ */
+export function usbd_signal_sof(): void;
+
+/**
+ * Host-side USB event injection (suspend/resume/wakeup-ready cause bits).
+ */
+export function usbd_signal_usbevent(cause: number): void;
+
 export function usbd_take_epin(): Uint32Array;
 
 export function usbd_take_epout(): Uint32Array;
+
+/**
+ * Take a staged ISOIN transfer [ptr, maxcnt]; empty when idle.
+ */
+export function usbd_take_isoin(): Uint32Array;
+
+/**
+ * Take a staged ISOOUT transfer [ptr, maxcnt]; empty when idle.
+ */
+export function usbd_take_isoout(): Uint32Array;
+
+/**
+ * Publish the debugger-halt state for the WDT HALT gate.
+ */
+export function wdt_set_debug_halt(halted: boolean): void;
+
+/**
+ * Publish the CPU-sleep state for the WDT SLEEP gate.
+ */
+export function wdt_set_sleeping(sleeping: boolean): void;
 
 export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembly.Module;
 
@@ -736,6 +847,7 @@ export interface InitOutput {
     readonly ble_tx_power_dbm: () => number;
     readonly ccm_complete: (a: number) => void;
     readonly ccm_take_job: (a: number) => void;
+    readonly comp_set_aref_mv: (a: number) => void;
     readonly comp_set_input_mv: (a: number) => void;
     readonly ecb_complete: () => void;
     readonly ecb_take_job: (a: number) => void;
@@ -763,6 +875,7 @@ export interface InitOutput {
     readonly nfct_complete_rx: (a: number) => void;
     readonly nfct_complete_tx: () => void;
     readonly nfct_field_present: (a: number) => void;
+    readonly nfct_inject_collision: () => void;
     readonly nfct_take_rx: (a: number) => void;
     readonly nfct_take_tx: (a: number) => void;
     readonly nvmc_complete_erase: () => void;
@@ -771,6 +884,10 @@ export interface InitOutput {
     readonly pdm_take_sample: (a: number) => void;
     readonly periph_read: (a: number, b: number) => number;
     readonly periph_write: (a: number, b: number, c: number) => void;
+    readonly power_notify_sleep_enter: () => void;
+    readonly power_notify_sleep_exit: () => void;
+    readonly power_pof_warn: (a: number) => void;
+    readonly power_take_systemoff: () => number;
     readonly qdec_step: (a: number) => void;
     readonly qspi_complete_erase: (a: number, b: number) => void;
     readonly qspi_complete_read: () => void;
@@ -781,18 +898,23 @@ export interface InitOutput {
     readonly qspi_take_write: (a: number) => void;
     readonly radio_air_rssi_dbm: (a: number, b: number) => number;
     readonly radio_clear_interference: () => void;
+    readonly radio_complete_dfe: (a: number) => void;
     readonly radio_complete_rx: () => void;
     readonly radio_complete_rx_with_path_loss: (a: number) => void;
     readonly radio_complete_tx: () => void;
     readonly radio_crc32: (a: number, b: number, c: number, d: number, e: number) => number;
     readonly radio_inject_corrupt: (a: number, b: number) => void;
+    readonly radio_inject_ctepresent: () => void;
+    readonly radio_inject_rateboost: () => void;
     readonly radio_inject_rx: (a: number, b: number) => void;
     readonly radio_inject_rx_lossy: (a: number, b: number, c: number) => void;
     readonly radio_inject_rx_to: (a: number, b: number, c: number) => void;
     readonly radio_inject_rx_to_lossy: (a: number, b: number, c: number, d: number) => void;
+    readonly radio_inject_sync: () => void;
     readonly radio_set_ed_dbm: (a: number) => void;
     readonly radio_set_interference_dbm: (a: number) => void;
     readonly radio_set_rssi_dbm: (a: number) => void;
+    readonly radio_take_dfe_sample: (a: number) => void;
     readonly radio_take_rx: (a: number) => void;
     readonly radio_take_tx: (a: number) => void;
     readonly radio_txpower_dbm: (a: number) => number;
@@ -817,14 +939,23 @@ export interface InitOutput {
     readonly uart_rx_byte: (a: number, b: number) => number;
     readonly uarte_complete_rxdma: (a: number) => void;
     readonly uarte_complete_txdma: (a: number, b: number) => void;
+    readonly uarte_cts_asserted: (a: number) => void;
+    readonly uarte_rx_error: (a: number) => void;
+    readonly uarte_rx_timeout: () => void;
     readonly uarte_take_rxdma: (a: number) => void;
     readonly uarte_take_txdma: (a: number) => void;
     readonly usbd_complete_epin: (a: number, b: number, c: number) => void;
     readonly usbd_complete_epout: (a: number, b: number) => void;
+    readonly usbd_complete_isoin: (a: number, b: number) => void;
+    readonly usbd_complete_isoout: (a: number) => void;
     readonly usbd_inject_setup: (a: number, b: number) => void;
     readonly usbd_signal_reset: () => void;
+    readonly usbd_signal_sof: () => void;
+    readonly usbd_signal_usbevent: (a: number) => void;
     readonly usbd_take_epin: (a: number) => void;
     readonly usbd_take_epout: (a: number) => void;
+    readonly usbd_take_isoin: (a: number) => void;
+    readonly usbd_take_isoout: (a: number) => void;
     readonly wasmcpu_fault_len: (a: number) => number;
     readonly wasmcpu_fault_op1: (a: number) => number;
     readonly wasmcpu_fault_op2: (a: number) => number;
@@ -859,6 +990,8 @@ export interface InitOutput {
     readonly wasmcpu_wake: (a: number) => void;
     readonly wasmcpu_write32: (a: number, b: number, c: number) => void;
     readonly wasmcpu_write8: (a: number, b: number, c: number) => void;
+    readonly wdt_set_debug_halt: (a: number) => void;
+    readonly wdt_set_sleeping: (a: number) => void;
     readonly __wbindgen_export: (a: number, b: number, c: number) => void;
     readonly __wbindgen_export2: (a: number, b: number) => number;
     readonly __wbindgen_export3: (a: number, b: number, c: number, d: number) => number;

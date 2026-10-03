@@ -46,8 +46,8 @@ epin_go:
     ldr r0, =0x40027510
     movs r1, #1
     str r1, [r0]              /* EPINEN */
-    ldr r0, =0x40027000
-    str r1, [r0]              /* STARTEPIN0 */
+    ldr r0, =0x40027004
+    str r1, [r0]              /* STARTEPIN0 (SVD) */
     ldr r0, =0x40027108
     bl spin_until_set
     ldr r0, =msg_usbep

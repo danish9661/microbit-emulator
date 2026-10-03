@@ -9,11 +9,16 @@ use super::Peripheral;
 /// SUSPENDED 0x148 / RXSTARTED 0x14C / TXSTARTED 0x150 / LASTRX 0x15C /
 /// LASTTX 0x160, SHORTS 0x200 (LASTTX_STARTRX 7, LASTTX_SUSPEND 8,
 /// LASTTX_STOP 9, LASTRX_STARTTX 10, LASTRX_SUSPEND 11, LASTRX_STOP 12),
-/// INTENSET 0x304 (STOPPED 1, ERROR 9, SUSPENDED 18, RXSTARTED 19,
-/// TXSTARTED 20, LASTRX 23, LASTTX 24), ERRORSRC 0x4C4 (OVERRUN 0,
-/// ANACK 1, DNACK 2), ENABLE 0x500, ADDRESS 0x588,
-/// RXD.PTR 0x534 / MAXCNT 0x538 / AMOUNT 0x53C,
-/// TXD.PTR 0x544 / MAXCNT 0x548 / AMOUNT 0x54C,
+/// INTEN 0x300 / SET 0x304 / CLR 0x308 (master union: TWIM STOPPED 1,
+/// ERROR 9, SUSPENDED 18, RXSTARTED 19, TXSTARTED 20, LASTRX 23, LASTTX 24
+/// + SPIM STOPPED 1, ENDRX 4, END 6, ENDTX 8, STARTED 19), ERRORSRC 0x4C4 (OVERRUN 0,
+/// ANACK 1, DNACK 2), ENABLE 0x500, PSEL.SCL 0x508 / SDA 0x50C (SPIM:
+/// SCK/MOSI/MISO/CSN 0x508-0x514), FREQUENCY 0x524 (bus clock select —
+/// timing stays virtual), ADDRESS 0x588,
+/// RXD.PTR 0x534 / MAXCNT 0x538 / AMOUNT 0x53C / LIST 0x540,
+/// TXD.PTR 0x544 / MAXCNT 0x548 / AMOUNT 0x54C / LIST 0x550,
+/// SPIM CONFIG 0x554 (ORDER/CPHA/CPOL) / IFTIMING.RXDELAY 0x560 /
+/// CSNDUR 0x564 / PSELDCX 0x56C / ORC 0x5C0 (over-read character),
 /// TXD byte 0x51C / RXD byte 0x518 (polling path).
 /// DMA rule: START with MAXCNT>0 stages a driver transfer (take_* ->
 /// mem move -> complete_*). The polling path (MAXCNT==0) completes
@@ -63,10 +68,19 @@ pub struct Twim {
     spis_def: u8,
     spis_orc: u8,
     spis_config: u32,
+    spis_status: u32,
     ev_spis_end: bool,
     ev_spis_endrx: bool,
     ev_spis_acquired: bool,
     psel: [u32; 4],
+    frequency: u32,
+    rx_list: u32,
+    tx_list: u32,
+    spim_config: u32,
+    pseldcx: u32,
+    rxdelay: u32,
+    csndur: u32,
+    master_orc: u8,
 }
 
 impl Twim {
@@ -95,9 +109,11 @@ impl Twim {
             nack_at: None,
             slv_addr: [0; 2], slv_cfg: 0, slv_orc: 0, slv_match: 0,
             ev_twis_write: false, ev_twis_read: false,
-            spis_acquired: false, spis_def: 0, spis_orc: 0, spis_config: 0,
+            spis_acquired: false, spis_def: 0, spis_orc: 0, spis_config: 0, spis_status: 0,
             ev_spis_end: false, ev_spis_endrx: false, ev_spis_acquired: false,
             psel: [0xFFFF_FFFF; 4],
+            frequency: 0x01980000, rx_list: 0, tx_list: 0, spim_config: 0,
+            pseldcx: 0xFFFF_FFFF, rxdelay: 0, csndur: 0, master_orc: 0xFF,
         }))
     }
     /// Slave map selector: TWIS ENABLE=9, SPIS ENABLE=2 (SVD).
@@ -207,9 +223,15 @@ impl Peripheral for Twim {
             0x15C => self.ev_lastrx as u32,
             0x160 => self.ev_lasttx as u32,
             0x200 => self.shorts,
+            0x300 => self.intenset, // INTEN reads the enable word
             0x304 => self.intenset,
             0x4C4 => self.errorsrc,
             0x500 => self.enable,
+            0x508 | 0x50C | 0x510 | 0x514 => {
+                // PSEL (TWIM: SCL/SDA at 0x508/0x50C; SPIM: SCK/MOSI/MISO/CSN).
+                self.psel[((offset - 0x508) >> 2) as usize % 4]
+            }
+            0x524 => self.frequency, // bus clock select (timing is virtual)
             0x518 => {
                 // RXD polling path: master-mode reads return the slave's
                 // response line (MISO for SPI, SDA for I2C); 0xFF idle.
@@ -222,10 +244,17 @@ impl Peripheral for Twim {
             0x534 => self.rx_ptr,
             0x538 => self.rx_maxcnt,
             0x53C => self.rx_amount,
+            0x540 => self.rx_list, // RXD.LIST: EasyDMA array-list mode
             0x544 => self.tx_ptr,
             0x548 => self.tx_maxcnt,
             0x54C => self.tx_amount,
+            0x550 => self.tx_list, // TXD.LIST: EasyDMA array-list mode
+            0x554 => self.spim_config, // SPIM CONFIG (CPOL/CPHA/ORDER)
+            0x560 => self.rxdelay,     // SPIM IFTIMING.RXDELAY
+            0x564 => self.csndur,      // SPIM IFTIMING.CSNDUR
+            0x56C => self.pseldcx,     // SPIM PSELDCX (DCX pin select)
             0x588 => self.address as u32,
+            0x5C0 => self.master_orc as u32, // SPIM ORC (over-read char)
             _ => 0,
         }
     }
@@ -293,10 +322,23 @@ impl Peripheral for Twim {
             0x15C => if value == 0 { self.ev_lastrx = false; }
             0x160 => if value == 0 { self.ev_lasttx = false; }
             0x200 => self.shorts = value & 0x1F80,
-            0x304 => self.intenset |= value,
+            // Master INTEN union (TWIM 1,9,18,19,20,23,24 + SPIM 1,4,6,8,19).
+            0x300 => self.intenset = value & 0x19C0_352,
+            0x304 => self.intenset |= value & 0x19C0_352,
             0x308 => self.intenset &= !value,
             0x4C4 => self.errorsrc &= !value, // write-1-clears
             0x500 => self.enable = value & 0xF,
+            0x508 | 0x50C | 0x510 | 0x514 => {
+                self.psel[((offset - 0x508) >> 2) as usize % 4] = value;
+            }
+            0x524 => self.frequency = value, // bus clock select (timing is virtual)
+            0x540 => self.rx_list = value & 7, // RXD.LIST array-list mode
+            0x550 => self.tx_list = value & 7, // TXD.LIST array-list mode
+            0x554 => self.spim_config = value & 7, // SPIM CPOL/CPHA/ORDER
+            0x560 => self.rxdelay = value & 7,     // IFTIMING.RXDELAY
+            0x564 => self.csndur = value & 0xFF,   // IFTIMING.CSNDUR
+            0x56C => self.pseldcx = value,         // SPIM PSELDCX
+            0x5C0 => self.master_orc = (value & 0xFF) as u8, // SPIM ORC
             0x51C => {
                 // TXD byte -> tapped slave. I2C slaves match ADDRESS;
                 // SPIM-only instances (SPIM2/3) route register-mode bytes
@@ -344,6 +386,7 @@ impl Twim {
             0x164 => self.ev_twis_write as u32,
             0x168 => self.ev_twis_read as u32,
             0x200 => self.shorts,
+            0x300 => self.intenset, // INTEN reads the enable word
             0x304 => self.intenset,
             0x4D0 => self.errorsrc,
             0x4D4 => self.slv_match,
@@ -396,6 +439,7 @@ impl Twim {
             0x164 => if value == 0 { self.ev_twis_write = false; }
             0x168 => if value == 0 { self.ev_twis_read = false; }
             0x200 => self.shorts = value & 0x6000,
+            0x300 => self.intenset = value & 0x0618_0202, // INTEN absolute
             0x304 => self.intenset |= value & 0x0618_0202,
             0x308 => self.intenset &= !value,
             0x4D0 => self.errorsrc &= !value, // write-1-clears
@@ -429,7 +473,9 @@ impl Twim {
             0x110 => self.ev_spis_endrx as u32,
             0x128 => self.ev_spis_acquired as u32,
             0x200 => self.shorts,
+            0x300 => self.intenset, // INTEN reads the enable word
             0x304 => self.intenset,
+            0x440 => self.spis_status, // STATUS: OVERREAD 0 + OVERFLOW 1
             0x500 => self.enable,
             0x508 | 0x50C | 0x510 | 0x514 => {
                 self.psel[((offset - 0x508) >> 2) as usize % 4]
@@ -461,8 +507,10 @@ impl Twim {
             0x110 => if value == 0 { self.ev_spis_endrx = false; }
             0x128 => if value == 0 { self.ev_spis_acquired = false; }
             0x200 => self.shorts = value & 4,
+            0x300 => self.intenset = value & 0x412, // INTEN absolute
             0x304 => self.intenset |= value & 0x412,
             0x308 => self.intenset &= !value,
+            0x440 => self.spis_status = value & 3, // STATUS RW
             0x500 => self.enable = value & 0xF,
             0x508 | 0x50C | 0x510 | 0x514 => {
                 self.psel[((offset - 0x508) >> 2) as usize % 4] = value;
@@ -866,6 +914,56 @@ mod tests {
         // take finds nothing: the transfer died on the bus.
         assert!(take_txdma(&sys, "TWIM1").is_none());
     }
+    #[test]
+    fn serial_psel_frequency_list_spimcfg_orc_inten_status() {
+        // PSEL/FREQUENCY/LIST/SPIM-CONFIG/ORC store + read back; INTEN
+        // absolute + union mask (reserved bits dropped); SPIS STATUS
+        // reports OVERREAD/OVERFLOW from the exchange.
+        use crate::system::test_dummy_system;
+        use crate::cpu::mem::FlatMemory;
+        let sys = test_dummy_system();
+        // TWIM1 master map.
+        sys.p.write(&sys, 0x40004508, 4, 0x03); // PSEL.SCL P0.03
+        sys.p.write(&sys, 0x4000450C, 4, 0x04); // PSEL.SDA P0.04
+        sys.p.write(&sys, 0x40004524, 4, 0x06400000); // FREQUENCY K400
+        sys.p.write(&sys, 0x40004540, 4, 1); // RXD.LIST
+        sys.p.write(&sys, 0x40004550, 4, 1); // TXD.LIST
+        assert_eq!(sys.p.read(&sys, 0x40004508, 4), 0x03, "PSEL.SCL");
+        assert_eq!(sys.p.read(&sys, 0x4000450C, 4), 0x04, "PSEL.SDA");
+        assert_eq!(sys.p.read(&sys, 0x40004524, 4), 0x06400000, "FREQUENCY K400");
+        assert_eq!(sys.p.read(&sys, 0x40004540, 4), 1, "RXD.LIST");
+        assert_eq!(sys.p.read(&sys, 0x40004550, 4), 1, "TXD.LIST");
+        // INTEN absolute + union mask (bit 0 reserved: dropped).
+        sys.p.write(&sys, 0x40004300, 4, 0xFFFF_FFFF);
+        assert_eq!(sys.p.read(&sys, 0x40004300, 4), 0x19C0352, "master INTEN mask");
+        sys.p.write(&sys, 0x40004300, 4, 0);
+        sys.p.write(&sys, 0x40004304, 4, (1 << 24) | (1 << 0));
+        assert_eq!(sys.p.read(&sys, 0x40004304, 4), 1 << 24, "SET masked");
+        // SPIM2 map: CONFIG + IFTIMING + PSELDCX + ORC.
+        sys.p.write(&sys, 0x40023554, 4, 0x5); // CONFIG CPOL+ORDER
+        sys.p.write(&sys, 0x40023560, 4, 3); // RXDELAY
+        sys.p.write(&sys, 0x40023564, 4, 0x22); // CSNDUR
+        sys.p.write(&sys, 0x4002356C, 4, 0x0C); // PSELDCX P0.12
+        sys.p.write(&sys, 0x400235C0, 4, 0xAB); // ORC
+        assert_eq!(sys.p.read(&sys, 0x40023554, 4), 0x5, "SPIM CONFIG");
+        assert_eq!(sys.p.read(&sys, 0x40023560, 4), 3, "RXDELAY");
+        assert_eq!(sys.p.read(&sys, 0x40023564, 4), 0x22, "CSNDUR");
+        assert_eq!(sys.p.read(&sys, 0x4002356C, 4), 0x0C, "PSELDCX");
+        assert_eq!(sys.p.read(&sys, 0x400235C0, 4), 0xAB, "SPIM ORC");
+        // SPIS STATUS: short buffers on both sides -> both flags.
+        sys.p.write(&sys, 0x40003500, 4, 2); // SPIS ENABLE (SERIAL0)
+        sys.p.write(&sys, 0x40003534, 4, 0x20001000); // RXD.PTR
+        sys.p.write(&sys, 0x40003538, 4, 1); // RXD.MAXCNT=1
+        sys.p.write(&sys, 0x40003544, 4, 0x20002000); // TXD.PTR
+        sys.p.write(&sys, 0x40003548, 4, 1); // TXD.MAXCNT=1
+        sys.p.write(&sys, 0x40003024, 4, 1); // ACQUIRE
+        let mut mem = FlatMemory::new(512 * 1024, 128 * 1024);
+        let miso = spis_exchange(&sys, &mut mem, 0x40003000, &[9, 8, 7]);
+        assert_eq!(miso.len(), 3, "3 bytes clocked");
+        assert_eq!(sys.p.read(&sys, 0x40003440, 4) & 3, 3, "OVERREAD+OVERFLOW");
+        sys.p.write(&sys, 0x40003440, 4, 0); // STATUS RW clear
+        assert_eq!(sys.p.read(&sys, 0x40003440, 4), 0, "STATUS cleared");
+    }
 }
 
 /// TWIS address match helper: returns the matched ADDRESS index, or
@@ -1049,6 +1147,16 @@ pub fn spis_exchange(
         let pad = if t.tx_maxcnt > 0 { t.spis_orc } else { t.spis_def };
         while miso.len() < n {
             miso.push(pad);
+        }
+        // STATUS from this transaction: OVERFLOW when the master sent
+        // more than the RX buffer holds, OVERREAD when it clocked more
+        // than the TX buffer holds (padded with ORC/DEF).
+        t.spis_status = 0;
+        if n > tx_n {
+            t.spis_status |= 1 << 0; // OVERREAD
+        }
+        if n > rx_n {
+            t.spis_status |= 1 << 1; // OVERFLOW
         }
         t.tx_amount = tx_n as u32;
         t.ev_spis_end = true;

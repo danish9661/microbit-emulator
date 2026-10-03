@@ -1298,6 +1298,14 @@ export function ccm_take_job() {
 }
 
 /**
+ * Drive the COMP external reference level in mV (REFSEL ARef path).
+ * @param {number} mv
+ */
+export function comp_set_aref_mv(mv) {
+    wasm.comp_set_aref_mv(mv);
+}
+
+/**
  * @param {number} mv
  */
 export function comp_set_input_mv(mv) {
@@ -1608,6 +1616,13 @@ export function nfct_field_present(present) {
 }
 
 /**
+ * Host-inject an NFC modulation collision (two tags answering at once).
+ */
+export function nfct_inject_collision() {
+    wasm.nfct_inject_collision();
+}
+
+/**
  * @returns {Uint32Array}
  */
 export function nfct_take_rx() {
@@ -1700,6 +1715,37 @@ export function periph_read(addr, width) {
  */
 export function periph_write(addr, width, value) {
     wasm.periph_write(addr, width, value);
+}
+
+/**
+ * Publish a WFI/WFE sleep edge (SLEEPENTER latch).
+ */
+export function power_notify_sleep_enter() {
+    wasm.power_notify_sleep_enter();
+}
+
+/**
+ * Publish the WFI/WFE wake edge (SLEEPEXIT latch).
+ */
+export function power_notify_sleep_exit() {
+    wasm.power_notify_sleep_exit();
+}
+
+/**
+ * Drive the power-fail warning (supply vs POFCON threshold).
+ * @param {boolean} present
+ */
+export function power_pof_warn(present) {
+    wasm.power_pof_warn(present);
+}
+
+/**
+ * Take an armed System OFF request (firmware wrote SYSTEMOFF=1).
+ * @returns {boolean}
+ */
+export function power_take_systemoff() {
+    const ret = wasm.power_take_systemoff();
+    return ret !== 0;
 }
 
 /**
@@ -1813,6 +1859,14 @@ export function radio_clear_interference() {
     wasm.radio_clear_interference();
 }
 
+/**
+ * Complete DFE sampling with `amount` IQ samples at DFEPACKET.PTR.
+ * @param {number} amount
+ */
+export function radio_complete_dfe(amount) {
+    wasm.radio_complete_dfe(amount);
+}
+
 export function radio_complete_rx() {
     wasm.radio_complete_rx();
 }
@@ -1854,6 +1908,20 @@ export function radio_inject_corrupt(bytes) {
     const ptr0 = passArray8ToWasm0(bytes, wasm.__wbindgen_export2);
     const len0 = WASM_VECTOR_LEN;
     wasm.radio_inject_corrupt(ptr0, len0);
+}
+
+/**
+ * Host-inject CTEPRESENT (CTE follows the packet, DFE active).
+ */
+export function radio_inject_ctepresent() {
+    wasm.radio_inject_ctepresent();
+}
+
+/**
+ * Host-inject RATEBOOST (Ble_LR125Kbit CI switches the link to LR500).
+ */
+export function radio_inject_rateboost() {
+    wasm.radio_inject_rateboost();
 }
 
 /**
@@ -1905,6 +1973,13 @@ export function radio_inject_rx_to_lossy(dab_idx, bytes, path_loss_db) {
 }
 
 /**
+ * Host-inject SYNC (preamble sync word received).
+ */
+export function radio_inject_sync() {
+    wasm.radio_inject_sync();
+}
+
+/**
  * Set the 802.15.4 energy-detect sample level in dBm (negative).
  * Reported via EDSAMPLE on the next EDSTART; defaults to RSSI level.
  * @param {number} dbm
@@ -1927,6 +2002,24 @@ export function radio_set_interference_dbm(dbm) {
  */
 export function radio_set_rssi_dbm(dbm) {
     wasm.radio_set_rssi_dbm(dbm);
+}
+
+/**
+ * Take a staged DFE IQ-sample transfer [ptr, maxcnt]; empty when idle.
+ * @returns {Uint32Array}
+ */
+export function radio_take_dfe_sample() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.radio_take_dfe_sample(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
 }
 
 /**
@@ -2212,6 +2305,30 @@ export function uarte_complete_txdma(bytes) {
 }
 
 /**
+ * Drive the UARTE CTS pin level (board flow-control edge): asserting
+ * latches CTS, deasserting latches NCTS.
+ * @param {boolean} asserted
+ */
+export function uarte_cts_asserted(asserted) {
+    wasm.uarte_cts_asserted(asserted);
+}
+
+/**
+ * Latch UARTE line-error bits (bit1 parity, bit2 framing, bit3 break).
+ * @param {number} bits
+ */
+export function uarte_rx_error(bits) {
+    wasm.uarte_rx_error(bits);
+}
+
+/**
+ * Latch a UARTE receiver timeout (bridge-driven): EVENTS_RXTO.
+ */
+export function uarte_rx_timeout() {
+    wasm.uarte_rx_timeout();
+}
+
+/**
  * Take a staged UARTE RX transfer [ptr, maxcnt]; driver writes bytes to
  * guest RAM at ptr, then calls uarte_complete_rxdma(amount).
  * @returns {Uint32Array}
@@ -2266,6 +2383,24 @@ export function usbd_complete_epout(ep, amount) {
 }
 
 /**
+ * Complete ISOIN with the on-air bytes.
+ * @param {Uint8Array} data
+ */
+export function usbd_complete_isoin(data) {
+    const ptr0 = passArray8ToWasm0(data, wasm.__wbindgen_export2);
+    const len0 = WASM_VECTOR_LEN;
+    wasm.usbd_complete_isoin(ptr0, len0);
+}
+
+/**
+ * Complete ISOOUT with the received byte count.
+ * @param {number} amount
+ */
+export function usbd_complete_isoout(amount) {
+    wasm.usbd_complete_isoout(amount);
+}
+
+/**
  * @param {Uint8Array} bytes
  */
 export function usbd_inject_setup(bytes) {
@@ -2276,6 +2411,21 @@ export function usbd_inject_setup(bytes) {
 
 export function usbd_signal_reset() {
     wasm.usbd_signal_reset();
+}
+
+/**
+ * Host-side SOF injection (1 ms USB frame): EVENTS_SOF + FRAMECNTR.
+ */
+export function usbd_signal_sof() {
+    wasm.usbd_signal_sof();
+}
+
+/**
+ * Host-side USB event injection (suspend/resume/wakeup-ready cause bits).
+ * @param {number} cause
+ */
+export function usbd_signal_usbevent(cause) {
+    wasm.usbd_signal_usbevent(cause);
 }
 
 /**
@@ -2310,6 +2460,58 @@ export function usbd_take_epout() {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
+}
+
+/**
+ * Take a staged ISOIN transfer [ptr, maxcnt]; empty when idle.
+ * @returns {Uint32Array}
+ */
+export function usbd_take_isoin() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.usbd_take_isoin(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * Take a staged ISOOUT transfer [ptr, maxcnt]; empty when idle.
+ * @returns {Uint32Array}
+ */
+export function usbd_take_isoout() {
+    try {
+        const retptr = wasm.__wbindgen_add_to_stack_pointer(-16);
+        wasm.usbd_take_isoout(retptr);
+        var r0 = getDataViewMemory0().getInt32(retptr + 4 * 0, true);
+        var r1 = getDataViewMemory0().getInt32(retptr + 4 * 1, true);
+        var v1 = getArrayU32FromWasm0(r0, r1).slice();
+        wasm.__wbindgen_export(r0, r1 * 4, 4);
+        return v1;
+    } finally {
+        wasm.__wbindgen_add_to_stack_pointer(16);
+    }
+}
+
+/**
+ * Publish the debugger-halt state for the WDT HALT gate.
+ * @param {boolean} halted
+ */
+export function wdt_set_debug_halt(halted) {
+    wasm.wdt_set_debug_halt(halted);
+}
+
+/**
+ * Publish the CPU-sleep state for the WDT SLEEP gate.
+ * @param {boolean} sleeping
+ */
+export function wdt_set_sleeping(sleeping) {
+    wasm.wdt_set_sleeping(sleeping);
 }
 function __wbg_get_imports() {
     const import0 = {

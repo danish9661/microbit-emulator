@@ -7,7 +7,14 @@ use super::Peripheral;
 ///
 /// NVMC: READY 0x400 (always 1), READYNEXT 0x408 (always 1), CONFIG
 /// 0x504 (0=REN read-only, 1=WEN write enable, 2=EEN erase enable),
-/// ERASEPAGE 0x508, ERASEALL 0x50C, ERASEUICR 0x514.
+/// ERASEPAGE 0x508 (= ERASEPCR1, same address), ERASEALL 0x50C,
+/// ERASEPCR0 0x510 (page erase, PCR0 alias), ERASEUICR 0x514 (whole-UICR
+/// erase: stages take_erase() with the UICR base 0x10001000; the driver
+/// fills 0xFF across the UICR store then calls complete_erase()),
+/// ERASEPAGEPARTIAL 0x518 + ERASEPAGEPARTIALCFG 0x51C (stored; stages
+/// the page base like ERASEPAGE — the driver consults CFG for the
+/// sub-page extent), ICACHECNF 0x540 (stored; no cache is modeled —
+/// flat zero-wait memory — so IHIT 0x548 / IMISS 0x54C read 0).
 /// Erase/write staging (driver owns the data path, like EASYDMA): with
 /// CONFIG=EEN, an ERASEPAGE write stages take_erase() (page base); the
 /// driver applies 0xFF to guest memory and calls complete_erase().
@@ -35,6 +42,8 @@ use super::Peripheral;
 pub struct Nvmc {
     pub config: u32,
     erase_pending: Option<u32>,
+    partial_cfg: u32,
+    icachecnf: u32,
     acl_addr: [u32; 8],
     acl_size: [u32; 8],
     acl_perm: [u32; 8],
@@ -42,7 +51,7 @@ pub struct Nvmc {
 
 impl Default for Nvmc {
     fn default() -> Self {
-        Self { config: 0, erase_pending: None,
+        Self { config: 0, erase_pending: None, partial_cfg: 0, icachecnf: 0,
                acl_addr: [0; 8], acl_size: [0; 8], acl_perm: [0; 8] }
     }
 }
@@ -91,6 +100,13 @@ impl Peripheral for Nvmc {
             0x408 => 1, // READYNEXT
             0x504 => self.config,
             0x508 => 0, // ERASEPAGE write-only
+            0x510 => 0, // ERASEPCR0 write-only
+            0x514 => 0, // ERASEUICR write-only
+            0x518 => 0, // ERASEPAGEPARTIAL write-only
+            0x51C => self.partial_cfg,
+            0x540 => self.icachecnf,
+            0x548 => 0, // IHIT: no cache modeled (flat zero-wait memory)
+            0x54C => 0, // IMISS: no cache modeled (flat zero-wait memory)
             0x800..=0x87F => {
                 // ACL cluster (dim 8, stride 0x10): ADDR +0, SIZE +4, PERM +8.
                 let n = ((offset - 0x800) >> 4) as usize;
@@ -117,6 +133,34 @@ impl Peripheral for Nvmc {
                     }
                 }
             }
+            0x510 => {
+                // ERASEPCR0: same page-erase contract as ERASEPAGE.
+                if self.config == 2 {
+                    let base = value & !0xFFF;
+                    if !self.acl_write_blocked(base, 4096) {
+                        self.erase_pending = Some(base);
+                    }
+                }
+            }
+            0x514 => {
+                // ERASEUICR: whole-UICR erase (CONFIG=EEN). ACL regions
+                // cover flash, not UICR, so no ACL gate. Stages the UICR
+                // base; the driver fills 0xFF then completes.
+                if self.config == 2 {
+                    self.erase_pending = Some(0x1000_1000);
+                }
+            }
+            0x518 => {
+                // ERASEPAGEPARTIAL: page erase with the CFG extent.
+                if self.config == 2 {
+                    let base = value & !0xFFF;
+                    if !self.acl_write_blocked(base, 4096) {
+                        self.erase_pending = Some(base);
+                    }
+                }
+            }
+            0x51C => self.partial_cfg = value,
+            0x540 => self.icachecnf = value & 0x3FF,
             0x50C => {
                 // ERASEALL with EEN: stage the whole flash (driver loops).
                 // A protected region anywhere blocks the whole erase
@@ -247,6 +291,39 @@ mod tests {
         // Second run: fresh instance, no leak.
         let sys2 = test_dummy_system();
         assert!(take_erase(&sys2).is_none());
+    }
+    #[test]
+    fn erase_aliases_partial_uicr_icache() {
+        // ERASEPCR0 == ERASEPAGE contract; ERASEPAGEPARTIAL(+CFG) stages
+        // the page base; ERASEUICR stages the UICR base (no ACL gate —
+        // ACL covers flash only); ICACHECNF stores, IHIT/IMISS read 0
+        // (no cache modeled: flat zero-wait memory).
+        use crate::system::test_dummy_system;
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x4001E504, 4, 2); // CONFIG=EEN
+        sys.p.write(&sys, 0x4001E510, 4, 0x0003A123); // ERASEPCR0
+        assert_eq!(take_erase(&sys), Some(0x0003A000), "PCR0 page base");
+        sys.p.write(&sys, 0x4001E51C, 4, 0x2); // PARTIALCFG
+        assert_eq!(sys.p.read(&sys, 0x4001E51C, 4), 0x2, "CFG reads back");
+        sys.p.write(&sys, 0x4001E518, 4, 0x0003B456); // ERASEPAGEPARTIAL
+        assert_eq!(take_erase(&sys), Some(0x0003B000), "partial page base");
+        sys.p.write(&sys, 0x4001E514, 4, 1); // ERASEUICR
+        assert_eq!(take_erase(&sys), Some(0x1000_1000), "UICR base");
+        assert!(take_erase(&sys).is_none(), "staged once only");
+        // REN gates the aliases too.
+        sys.p.write(&sys, 0x4001E504, 4, 0);
+        sys.p.write(&sys, 0x4001E510, 4, 0x0003A000);
+        sys.p.write(&sys, 0x4001E514, 4, 1);
+        sys.p.write(&sys, 0x4001E518, 4, 0x0003B000);
+        assert!(take_erase(&sys).is_none(), "REN: nothing stages");
+        // ICACHE block.
+        sys.p.write(&sys, 0x4001E540, 4, 1); // ICACHECNF enable
+        assert_eq!(sys.p.read(&sys, 0x4001E540, 4), 1, "ICACHECNF");
+        assert_eq!(sys.p.read(&sys, 0x4001E548, 4), 0, "IHIT");
+        assert_eq!(sys.p.read(&sys, 0x4001E54C, 4), 0, "IMISS");
+        // 2nd run: fresh defaults.
+        let n2 = Nvmc::default();
+        assert_eq!((n2.partial_cfg, n2.icachecnf), (0, 0));
     }
     #[test]
     fn acl_regions_sticky_and_block_erase() {

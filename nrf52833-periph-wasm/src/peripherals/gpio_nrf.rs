@@ -16,11 +16,21 @@ pub struct GpioPorts {
     /// Drive `false` for a button press (CODAL ACTIVE_LOW `isPressed`).
     pub input_state: [u32; 2],
     pub cnf: [[u32; 32]; 2],
+    /// SENSE latch (LATCH register, per port): bit set when the pin meets
+    /// its PIN_CNF SENSE criteria (High 1 / Low 2); sticky until the
+    /// firmware clears it (write 1). GPIOTE PORT-event routing stays in
+    /// the GPIOTE model; this is the pin-level latch silicon exposes.
+    pub latch: [u32; 2],
+    /// DETECTMODE per port (0 = LDETECT low-power default, 1 = HDETECT
+    /// high-accuracy): stored — the accuracy/power tradeoff is below
+    /// this clock granularity, the latch behavior is identical.
+    pub detectmode: [u32; 2],
 }
 
 impl Default for GpioPorts {
     fn default() -> Self {
-        Self { out: [0; 2], dir: [0; 2], input_state: [u32::MAX; 2], cnf: [[0; 32]; 2] }
+        Self { out: [0; 2], dir: [0; 2], input_state: [u32::MAX; 2], cnf: [[0; 32]; 2],
+               latch: [0; 2], detectmode: [0; 2] }
     }
 }
 
@@ -34,6 +44,28 @@ impl GpioPorts {
         if (port as usize) < 2 && pin < 32 {
             if value { self.input_state[port as usize] |= 1 << pin; }
             else { self.input_state[port as usize] &= !(1 << pin); }
+            self.sense_eval(port as usize, pin as usize);
+        }
+    }
+    /// SENSE evaluation for one pin: latch the bit when the pin meets its
+    /// PIN_CNF SENSE criteria (High/Low) against the IN-read level
+    /// (output latch for outputs, input line for inputs — same mix the
+    /// IN register reports).
+    pub fn sense_eval(&mut self, port: usize, pin: usize) {
+        if port >= 2 || pin >= 32 {
+            return;
+        }
+        let sense = (self.cnf[port][pin] >> 16) & 3;
+        if sense == 0 {
+            return;
+        }
+        let level = if (self.dir[port] >> pin) & 1 == 1 {
+            (self.out[port] >> pin) & 1 == 1
+        } else {
+            (self.input_state[port] >> pin) & 1 == 1
+        };
+        if (sense == 1 && level) || (sense == 2 && !level) {
+            self.latch[port] |= 1 << pin;
         }
     }
     /// NFC-guarded input drive: with antenna pins reserved the level is
@@ -126,6 +158,8 @@ impl Peripheral for GpioNrf {
                 (out & dir) | (inp & !dir)
             }
             0x14 => gpio.dir[port],
+            0x20 => gpio.latch[port],      // LATCH: sense-met pins
+            0x24 => gpio.detectmode[port], // DETECTMODE
             _ => {
                 // Legacy per-port offsets (0x504/0x510/0x514 from port base)
                 match offset {
@@ -137,6 +171,8 @@ impl Peripheral for GpioNrf {
                         (out & dir) | (inp & !dir)
                     }
                     0x514 => gpio.dir[port],
+                    0x520 => gpio.latch[port],
+                    0x524 => gpio.detectmode[port],
                     _ => 0,
                 }
             }
@@ -161,6 +197,8 @@ impl Peripheral for GpioNrf {
                 } else {
                     gpio.dir[port] &= !(1 << i);
                 }
+                // A fresh SENSE field re-evaluates the pin at once.
+                gpio.sense_eval(port, i);
             }
             return;
         }
@@ -173,6 +211,8 @@ impl Peripheral for GpioNrf {
             0x14 => gpio.dir[port] = value,
             0x18 => gpio.dir[port] |= value,
             0x1C => gpio.dir[port] &= !value,
+            0x20 => gpio.latch[port] &= !value, // LATCH write-1-clears
+            0x24 => gpio.detectmode[port] = value & 1,
             _ => {
                 match offset {
                     0x504 => gpio.out[port] = value,
@@ -181,6 +221,8 @@ impl Peripheral for GpioNrf {
                     0x514 => gpio.dir[port] = value,
                     0x518 => gpio.dir[port] |= value,
                     0x51C => gpio.dir[port] &= !value,
+                    0x520 => gpio.latch[port] &= !value, // LATCH write-1-clears
+                    0x524 => gpio.detectmode[port] = value & 1,
                     _ => {}
                 }
             }
@@ -241,5 +283,29 @@ mod tests {
         // Row back high extinguishes the pixel (input-gated render).
         sys.p.write(sys, 0x50000508, 4, 1 << 21);
         assert_eq!(crate::matrix_state()[0], 0, "pixel dark when row high");
+    }
+    #[test]
+    fn sense_latch_and_detectmode() {
+        // PIN_CNF SENSE High/Low latches LATCH on meeting the level
+        // (input changes + CNF programming both evaluate); LATCH is
+        // write-1-clear; DETECTMODE stores.
+        let sys = test_dummy_system();
+        // P0.14 (BTN_A) SENSE Low (active-low button): starts released.
+        sys.p.write(&sys, 0x50000700 + 14 * 4, 4, (2 << 16)); // SENSE=Low, DIR=input
+        assert_eq!(sys.p.read(&sys, 0x50000520, 4) & (1 << 14), 0, "released: no latch");
+        sys.p.gpio.borrow_mut().set_input_pin(0, 14, false); // press
+        assert_eq!(sys.p.read(&sys, 0x50000520, 4) & (1 << 14), 1 << 14, "press latches");
+        sys.p.gpio.borrow_mut().set_input_pin(0, 14, true); // release: sticky
+        assert_eq!(sys.p.read(&sys, 0x50000520, 4) & (1 << 14), 1 << 14, "sticky until cleared");
+        sys.p.write(&sys, 0x50000520, 4, 1 << 14); // write-1-clear
+        assert_eq!(sys.p.read(&sys, 0x50000520, 4) & (1 << 14), 0, "cleared");
+        // SENSE High on P0.15: idle-HIGH input latches at CNF time.
+        sys.p.write(&sys, 0x50000700 + 15 * 4, 4, (1 << 16));
+        assert_eq!(sys.p.read(&sys, 0x50000520, 4) & (1 << 15), 1 << 15, "CNF programs latch live level");
+        // DETECTMODE stores.
+        sys.p.write(&sys, 0x50000524, 4, 1);
+        assert_eq!(sys.p.read(&sys, 0x50000524, 4), 1, "DETECTMODE");
+        // 2nd run: fresh instance, no leak.
+        assert_eq!(GpioPorts::default().latch, [0; 2]);
     }
 }

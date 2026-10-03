@@ -44,14 +44,31 @@ fn snapshot_tx_bytes(ptr: u32, len: u32) -> Option<Vec<u8>> {
     })
 }
 
-/// UARTE0 @ 0x40002000 (IRQ 2). Polling subset + EASYDMA:
-///   ENABLE 0x500, BAUDRATE 0x524, TXD 0x51C (byte TX -> UART_OUTPUT),
-///   RXD 0x518 (byte RX), EVENTS_RXDRDY 0x108 / EVENTS_ENDRX 0x110 /
-///   EVENTS_TXDRDY 0x11C / EVENTS_ENDTX 0x120 / EVENTS_ERROR 0x124,
-///   SHORTS 0x200 (bit 5 ENDRX_STARTRX, bit 6 ENDRX_STOPRX — SVD),
-///   TASKS_STARTRX 0x000 / TASKS_STOPRX 0x004 / TASKS_STARTTX 0x008 /
-///   TASKS_STOPTX 0x00C, RXD.PTR 0x534 / MAXCNT 0x538 / AMOUNT 0x53C,
-///   TXD.PTR 0x544 / MAXCNT 0x548 / AMOUNT 0x54C, INTENSET 0x304/CLR 0x308.
+/// UARTE0 @ 0x40002000 (IRQ 2) / UARTE1 @ 0x40028000 (IRQ 40).
+/// Full SVD register face: ENABLE 0x500, BAUDRATE 0x524, CONFIG 0x56C
+/// (HWFC bit0, PARITY 3:1, STOP bit4, PARITYTYPE bit8 — stored),
+/// TXD 0x51C (byte TX -> UART_OUTPUT), RXD 0x518 (byte RX),
+/// EVENTS_CTS 0x100 / NCTS 0x104 / RXDRDY 0x108 / ENDRX 0x110 /
+/// TXDRDY 0x11C / ENDTX 0x120 / ERROR 0x124 / RXTO 0x144 /
+/// RXSTARTED 0x14C / TXSTARTED 0x150 / TXSTOPPED 0x158,
+/// SHORTS 0x200 (bit 5 ENDRX_STARTRX, bit 6 ENDRX_STOPRX — SVD),
+/// TASKS_STARTRX 0x000 / TASKS_STOPRX 0x004 / TASKS_STARTTX 0x008 /
+/// TASKS_STOPTX 0x00C / TASKS_FLUSHRX 0x02C (flushes the RX byte state),
+/// RXD.PTR 0x534 / MAXCNT 0x538 / AMOUNT 0x53C,
+/// TXD.PTR 0x544 / MAXCNT 0x548 / AMOUNT 0x54C,
+/// INTEN 0x300 / SET 0x304 / CLR 0x308 (CTS 0, NCTS 1, RXDRDY 2,
+/// ENDRX 4, TXDRDY 7, ENDTX 8, ERROR 9, RXTO 17, RXSTARTED 19,
+/// TXSTARTED 20, TXSTOPPED 22), ERRORSRC 0x480 (OVERRUN 0, PARITY 1,
+/// FRAMING 2, BREAK 3 — write-1-clears).
+/// CTS/NCTS are host-driven (`cts_asserted`: the CTS pin edge lives on
+/// the board, which the model has no handle on — the host owns the
+/// level, the event/IRQ latches are modeled). RXSTARTED/TXSTARTED latch
+/// on their TASKS (+IRQs). RXTO latches when a receive completes with
+/// zero bytes (STOPRX or ENDRX with AMOUNT == 0: the observable timeout
+/// outcome — byte-period timing is below this clock granularity) and via
+/// `rx_timeout()` for the bridge; ERROR collects overrun (second byte
+/// before firmware reads RXD) plus host-injected parity/framing/break
+/// via `rx_error(bits)`.
 /// DMA rule: STARTTX with TXD.MAXCNT>0 stages a driver transfer
 /// (take_txdma -> mem_read -> complete_txdma); MAXCNT==0 completes at once
 /// (keeps polling firmware timing). Same for RX.
@@ -59,6 +76,13 @@ pub struct Uarte {
     irq: i32,
     enable: u32,
     baudrate: u32,
+    config: u32,
+    ev_cts: bool,
+    ev_ncts: bool,
+    ev_rxto: bool,
+    ev_rxstarted: bool,
+    ev_txstarted: bool,
+    cts_level: bool,
     ev_txdrdy: bool,
     ev_endtx: bool,
     ev_txstopped: bool,
@@ -100,7 +124,10 @@ pub struct Uarte {
 
 impl Default for Uarte {
     fn default() -> Self {
-        Self { irq: 2, enable: 0, baudrate: 0, ev_txdrdy: false, ev_endtx: false,
+        Self { irq: 2, enable: 0, baudrate: 0, config: 0,
+               ev_cts: false, ev_ncts: false, ev_rxto: false,
+               ev_rxstarted: false, ev_txstarted: false, cts_level: false,
+               ev_txdrdy: false, ev_endtx: false,
                ev_txstopped: false,
                 ev_rxdrdy: false, ev_endrx: false, ev_error: false, errorsrc: 0, rxd: 0,
                 intenset: 0, shorts: 0, shorts_at_endrx: 0, rx_ptr: 0, rx_maxcnt: 0, rx_amount: 0, rx_pending: false, rx_taken: false,
@@ -123,19 +150,46 @@ impl Uarte {
             sys.p.nvic.borrow_mut().set_intr_pending(self.irq);
         }
     }
+    /// Re-fire every already-set event (called after any INTEN/INTENSET
+    /// write: silicon pends the IRQ while event && INTEN hold).
+    fn refire_all(&self, sys: &System) {
+        for (bit, set) in [
+            (0u32, self.ev_cts),
+            (1, self.ev_ncts),
+            (2, self.ev_rxdrdy),
+            (4, self.ev_endrx),
+            (7, self.ev_txdrdy),
+            (8, self.ev_endtx),
+            (9, self.ev_error),
+            (17, self.ev_rxto),
+            (19, self.ev_rxstarted),
+            (20, self.ev_txstarted),
+            (22, self.ev_txstopped),
+        ] {
+            if set {
+                self.fire(sys, 1 << bit);
+            }
+        }
+    }
 }
 
 impl Peripheral for Uarte {
     fn as_any_mut(&mut self) -> &mut dyn std::any::Any { self }
     fn read(&mut self, _sys: &System, offset: u32) -> u32 {
         match offset {
+            0x100 => self.ev_cts as u32,
+            0x104 => self.ev_ncts as u32,
             0x108 => self.ev_rxdrdy as u32,
             0x110 => self.ev_endrx as u32, // ENDRX (SVD 0x110; was 0x10C — P134: MPY polls 0x110, so ENDRX never cleared and the REPL line-ring stalled at AMT=MAX)
             0x11C => self.ev_txdrdy as u32,
             0x120 => self.ev_endtx as u32,
             0x158 => self.ev_txstopped as u32, // EVENTS_TXSTOPPED (SVD)
             0x124 => self.ev_error as u32,
+            0x144 => self.ev_rxto as u32,
+            0x14C => self.ev_rxstarted as u32,
+            0x150 => self.ev_txstarted as u32,
             0x200 => self.shorts,
+            0x300 => self.intenset, // INTEN reads the enable word
             0x304 => self.intenset,
             0x480 => self.errorsrc,
             0x500 => self.enable,
@@ -147,6 +201,7 @@ impl Peripheral for Uarte {
             0x544 => self.tx_ptr,
             0x548 => self.tx_maxcnt,
             0x54C => self.tx_amount,
+            0x56C => self.config,
             _ => 0,
         }
     }
@@ -154,6 +209,8 @@ impl Peripheral for Uarte {
         match offset {
             0x000 => { // TASKS_STARTRX
                 self.ev_endrx = false;
+                self.ev_rxstarted = true;
+                self.fire(sys, 1 << 19);
                 self.rx_amount = 0;
                 self.rx_pending = self.rx_maxcnt > 0;
                 // SHORTS state snapshot (P134): a shortcut fires when its
@@ -164,9 +221,21 @@ impl Peripheral for Uarte {
                 // state, not the exit state).
                 self.shorts_at_endrx = self.shorts;
             }
-            0x004 => { self.rx_pending = false; self.ev_endrx = true; self.fire(sys, 1 << 4); }
+            0x004 => {
+                // TASKS_STOPRX: halt the receiver. A receive that yields
+                // zero bytes latches RXTO (the observable timeout outcome).
+                if self.rx_amount == 0 {
+                    self.ev_rxto = true;
+                    self.fire(sys, 1 << 17);
+                }
+                self.rx_pending = false;
+                self.ev_endrx = true;
+                self.fire(sys, 1 << 4);
+            }
             0x008 => { // TASKS_STARTTX
                 self.ev_endtx = false;
+                self.ev_txstarted = true;
+                self.fire(sys, 1 << 20);
                 self.tx_amount = 0;
                 if self.tx_maxcnt > 0 {
                     self.tx_pending = true; // driver completes (take/complete)
@@ -214,21 +283,35 @@ impl Peripheral for Uarte {
             // the queue on STOPTX dropped the staged byte and the echo
             // garbled (spaces for letters) with no fault.
             0x00C => { self.tx_pending = false; self.ev_txstopped = true; self.fire(sys, 1 << 22); }
+            0x02C => {
+                // TASKS_FLUSHRX: flush the RX byte state (RXD + RXDRDY +
+                // the DMA byte count). A staged DMA transfer stays staged
+                // (silicon flushes the FIFO, not the EasyDMA pointers).
+                self.ev_rxdrdy = false;
+                self.rxd = 0;
+                self.rx_amount = 0;
+            }
+            0x100 => if value == 0 { self.ev_cts = false; }
+            0x104 => if value == 0 { self.ev_ncts = false; }
             0x108 => if value == 0 { self.ev_rxdrdy = false; }
             0x110 => if value == 0 { self.ev_endrx = false; } // ENDRX clear (SVD 0x110)
             0x11C => if value == 0 { self.ev_txdrdy = false; }
             0x120 => if value == 0 { self.ev_endtx = false; }
             0x158 => if value == 0 { self.ev_txstopped = false; }
             0x124 => if value == 0 { self.ev_error = false; }
+            0x144 => if value == 0 { self.ev_rxto = false; }
+            0x14C => if value == 0 { self.ev_rxstarted = false; }
+            0x150 => if value == 0 { self.ev_txstarted = false; }
             0x200 => self.shorts = value & 0x60, // SHORTS: bit 5 ENDRX_STARTRX, bit 6 ENDRX_STOPRX (SVD)
+            0x300 => {
+                // INTEN: absolute enable write (SVD 0x300) + re-fire.
+                self.intenset = value & 0x5A0397;
+                self.refire_all(sys);
+            }
             0x304 => {
-                self.intenset |= value;
+                self.intenset |= value & 0x5A0397;
                 // re-fire any already-set event the firmware just enabled
-                if self.ev_rxdrdy && value & (1 << 2) != 0 { self.fire(sys, 1 << 2); }
-                if self.ev_endrx && value & (1 << 4) != 0 { self.fire(sys, 1 << 4); }
-                if self.ev_txdrdy && value & (1 << 7) != 0 { self.fire(sys, 1 << 7); }
-                if self.ev_endtx && value & (1 << 8) != 0 { self.fire(sys, 1 << 8); }
-                if self.ev_txstopped && value & (1 << 22) != 0 { self.fire(sys, 1 << 22); }
+                self.refire_all(sys);
             }
             0x308 => self.intenset &= !value,
             0x480 => self.errorsrc &= !value, // write-1-clears
@@ -257,6 +340,7 @@ impl Peripheral for Uarte {
             0x538 => self.rx_maxcnt = value & 0xFF,
             0x544 => self.tx_ptr = value,
             0x548 => self.tx_maxcnt = value & 0xFF,
+            0x56C => self.config = value & 0x11F, // HWFC + PARITY + STOP + PARITYTYPE
             _ => {}
         }
     }
@@ -305,6 +389,65 @@ impl Peripheral for Uarte {
         self.rxd = byte;
         self.ev_rxdrdy = true;
         self.fire(sys, 1 << 2);
+    }
+}
+
+/// Drive the CTS pin level (board-owned edge): asserting latches CTS,
+/// deasserting latches NCTS (+IRQs 0/1 when INTENabled). Applies to both
+/// instances (UARTE0 + UARTE1 share the board flow-control lines).
+pub fn cts_asserted(sys: &System, asserted: bool) {
+    for base in [0x4000_2000u32, 0x4002_8000u32] {
+        let fire = with_uarte_at(sys, base, |u| {
+            if u.cts_level == asserted {
+                return None;
+            }
+            u.cts_level = asserted;
+            if asserted {
+                u.ev_cts = true;
+                Some((u.irq, u.intenset, 1 << 0))
+            } else {
+                u.ev_ncts = true;
+                Some((u.irq, u.intenset, 1 << 1))
+            }
+        })
+        .flatten();
+        if let Some((irq, en, bit)) = fire {
+            if en & bit != 0 {
+                sys.p.nvic.borrow_mut().set_intr_pending(irq);
+            }
+        }
+    }
+}
+
+/// Latch a receiver timeout on the console instance (UARTE0,
+/// bridge-driven): EVENTS_RXTO + IRQ 17 when INTENabled. (The bench
+/// bridge only drives UARTE0; UARTE1 timeouts surface through the same
+/// STOPRX-with-zero-bytes rule in the write arm.)
+pub fn rx_timeout(sys: &System) {
+    let fire = with_uarte(sys, |u| {
+        u.ev_rxto = true;
+        (u.irq, u.intenset)
+    });
+    if let Some((irq, en)) = fire {
+        if en & (1 << 17) != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(irq);
+        }
+    }
+}
+
+/// Latch line-error bits into the console instance's ERRORSRC (bit1
+/// parity, bit2 framing, bit3 break) with EVENTS_ERROR (+IRQ 9 when
+/// INTENabled). Overrun (bit0) stays model-owned (see rx_byte).
+pub fn rx_error(sys: &System, bits: u32) {
+    let fire = with_uarte(sys, |u| {
+        u.errorsrc |= bits & 0xE;
+        u.ev_error = true;
+        (u.irq, u.intenset)
+    });
+    if let Some((irq, en)) = fire {
+        if en & (1 << 9) != 0 {
+            sys.p.nvic.borrow_mut().set_intr_pending(irq);
+        }
     }
 }
 
@@ -761,5 +904,62 @@ mod tests {
         sys3.p.rx_byte(&sys3, 0x40002000, 0x42); // fills: latched shortcut re-arms
         assert_eq!(sys3.p.read(&sys3, 0x4000253C, 4), 0, "AMOUNT reset by latched shortcut");
         assert_eq!(sys3.p.read(&sys3, 0x40002110, 4), 1, "ENDRX stays set (firmware clears it)");
+    }
+    #[test]
+    fn full_face_flushrx_cts_rxto_started_config_errorsrc() {
+        // FLUSHRX + CTS/NCTS + RXTO (STOPRX-empty + bridge) +
+        // RXSTARTED/TXSTARTED + CONFIG + INTEN absolute + ERRORSRC bits.
+        use crate::system::test_dummy_system;
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 2); // NVIC ISER: UARTE0
+        sys.p.write(&sys, 0x40002304, 4, (1 << 0) | (1 << 1) | (1 << 17) | (1 << 19) | (1 << 20) | (1 << 9));
+        // CONFIG stores HWFC+PARITY+STOP+PARITYTYPE.
+        sys.p.write(&sys, 0x4000256C, 4, 0x1FF);
+        assert_eq!(sys.p.read(&sys, 0x4000256C, 4), 0x11F, "CONFIG masked");
+        // INTEN absolute write keeps the mask (reserved bits dropped).
+        sys.p.write(&sys, 0x40002300, 4, 0xFFFF_FFFF);
+        assert_eq!(sys.p.read(&sys, 0x40002300, 4), 0x5A0397, "INTEN mask");
+        assert_eq!(sys.p.read(&sys, 0x40002304, 4), 0x5A0397, "SET reads same word");
+        // STARTED edges latch with IRQs.
+        sys.p.write(&sys, 0x40002000, 4, 1); // STARTRX
+        assert_eq!(sys.p.read(&sys, 0x4000214C, 4), 1, "RXSTARTED");
+        sys.p.write(&sys, 0x40002500, 4, 8); // ENABLE=8 (like silicon)
+        sys.p.write(&sys, 0x40002008, 4, 1); // STARTTX (MAXCNT 0: instant)
+        assert_eq!(sys.p.read(&sys, 0x40002150, 4), 1, "TXSTARTED");
+        assert!(sys.p.nvic.borrow().has_pending(), "STARTED IRQs pend");
+        // CTS edge pair via the host level.
+        cts_asserted(&sys, true);
+        assert_eq!(sys.p.read(&sys, 0x40002100, 4), 1, "CTS");
+        cts_asserted(&sys, true); // no edge: stays single
+        assert_eq!(sys.p.read(&sys, 0x40002100, 4), 1, "CTS sticky");
+        cts_asserted(&sys, false);
+        assert_eq!(sys.p.read(&sys, 0x40002104, 4), 1, "NCTS");
+        // STOPRX with zero bytes = RXTO; bridge RXTO also latches.
+        sys.p.write(&sys, 0x40002004, 4, 1); // STOPRX (empty)
+        assert_eq!(sys.p.read(&sys, 0x40002144, 4), 1, "RXTO on empty STOPRX");
+        sys.p.write(&sys, 0x40002144, 4, 0);
+        rx_timeout(&sys);
+        assert_eq!(sys.p.read(&sys, 0x40002144, 4), 1, "bridge RXTO");
+        // FLUSHRX clears byte state but keeps the DMA pointers staged.
+        sys.p.write(&sys, 0x40002534, 4, 0x20001000);
+        sys.p.write(&sys, 0x40002538, 4, 4);
+        sys.p.write(&sys, 0x40002000, 4, 1); // STARTRX
+        sys.p.rx_byte(&sys, 0x40002000, 0x41);
+        assert_eq!(sys.p.read(&sys, 0x40002108, 4), 1, "RXDRDY before flush");
+        sys.p.write(&sys, 0x4000202C, 4, 1); // FLUSHRX
+        assert_eq!(sys.p.read(&sys, 0x40002108, 4), 0, "RXDRDY flushed");
+        assert_eq!(sys.p.read(&sys, 0x4000253C, 4), 0, "AMOUNT flushed");
+        assert_eq!(sys.p.read(&sys, 0x40002534, 4), 0x20001000, "PTR kept");
+        // Line errors: overrun is model-owned, rest host-injected.
+        sys.p.rx_byte(&sys, 0x40002000, 0x42);
+        sys.p.rx_byte(&sys, 0x40002000, 0x43); // second before read: overrun
+        rx_error(&sys, (1 << 1) | (1 << 2)); // parity + framing
+        assert_eq!(sys.p.read(&sys, 0x40002480, 4) & 0xF, 0x7, "OVERRUN+PARITY+FRAMING");
+        assert_eq!(sys.p.read(&sys, 0x40002124, 4), 1, "ERROR event");
+        sys.p.write(&sys, 0x40002480, 4, 0xF); // write-1-clears
+        assert_eq!(sys.p.read(&sys, 0x40002480, 4), 0, "ERRORSRC cleared");
+        // 2nd run: fresh instance, no leak.
+        let u2 = Uarte::default();
+        assert!(!u2.ev_cts && !u2.ev_rxto && u2.config == 0);
     }
 }

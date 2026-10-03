@@ -3,10 +3,15 @@ use super::Peripheral;
 
 /// RTC0 0x4000B000 / RTC1 0x40011000 / RTC2 0x40024000
 /// (IRQs 11/17/36 per nrf52833.svd).
-/// Offsets: TASKS_START 0x000, TASKS_STOP 0x004, TASKS_CLEAR 0x00C,
-/// EVENTS_TICK 0x100, EVENTS_OVRFLW 0x104, EVENTS_COMPARE[n] 0x140+n*4,
-/// INTENSET 0x304, INTENCLR 0x308, COUNTER 0x504, PRESCALER 0x508,
-/// CC[n] 0x540+n*4. 32768 Hz LFCLK: counter += elapsed/1953/(presc+1).
+/// Offsets: TASKS_START 0x000, TASKS_STOP 0x004, TASKS_CLEAR 0x008,
+/// TASKS_TRIGOVRFLW 0x00C (sets COUNTER to 0xFFFFF0, overflow soon
+/// after), EVENTS_TICK 0x100, EVENTS_OVRFLW 0x104,
+/// EVENTS_COMPARE[n] 0x140+n*4, INTENSET 0x304 (TICK 0, OVRFLW 1,
+/// COMPAREn 16-19) / CLR 0x308, EVTEN 0x340 / SET 0x344 / CLR 0x348
+/// (event routing to PPI: stored — the PPI dispatch polls the event
+/// registers directly, so routing needs no extra machinery),
+/// COUNTER 0x504, PRESCALER 0x508, CC[n] 0x540+n*4. 32768 Hz LFCLK:
+/// counter += elapsed/1953/(presc+1).
 pub struct RtcNrf {
     irq: i32,
     running: bool,
@@ -17,6 +22,7 @@ pub struct RtcNrf {
     ev_ovrflw: bool,
     ev_compare: [bool; 4],
     intenset: u32,
+    evten: u32,
     last_tick: u64,
     frac: u64,
 }
@@ -32,7 +38,7 @@ impl RtcNrf {
         Some(Box::new(Self {
             irq, running: false, counter: 0, prescaler: 0, cc: [0; 4],
             ev_tick: false, ev_ovrflw: false, ev_compare: [false; 4],
-            intenset: 0, last_tick: instruction_count(), frac: 0,
+            intenset: 0, evten: 0, last_tick: instruction_count(), frac: 0,
         }))
     }
     fn advance(&mut self, sys: &System) {
@@ -78,6 +84,7 @@ impl Peripheral for RtcNrf {
             0x104 => self.ev_ovrflw as u32,
             0x140..=0x14C => self.ev_compare[((offset - 0x140) >> 2) as usize] as u32,
             0x304 => self.intenset,
+            0x340 => self.evten,
             0x504 => self.counter,
             0x508 => self.prescaler,
             0x540..=0x54C => self.cc[((offset - 0x540) >> 2) as usize],
@@ -89,12 +96,16 @@ impl Peripheral for RtcNrf {
         match offset {
             0x000 => { self.running = true; self.last_tick = instruction_count(); }
             0x004 => self.running = false,
-            0x00C => { self.counter = 0; self.frac = 0; }
+            0x008 => { self.counter = 0; self.frac = 0; } // CLEAR (SVD 0x008)
+            0x00C => { self.counter = 0xFFFFF0; self.frac = 0; } // TRIGOVRFLW
             0x100 => if value == 0 { self.ev_tick = false; }
             0x104 => if value == 0 { self.ev_ovrflw = false; }
             0x140..=0x14C => if value == 0 { self.ev_compare[((offset - 0x140) >> 2) as usize] = false; }
-            0x304 => self.intenset |= value,
+            0x304 => self.intenset |= value & 0xF_0003, // TICK 0, OVRFLW 1, COMPAREn 16-19
             0x308 => self.intenset &= !value,
+            0x340 => self.evten = value & 0xF_0003, // event routing to PPI
+            0x344 => self.evten |= value & 0xF_0003,
+            0x348 => self.evten &= !value,
             0x508 => self.prescaler = value & 0xFFF,
             0x540..=0x54C => self.cc[((offset - 0x540) >> 2) as usize] = value & 0xFF_FFFF,
             _ => {}
@@ -160,5 +171,33 @@ mod tests {
         assert_eq!(r2.read(&sys2, 0x504), 0, "counter wrapped");
         assert_eq!(r2.read(&sys2, 0x104), 1, "OVRFLW event");
         assert!(sys2.p.nvic.borrow().has_pending(), "OVRFLW IRQ 17 pends");
+    }
+    #[test]
+    fn trigovrflw_and_evten_routing() {
+        // TRIGOVRFLW (0x00C) parks COUNTER at 0xFFFFF0 so overflow lands
+        // 16 LF ticks later; EVTEN/SET/CLR store the PPI routing word.
+        let _g = lock_boot();
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0xE000E100, 4, 1 << 11); // NVIC ISER IRQ 11
+        sys.p.write(&sys, 0x4000B508, 4, 0); // prescaler 0
+        sys.p.write(&sys, 0x4000B304, 4, 1 << 1); // INTENSET OVRFLW
+        sys.p.write(&sys, 0x4000B344, 4, (1 << 1) | (1 << 16)); // EVTENSET OVRFLW+COMPARE0
+        assert_eq!(sys.p.read(&sys, 0x4000B340, 4) & 0xF_0003, (1 << 1) | (1 << 16), "EVTEN routes");
+        sys.p.write(&sys, 0x4000B348, 4, 1 << 16); // EVTENCLR COMPARE0
+        assert_eq!(sys.p.read(&sys, 0x4000B340, 4) & 0xF_0003, 1 << 1, "EVTENCLR clears");
+        sys.p.write(&sys, 0x4000B000, 4, 1); // START
+        sys.p.write(&sys, 0x4000B00C, 4, 1); // TRIGOVRFLW
+        assert_eq!(sys.p.read(&sys, 0x4000B504, 4), 0xFFFFF0, "parked near top");
+        crate::system::INSTRUCTION_COUNT.fetch_add(16 * 1953 + 8, std::sync::atomic::Ordering::Relaxed);
+        sys.tick();
+        assert_eq!(sys.p.read(&sys, 0x4000B504, 4), 0, "overflowed to 0");
+        assert_eq!(sys.p.read(&sys, 0x4000B104, 4), 1, "OVRFLW event");
+        assert!(sys.p.nvic.borrow().has_pending(), "OVRFLW IRQ 11 pends");
+        // CLEAR (0x008) still zeroes the counter (not the TRIGOVRFLW word).
+        sys.p.write(&sys, 0x4000B008, 4, 1); // CLEAR
+        assert_eq!(sys.p.read(&sys, 0x4000B504, 4), 0, "CLEAR zeroes");
+        // 2nd run: fresh instance, no leak.
+        let r2 = RtcNrf::new("RTC0").unwrap();
+        let _ = r2;
     }
 }
