@@ -40,6 +40,7 @@ pub struct PwmNrf {
     decoder: u32,
     loopcnt: u32,
     loop_remaining: u32,
+    chaining: bool,
     active_seq: Option<usize>,
     seq_ptr: [u32; 2],
     seq_cnt: [u32; 2],
@@ -62,7 +63,7 @@ impl PwmNrf {
             ev_seqstarted: [false; 2], ev_seqend: [false; 2],
             ev_periodend: false, ev_loopsdone: false, intenset: 0, shorts: 0,
             mode: 0, countertop: 0, prescaler: 0, decoder: 0, loopcnt: 0,
-            loop_remaining: 0, active_seq: None,
+            loop_remaining: 0, chaining: false, active_seq: None,
             seq_ptr: [0; 2], seq_cnt: [0; 2], seq_refresh: [0; 2],
             seq_enddelay: [0; 2], pselout: [0xFFFF_FFFF; 4],
         }))
@@ -87,8 +88,15 @@ impl PwmNrf {
             self.fire(sys, 1 << 1);
         }
     }
-    /// Consume the LOOPSDONE SHORTS after LOOPSDONE latches.
+    /// Consume the LOOPSDONE SHORTS after LOOPSDONE latches. Single-pass
+    /// via the chaining guard (silicon re-pulses per completion and would
+    /// loop forever on LOOPSDONE_SEQSTARTn with CNT==0 — the emulator
+    /// terminates instead; documented divergence, same as RADIO cascade).
     fn loopsdone_shorts(&mut self, sys: &System) {
+        if self.chaining {
+            return;
+        }
+        self.chaining = true;
         if self.shorts & (1 << 4) != 0 {
             // LOOPSDONE_STOP: halt with STOPPED.
             self.active_seq = None;
@@ -99,6 +107,7 @@ impl PwmNrf {
         } else if self.shorts & (1 << 3) != 0 {
             self.seqstart(sys, 1);
         }
+        self.chaining = false;
     }
     /// Start sequence n: SEQSTARTED + immediate completion (the waveform
     /// plays at the task quantum — no waveform RAM handle in the model).

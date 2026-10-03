@@ -543,7 +543,10 @@ impl Peripheral for RadioNrf {
             0x144 => self.ev_ccaidle as u32,
             0x148 => self.ev_ccabusy as u32,
             0x14C => self.ev_ccastopped as u32,
-            0x150 => self.ev_rateboost as u32,
+            0x150 => {
+                eprintln!("DBG R150 read -> {}", self.ev_rateboost as u32);
+                self.ev_rateboost as u32
+            }
             0x154 => self.ev_txready as u32,
             0x158 => self.ev_rxready as u32,
             0x15C => self.ev_mhrmatch as u32,
@@ -1180,7 +1183,8 @@ pub fn inject_ctepresent(sys: &System) {
 
 /// Take a staged DFE IQ-sample transfer (ptr, maxcnt); None when idle.
 /// Staged at RX completion while DFEMODE selects AoA/AoD with a target
-/// buffer (DFEPACKET.PTR/MAXCNT); the driver moves the samples.
+/// buffer (DFEPACKET.PTR/MAXCNT); the driver moves the samples at
+/// 2 bytes per IQ sample (I u8 + Q u8, nRF52833 8-bit sampling).
 pub fn take_dfe_sample(sys: &System) -> Option<(u32, u32)> {
     with_radio(sys, |r| {
         if r.dfe_pending {

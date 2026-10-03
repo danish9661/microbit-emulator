@@ -69,6 +69,12 @@ pub struct ClockPower {
     ctiv: u32,
     traceconfig: u32,
     constlat: bool,
+    /// RAM section power latches (SVD RAM[%s] at 0x900+0x10n, dim 9:
+    /// POWER/POWERSET/POWERCLR per section, reset ON). Stored for
+    /// readback; power-off has no observable effect — the emulator
+    /// retains all RAM (no retention loss is modeled), so RAMSTATUS
+    /// keeps reporting all blocks on.
+    ram_power: [bool; 9],
     systemoff_armed: bool,
     usb_seen_powered: bool,
     ct_deadline: Option<u64>,
@@ -97,6 +103,7 @@ impl Default for ClockPower {
                intenset: 0, gpregret: 0xFF, gpregret2: 0xFF,
                dcdcen: 0, pofcon: 0, hfxodebounce: 0, lfxodebounce: 0,
                ctiv: 0, traceconfig: 0, constlat: false,
+               ram_power: [true; 9],
                systemoff_armed: false, usb_seen_powered: false,
                ct_deadline: None }
     }
@@ -283,6 +290,10 @@ impl Peripheral for ClockPower {
             0x41C => self.lfclksrc & 3,
             0x428 => 0xF, // RAMSTATUS: all blocks on
             0x438 => 0x3, // USBREGSTATUS: VBUSDETECT + OUTPUTRDY
+            0x900..=0x97C if ((offset - 0x900) & 0xF) < 0xC && ((offset - 0x900) >> 4) < 9 => {
+                // RAM[%s].POWER/POWERSET/POWERCLR (stride 0x10, dim 9).
+                self.ram_power[((offset - 0x900) >> 4) as usize] as u32
+            }
             0x500 => self.systemoff_armed as u32,
             0x510 => self.pofcon,
             0x51C => self.gpregret & 0xFF,
@@ -348,6 +359,22 @@ impl Peripheral for ClockPower {
             }
             0x078 => if value == 1 { self.constlat = true; } // CONSTLAT
             0x07C => if value == 1 { self.constlat = false; } // LOWPWR
+            0x900..=0x97C if ((offset - 0x900) & 0xF) < 0xC && ((offset - 0x900) >> 4) < 9 => {
+                let n = ((offset - 0x900) >> 4) as usize;
+                match (offset - 0x900) & 0xF {
+                    0x0 => self.ram_power[n] = value & 1 == 1,
+                    0x4 => {
+                        if value & 1 != 0 {
+                            self.ram_power[n] = true;
+                        }
+                    }
+                    _ => {
+                        if value & 1 != 0 {
+                            self.ram_power[n] = false;
+                        }
+                    }
+                }
+            }
             0x100 => if value == 0 { self.events_hfclkstarted = false; }
             0x104 => if value == 0 { self.events_lfclkstarted = false; }
             0x108 => if value == 0 { self.events_pofwarn = false; }
@@ -493,5 +520,21 @@ mod tests {
         // 2nd run: fresh instance, no leak.
         let c2 = ClockPower::default();
         assert!(!c2.systemoff_armed && !c2.events_pofwarn);
+    }
+    #[test]
+    fn ram_section_power_latches() {
+        // RAM[%s].POWER/POWERSET/POWERCLR (SVD 0x900+0x10n, dim 9)
+        // store per-section latches (reset ON); RAMSTATUS stays 0xF
+        // (retention is never lost in the emulator).
+        let sys = test_dummy_system();
+        assert_eq!(sys.p.read(&sys, 0x40000900, 4), 1, "RAM0 on at reset");
+        sys.p.write(&sys, 0x40000908, 4, 1); // RAM0.POWERCLR
+        assert_eq!(sys.p.read(&sys, 0x40000900, 4), 0, "RAM0 off");
+        sys.p.write(&sys, 0x40000904, 4, 1); // RAM0.POWERSET
+        assert_eq!(sys.p.read(&sys, 0x40000900, 4), 1, "RAM0 on");
+        sys.p.write(&sys, 0x40000910, 4, 0); // RAM1.POWER absolute off
+        assert_eq!(sys.p.read(&sys, 0x40000910, 4), 0, "RAM1 off");
+        assert_eq!(sys.p.read(&sys, 0x40000428, 4), 0xF, "RAMSTATUS all on");
+        assert_eq!(ClockPower::default().ram_power, [true; 9], "fresh default");
     }
 }

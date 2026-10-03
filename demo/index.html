@@ -910,7 +910,8 @@ emu.init();</textarea>
   // MakeCode direct-app preset: vendored demo/firmware/mbcodal-binary.hex
   // (copy of mc/built/mbcodal-binary.hex, same reason as above:
   // ../mc does not exist under the demo/ site root).
-  // (basic.showLeds smiley, S140 + CODAL app at 0x1C000) through the
+  // (basic.showLeds smiley, S140 + CODAL app at 0x1C000; rebuilt 2026-10-03 via
+  // `pxt build` from mc/main.ts so the hex truly matches source) through the
   // same staged path as a dropped file; Run continues into the
   // direct-app boot (same recipe as MicroPython). Boots to scheduler
   // idle; the user program never runs (CODAL init tail post1 0x2504c
@@ -1141,6 +1142,13 @@ emu.init();</textarea>
   let job = null;
   function pumpDma() {
     if (!cpu) return;
+    if (wasm.power_take_systemoff()) {
+      // Firmware entered System OFF (deep sleep): the bench wakes it on
+      // reset, like a silicon wake-on-reset — reboot from the boot table.
+      const b = appBoot || boot;
+      cpu.reset_cpu(b.sp, b.pc);
+      return;
+    }
     if (wasm.is_watchdog_reset_requested()) {
       // Firmware asked for a reboot (e.g. MicroPython's MBR/SD handoff):
       // reload SP/PC from the vector table like the native test driver --
@@ -1276,11 +1284,27 @@ emu.init();</textarea>
       cpu.mem_write(t[1], fill);
       wasm.usbd_complete_epout(t[0], t[2]);
     }
+    // USB ISO endpoints: ISOIN streams bytes out, ISOOUT sinks them
+    // (loopback fill here — a real host would supply/seize the frames).
+    t = wasm.usbd_take_isoin();
+    if (t.length) {
+      const bytes = cpu.mem_read(t[0], t[1]);
+      wasm.usbd_complete_isoin(bytes);
+    }
+    t = wasm.usbd_take_isoout();
+    if (t.length) {
+      cpu.mem_write(t[0], new Uint8Array(t[1]));
+      wasm.usbd_complete_isoout(t[1]);
+    }
     // NVMC: apply staged erases to guest flash (0xFF), then complete.
     t = wasm.nvmc_take_erase();
     if (t.length) {
       if (t[0] === 0xFFFFFFFF) {
         cpu.mem_write(0, new Uint8Array(512 * 1024).fill(0xFF));
+      } else if ((t[0] >>> 0) === 0x10001000) {
+        // ERASEUICR: the UICR store lives in the peripheral slot (not
+        // guest memory), so fill it word-wise through periph_write.
+        for (let a = 0x10001000; a < 0x10002000; a += 4) wasm.periph_write(a, 4, 0xFFFFFFFF);
       } else {
         cpu.mem_write(t[0], new Uint8Array(4096).fill(0xFF));
       }
@@ -1326,6 +1350,14 @@ emu.init();</textarea>
         lastAir = [];
       }
       wasm.radio_complete_rx();
+    }
+    // RADIO DFE: IQ sampling while DFEMODE selects AoA/AoD. The bench has
+    // no antenna array, so the driver sinks silence (zero I/Q pairs);
+    // firmware still observes staged transfers + AMOUNT.
+    t = wasm.radio_take_dfe_sample();
+    if (t.length) {
+      cpu.mem_write(t[0], new Uint8Array(t[1] * 2));
+      wasm.radio_complete_dfe(t[1]);
     }
     // SoftDevice BLE face: firmware SVCs stage take/complete jobs (see
     // src/sd_ble.rs, tags documented on ble_take_job in lib.rs). The
@@ -1517,14 +1549,28 @@ emu.init();</textarea>
           // constantly): advance virtual time so a future peripheral IRQ
           // can pend, then wake on one. Without this the core naps forever
           // the first time it idles (found via MicroPython REPL bring-up).
+          // Publish the sleep edge so SLEEP-gated models (POWER
+          // SLEEPENTER, WDT SLEEP countdown) observe it like silicon.
+          wasm.power_notify_sleep_enter();
+          wasm.wdt_set_sleeping(true);
           wasm.tick_n(20000);
-          if (wasm.has_pending_interrupt()) cpu.wake();
+          if (wasm.has_pending_interrupt()) {
+            cpu.wake();
+            wasm.power_notify_sleep_exit();
+            wasm.wdt_set_sleeping(false);
+          }
         }
         pumpDma();
       }
       const fpc = cpu.fault_pc();
       if (fpc !== 0xFFFFFFFF) {
         status.textContent = `CPU fault pc=${(fpc >>> 0).toString(16)} op=${cpu.fault_op1().toString(16)} (see console-style UART above)`;
+      }
+      // USB SOF: one 1 ms frame tick per rendered frame while the device
+      // is attached (ENABLED + pullup) — drives FRAMECNTR + EVENTS_SOF so
+      // firmware frame loops advance like on the bus.
+      if ((wasm.periph_read(0x40027500, 4) & 1) !== 0 && wasm.periph_read(0x40027504, 4) !== 0) {
+        wasm.usbd_signal_sof();
       }
       // Drip one typed byte per frame, paced on RXDRDY-consumed (P134:
       // the RXD register holds ONE byte — dripping faster than firmware
@@ -1565,22 +1611,47 @@ emu.init();</textarea>
     // multiplexed-strobe persistence needs a sample per frame regardless
     // of what drove the pins this frame.
     // LEDs are a multiplexed strobe on silicon, not a static level:
-    // firmware sinks one row while its columns are high, then moves on.
+    // firmware selects one row while its columns are driven, then moves on.
     // A single frame's level shows one row; persistence of vision comes
     // from OR-ing N recent frames (phosphor persistence). Without this
     // the "A" glyph reads as its last row only (4/25); with it the held
-    // glyph renders whole. Needs DIR=output on both pins (silicon rule:
-    // a toggling latch on an input pin stays dark, e.g. pre-show refresh).
-    // Depth 3 frames: one full 5-row sweep at 60fps.
+    // glyph renders whole. Two wirings share the pins (same switch as the
+    // core matrix_state()): GPIO bit-bang (row sinks LOW, both DIR=output;
+    // a toggling latch on an input pin stays dark) and CODAL (rows
+    // GPIO-selected HIGH, columns GPIOTE-task-driven with DIR=input by
+    // design and per-frame brightness in the task OUTINIT). Depth 3
+    // frames: one full 5-row sweep at 60fps.
     if (!frame.pers) frame.pers = new Uint8Array(25);
     {
       const dir0 = wasm.periph_read(0x50000514, 4), dir1 = wasm.periph_read(0x50000814, 4);
       const isOut = ([port, pin]) => (((port ? dir1 : dir0) >>> pin) & 1) !== 0;
+      // CODAL design shares these pins: columns stay GPIO-input by design
+      // and are driven by GPIOTE tasks (PPI from the display timer), with
+      // per-frame brightness in the task channel's OUTINIT (clear = bright).
+      // Same switch as the core matrix_state(): task-bound columns use the
+      // CODAL rule (row HIGH-selected), else the GPIO bit-bang rule.
+      const cfg = [];
+      for (let ch = 0; ch < 8; ch++) cfg.push(wasm.periph_read(0x40006510 + ch * 4, 4) >>> 0);
+      const pinOf = ([port, pin]) => (port === 0 ? pin : 32 + pin);
+      const taskBright = ([port, pin]) => {
+        const want = pinOf([port, pin]);
+        for (const c of cfg) {
+          if ((c & 3) === 3 && ((c >>> 8) & 0x3F) === want) return (c & 0x100000) === 0;
+        }
+        return false;
+      };
+      const codal = COLS.some(([p, q]) => {
+        const want = pinOf([p, q]);
+        return cfg.some((c) => (c & 3) === 3 && ((c >>> 8) & 0x3F) === want);
+      });
       for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++) {
         const row = wasm.gpio_read_output(ROWS[r][0], ROWS[r][1]);
         const col = wasm.gpio_read_output(COLS[c][0], COLS[c][1]);
         const i = r * 5 + c;
-        frame.pers[i] = ((frame.pers[i] << 1) & 0x7) | ((isOut(ROWS[r]) && !row && isOut(COLS[c]) && col) ? 1 : 0);
+        const lit = codal
+          ? (isOut(ROWS[r]) && row && taskBright(COLS[c]))
+          : ((isOut(ROWS[r]) && !row && isOut(COLS[c]) && col) ? 1 : 0);
+        frame.pers[i] = ((frame.pers[i] << 1) & 0x7) | (lit ? 1 : 0);
         leds[i].classList.toggle('on', frame.pers[i] !== 0);
       }
     }

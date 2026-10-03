@@ -205,22 +205,86 @@ impl Peripheral for GpioNrf {
         let (port, reg) = Self::decode(offset).unwrap_or((self.port, offset));
         let mut gpio = sys.p.gpio.borrow_mut();
         match reg {
-            0x04 => gpio.out[port] = value,
-            0x08 => gpio.out[port] |= value,
-            0x0C => gpio.out[port] &= !value,
-            0x14 => gpio.dir[port] = value,
-            0x18 => gpio.dir[port] |= value,
-            0x1C => gpio.dir[port] &= !value,
+            0x04 => {
+                gpio.out[port] = value;
+                // SENSE monitors the physical pin level, which follows OUT
+                // on outputs: re-evaluate every pin (silicon DETECT sees
+                // firmware-driven toggles, not just external input edges).
+                for pin in 0..32 {
+                    gpio.sense_eval(port, pin);
+                }
+            }
+            0x08 => {
+                gpio.out[port] |= value;
+                for pin in 0..32 {
+                    gpio.sense_eval(port, pin);
+                }
+            }
+            0x0C => {
+                gpio.out[port] &= !value;
+                for pin in 0..32 {
+                    gpio.sense_eval(port, pin);
+                }
+            }
+            0x14 => {
+                gpio.dir[port] = value;
+                // DIR switches the sensed source (latch vs line): re-evaluate.
+                for pin in 0..32 {
+                    gpio.sense_eval(port, pin);
+                }
+            }
+            0x18 => {
+                gpio.dir[port] |= value;
+                for pin in 0..32 {
+                    gpio.sense_eval(port, pin);
+                }
+            }
+            0x1C => {
+                gpio.dir[port] &= !value;
+                for pin in 0..32 {
+                    gpio.sense_eval(port, pin);
+                }
+            }
             0x20 => gpio.latch[port] &= !value, // LATCH write-1-clears
             0x24 => gpio.detectmode[port] = value & 1,
             _ => {
                 match offset {
-                    0x504 => gpio.out[port] = value,
-                    0x508 => gpio.out[port] |= value,
-                    0x50C => gpio.out[port] &= !value,
-                    0x514 => gpio.dir[port] = value,
-                    0x518 => gpio.dir[port] |= value,
-                    0x51C => gpio.dir[port] &= !value,
+                    0x504 => {
+                        gpio.out[port] = value;
+                        for pin in 0..32 {
+                            gpio.sense_eval(port, pin);
+                        }
+                    }
+                    0x508 => {
+                        gpio.out[port] |= value;
+                        for pin in 0..32 {
+                            gpio.sense_eval(port, pin);
+                        }
+                    }
+                    0x50C => {
+                        gpio.out[port] &= !value;
+                        for pin in 0..32 {
+                            gpio.sense_eval(port, pin);
+                        }
+                    }
+                    0x514 => {
+                        gpio.dir[port] = value;
+                        for pin in 0..32 {
+                            gpio.sense_eval(port, pin);
+                        }
+                    }
+                    0x518 => {
+                        gpio.dir[port] |= value;
+                        for pin in 0..32 {
+                            gpio.sense_eval(port, pin);
+                        }
+                    }
+                    0x51C => {
+                        gpio.dir[port] &= !value;
+                        for pin in 0..32 {
+                            gpio.sense_eval(port, pin);
+                        }
+                    }
                     0x520 => gpio.latch[port] &= !value, // LATCH write-1-clears
                     0x524 => gpio.detectmode[port] = value & 1,
                     _ => {}
@@ -262,8 +326,7 @@ mod tests {
         assert_eq!(p0.read(&sys, 0x514) & (1 << 21), 0, "back to input");
     }
     #[test]
-    fn openhw_matrix_read_path_row_low_col_high() {
-        // OpenHW matrix contract: the lib.rs matrix_state() pixels light
+    fn openhw_matrix_read_path_row_low_col_high() {        // OpenHW matrix contract: the lib.rs matrix_state() pixels light
         // exactly when row OUT==0 && col OUT==1 with both DIR=output.
         // Drive them through the same model writes firmware uses.
         use crate::system::{lock_boot, test_dummy_system};
@@ -285,8 +348,32 @@ mod tests {
         assert_eq!(crate::matrix_state()[0], 0, "pixel dark when row high");
     }
     #[test]
-    fn sense_latch_and_detectmode() {
-        // PIN_CNF SENSE High/Low latches LATCH on meeting the level
+    fn openhw_matrix_gpiote_task_col_lights() {
+        // CODAL design: columns are GPIOTE-task-driven (DIR stays input);
+        // rows are GPIO-selected HIGH; per-frame brightness lives in the
+        // task channel's OUTINIT (clear = bright). Bit-bang rule above
+        // must keep working (no task channels there).
+        use crate::system::{lock_boot, test_dummy_system};
+        let _g = lock_boot();
+        crate::init_for_test(crate::system::WasmSystem::new());
+        let sys = crate::sys();
+        // Row0 P0.21 output HIGH (selected).
+        sys.p.write(sys, 0x50000518, 4, 1 << 21); // DIRSET
+        sys.p.write(sys, 0x50000508, 4, 1 << 21); // OUTSET
+        // Col0 P0.28 on GPIOTE CH0 task mode, OUTINIT clear (bright).
+        sys.p.write(sys, 0x40006510, 4, 3 | (28 << 8));
+        // Col1 P0.11 on CH1 task mode, OUTINIT set (dark this frame).
+        sys.p.write(sys, 0x40006514, 4, 3 | (11 << 8) | (1 << 20));
+        let px = crate::matrix_state();
+        assert_eq!(px.len(), 25);
+        assert_eq!(px[0], 1, "task col bright + row high lights (0,0)");
+        assert_eq!(px[1], 0, "task col OUTINIT-set stays dark (0,1)");
+        // Row low deselects even a bright task column.
+        sys.p.write(sys, 0x5000050C, 4, 1 << 21);
+        assert_eq!(crate::matrix_state()[0], 0, "row low deselects");
+    }
+    #[test]
+    fn sense_latch_and_detectmode() {        // PIN_CNF SENSE High/Low latches LATCH on meeting the level
         // (input changes + CNF programming both evaluate); LATCH is
         // write-1-clear; DETECTMODE stores.
         let sys = test_dummy_system();
@@ -307,5 +394,22 @@ mod tests {
         assert_eq!(sys.p.read(&sys, 0x50000524, 4), 1, "DETECTMODE");
         // 2nd run: fresh instance, no leak.
         assert_eq!(GpioPorts::default().latch, [0; 2]);
+    }
+    #[test]
+    fn sense_sees_firmware_driven_out_toggles() {
+        // SENSE monitors the physical pin level, which follows OUT on
+        // outputs: firmware OUTSET/OUTCLR must latch like external edges
+        // (silicon DETECT sees both). P0.16 output with SENSE High.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x50000700 + 16 * 4, 4, 0x1 | (1 << 16)); // DIR=out, SENSE=High
+        assert_eq!(sys.p.read(&sys, 0x50000520, 4) & (1 << 16), 0, "starts low: no latch");
+        sys.p.write(&sys, 0x50000508, 4, 1 << 16); // OUTSET: rising edge
+        assert_eq!(sys.p.read(&sys, 0x50000520, 4) & (1 << 16), 1 << 16, "OUTSET latches");
+        sys.p.write(&sys, 0x50000520, 4, 1 << 16); // write-1-clear
+        sys.p.write(&sys, 0x5000050C, 4, 1 << 16); // OUTCLR
+        assert_eq!(sys.p.read(&sys, 0x50000520, 4) & (1 << 16), 0, "low again: clear");
+        // DIR switch re-evaluates the source too.
+        sys.p.write(&sys, 0x50000514, 4, 0); // all input (idle HIGH pull-ups)
+        assert_eq!(sys.p.read(&sys, 0x50000520, 4) & (1 << 16), 1 << 16, "input HIGH latches");
     }
 }

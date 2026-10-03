@@ -157,24 +157,65 @@ pub fn gpio_read_dir(port: u32, pin: u32) -> bool {
 }
 
 /// 5x5 LED matrix state for an OpenHW matrix component: 25 bytes,
-/// row-major, 1 = lit. Lit <=> row OUT==0 && col OUT==1 with both pins
-/// configured output (same rule the bench frame loop uses).
+/// row-major, 1 = lit. Two firmware designs share these pins, told apart
+/// by how the columns are driven (same rule the bench frame loop uses).
 /// Rows: P0.21/P0.22/P0.15/P0.24/P0.19. Cols: P0.28/P0.11/P0.31/P1.05/P0.30.
+/// Direct-GPIO bit-bang (both sides GPIO-output): lit <=> row OUT==0 &&
+/// col OUT==1 with both pins configured output.
+/// CODAL NRF52LEDMatrix (columns GPIOTE-task-driven, DIR stays input by
+/// design; rows GPIO-selected HIGH): lit <=> row OUT==1 (output) && the
+/// column's task channel has OUTINIT clear (per-frame brightness latch
+/// written by the render path). The task-bound design wins when any
+/// matrix column has a task-mode GPIOTE channel; otherwise the GPIO rule.
 #[wasm_bindgen]
 pub fn matrix_state() -> Vec<u8> {
     const ROWS: [(u8, u8); 5] = [(0, 21), (0, 22), (0, 15), (0, 24), (0, 19)];
     const COLS: [(u8, u8); 5] = [(0, 28), (0, 11), (0, 31), (1, 5), (0, 30)];
+    fn task_bright(port: u8, pin: u8) -> bool {
+        for slot in &sys().p.peripherals {
+            if slot.start == 0x4000_6000 {
+                if let Ok(mut b) = slot.peripheral.try_borrow_mut() {
+                    if let Some(g) = b.as_any_mut().downcast_mut::<crate::peripherals::gpiote_nrf::Gpiote>() {
+                        return g.task_bright(port, pin);
+                    }
+                }
+            }
+        }
+        false
+    }
+    fn task_bound(port: u8, pin: u8) -> bool {
+        for slot in &sys().p.peripherals {
+            if slot.start == 0x4000_6000 {
+                if let Ok(mut b) = slot.peripheral.try_borrow_mut() {
+                    if let Some(g) = b.as_any_mut().downcast_mut::<crate::peripherals::gpiote_nrf::Gpiote>() {
+                        return g.task_bound(port, pin);
+                    }
+                }
+            }
+        }
+        false
+    }
+    // CODAL design when any matrix column is task-driven, else GPIO bit-bang.
+    let codal = COLS.iter().any(|&(p, q)| task_bound(p, q));
     let g = sys().p.gpio.borrow();
     let mut out = Vec::with_capacity(25);
     for &(rp, rpin) in &ROWS {
         for &(cp, cpin) in &COLS {
-            let row_out = (rp as usize) < 2 && rpin < 32
-                && (g.dir[rp as usize] >> rpin) & 1 == 1
-                && (g.out[rp as usize] >> rpin) & 1 == 0;
-            let col_out = (cp as usize) < 2 && cpin < 32
-                && (g.dir[cp as usize] >> cpin) & 1 == 1
-                && (g.out[cp as usize] >> cpin) & 1 == 1;
-            out.push((row_out && col_out) as u8);
+            let lit = if codal {
+                let row_sel = (rp as usize) < 2 && rpin < 32
+                    && (g.dir[rp as usize] >> rpin) & 1 == 1
+                    && (g.out[rp as usize] >> rpin) & 1 == 1;
+                row_sel && task_bright(cp, cpin)
+            } else {
+                let row_out = (rp as usize) < 2 && rpin < 32
+                    && (g.dir[rp as usize] >> rpin) & 1 == 1
+                    && (g.out[rp as usize] >> rpin) & 1 == 0;
+                let col_out = (cp as usize) < 2 && cpin < 32
+                    && (g.dir[cp as usize] >> cpin) & 1 == 1
+                    && (g.out[cp as usize] >> cpin) & 1 == 1;
+                row_out && col_out
+            };
+            out.push(lit as u8);
         }
     }
     out
@@ -471,6 +512,13 @@ pub fn radio_crc32(body: &[u8], poly: u32, init: u32, len: u32) -> u32 {
     crate::peripherals::radio_nrf::radio_crc(body, poly, init, len as usize)
 }
 
+/// Log-power add of an ambient floor onto a packet level (both dBm).
+/// Pure function sharing the ED/CCA/RX-stamp number with the model.
+#[wasm_bindgen]
+pub fn radio_add_interference_dbm(packet_dbm: i32, ambient_dbm: i32) -> i32 {
+    crate::peripherals::radio_nrf::add_interference_dbm(packet_dbm, ambient_dbm)
+}
+
 /// Whiten (de-whiten — same operation) bytes in place with the nRF
 /// 7-bit LFSR + DATAWHITEIV seed. Pure function for driver-side air.
 #[wasm_bindgen]
@@ -593,6 +641,13 @@ pub fn nfct_complete_rx(amount: u32) {
 #[wasm_bindgen]
 pub fn nfct_inject_collision() {
     crate::peripherals::nfct_nrf::inject_collision(sys());
+}
+
+/// Host-inject an NFC RX frame error (corrupt air): FRAMESTATUS.RX flags
+/// (bit0 CRCERROR, bit2 PARITYSTATUS, bit3 OVERRUN) + EVENTS_RXERROR.
+#[wasm_bindgen]
+pub fn nfct_inject_rxerror(flags: u32) {
+    crate::peripherals::nfct_nrf::inject_nfct_rxerror(sys(), flags);
 }
 
 // ── SAADC limit-monitor driver API ──
@@ -1450,6 +1505,9 @@ impl WasmCpu {
         self.cpu.regs.fpscr = (self.cpu.regs.fpscr & !0xFFC0_01FF) | (v & 0xFFC0_01FF);
     }
     pub fn get_primask(&self) -> u32 { self.cpu.regs.primask }
+    pub fn get_faultmask(&self) -> u32 { self.cpu.regs.faultmask as u32 }
+    pub fn get_basepri(&self) -> u32 { self.cpu.regs.basepri as u32 }
+    pub fn get_control(&self) -> u32 { self.cpu.regs.control }
     pub fn fault_pc(&self) -> u32 { self.cpu.fault.map(|f| f.pc).unwrap_or(0xFFFF_FFFF) }
     pub fn fault_op1(&self) -> u32 { self.cpu.fault.map(|f| f.op1 as u32).unwrap_or(0) }
     pub fn fault_op2(&self) -> u32 { self.cpu.fault.map(|f| f.op2 as u32).unwrap_or(0) }

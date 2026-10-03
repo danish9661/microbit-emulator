@@ -4,13 +4,25 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-09-30, tree CLEAN at P145 — gates green this turn)
+## 0. Snapshot (2026-10-03, P152 MakeCode forensics — gates green this turn)
 
-- HEAD: `81a33a2` "P145 vendored MakeCode hex refresh + label fix (shipped park 7/7, 239 green, 128 ok)".
+- HEAD: `7ccae7f` "P148 full-face pass: every SVD register modeled, no stubs left (259 green)".
 - Branch: `master`, in sync with `origin/master`.
-- Suite: **239 single green** + test:wasm 128 ok (incl. `test:mpy-radio`) + E2E 42/42 over air + browser 16/16, all re-verified this turn.
-- Working tree: CLEAN.
-- Big news: **shipped artifact now matches source** — the stale Sept-23 `showString` vendored hex is replaced by the Sept-29 `showLeds` smiley build (1247 differing bytes, user section `0x47000`+); the bench hex parks identically (idle `0x2000207b`, 2 resets, zero faults, DIR0 `0x1788000`, T4 INTEN `0x10000`, matrix dark — 7/7 probe).
+- Suite: **269 single green** + test:wasm 128 ok (incl. `test:mpy-radio`) + handshake all-OK, all re-verified this turn.
+- Working tree: DIRTY (P149 audit fixes + P150 pump wiring uncommitted +
+  P152 diag exports `get_faultmask/get_basepri/get_control` in lib.rs,
+  handshake pkg rebuilt+synced).
+- Gates this turn: cargo 269/269, test:wasm 128 ok,
+  handshake OK. Uncommitted: prior P149/P150 items + P152 diag exports + doc sync.
+- CORRECTION to the P145 "Big news" below: the Sept-29 vendored hex's user
+  program is NOT the `showLeds` smiley — the compiler's own
+  `mc/built/mbcodal-binary.asm` (`_main___P3096`: `movs r0,#100; movs r1,#1;
+  bl pins::digitalWritePin`, bytes match at `0x47052`) drives P0
+  (ID_PIN_P0=100); `0x4788e` holds "my-project", no smiley literal exists;
+  `mc/main.ts` does not match the built hex (stale build — needs `pxt build`
+  rerun). Correct user-run observable is P0.02 output HIGH (currently
+  input/low); matrix-dark is EXPECTED for this build. Wedge re-localized on
+  current tree, scheduler core verified healthy — see P152 entry.
 
 ## 1. What we did so far (this recovery session)
 
@@ -91,7 +103,7 @@ session, not a real gap:
 ## 6. Verify matrix (run in order, stop on red)
 
 ```
-cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 239 green
+cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1  # expect 263 green
 cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml --lib -- --list 2>/dev/null | grep -c ": test"
 node demo/parts/handshake.mjs          # 18/18 (rebuild via npm run build:handshake --prefix demo after Rust changes)
 npm run test:parts --prefix demo ; npm run test:mpy --prefix demo
@@ -147,3 +159,90 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
 - 2026-09-30 (P145 in tree, UNCOMMITTED): vendored fresh `mc/built` smiley hex into `demo/firmware` (1247 differing bytes, user section `0x47000`+) + preset label `showString`→`showLeds`; shipped-artifact park probe 7/7 (idle, 2 resets, zero faults, DIR0/T4/matrix dark); stock limits re-verified (bluetooth 0 hits, SVC82 0 in both hexes; radio TX proof green). NEXT: commit per approval.
 - 2026-09-30 (P145 COMMITTED `81a33a2`, 4 files): vendored hex + label + agent/plan sync. Suite 239 + test:wasm 128 ok re-verified.
 - 2026-09-30 (P146 in tree, UNCOMMITTED): README `showString`→`showLeds` + agent snapshot to P145-committed state. NEXT: commit per approval.
+- 2026-10-03 (P153 SAADC conversion-latency FIX + fresh smiley build — UNCOMMITTED,
+  do not commit per standing order): ROOT CAUSE PROVEN for the MakeCode wedge:
+  zero-time SAADC END inverted init order (ISR fired before driver registered
+  its vector/queue → batch orphaned → main fiber parked forever on the stream
+  wait). Fix (`saadc_nrf.rs`): TASKS_SAMPLE with MAXCNT>0 stages the RESULT
+  offer only after MAXCNT×768 instr (TACQ+TCCONV silicon estimate; 256-sample
+  batches ≈196k steps ≈3ms, dwarfing registration windows); STOP aborts pending;
+  +`conversion_latency_orders_init_race` test. Proof: Sept-29 hex boots to USER
+  CODE with fix (P0.02 HIGH@~36M steps deterministic virtual-time pump, was LOW
+  without) — first user execution in emulation. Fresh `pxt build` smiley
+  (`mc/main.ts` showLeds, target v9.1.1) vendored to `demo/firmware` (now truly
+  matches source); same wedge shape (identical pc/LR/regs/cell/table) but NOT
+  unblocked at 72M steps: its SAADC order is already correct (reg@70k <<
+  stage@762k) yet ISR bails (STARTED==0, no copies/post ever); TIMER2 verified
+  free-running, PPI edge model intact, all other peripherals untouched/disabled.
+  mpy-radio flake characterized (2/3 vs 3/3 pristine; change is dead code there —
+  no takes — full test:wasm green incl. radio on retry). NEXT: see P154 (fix
+  verified on Sept-29 hex; fresh build needs its post-sensor stall named).
+
+- 2026-10-03 (P154 fix VERIFIED (3x deterministic) + fresh-build triage — UNCOMMITTED,
+  do not commit per standing order): Sept-29 hex boots to USER CODE with the
+  P153 fix (P0.02 HIGH@~36M steps, reproduced 3x incl. fully virtual-time pump)
+  — first user execution in emulation. Needs BOTH fix + toggling DRDY edges
+  (static-HIGH DRDY never boots: sensors silent without data-ready edges —
+  2-gate model confirmed). Fresh smiley hex does NOT boot (150M steps, dark):
+  same wedge SHAPE but different STALL POINT — sensors COMPLETE init (~250 TWIM
+  then plateau), SAADC single batch, TIMER2 one-shot stopped, then silence (no
+  user), yet system stays ALIVE (display strobes, polls cycle, ISRs deliver,
+  zero faults). Cell 0x3d is STALE (persists while system cycles — not the live
+  blocker). The 0x10e/0x37f4f faults are Heisen probe artifacts (wall-clock
+  DRDY + fine-chunk timing), absent in deterministic runs — no emulator fault
+  bug. NEXT: fresh build's post-sensor stall (streaming trigger never fires).
+- 2026-10-03 (P155 wedge-2 triage: same shape, different stall — UNCOMMITTED, do
+  not commit per standing order): fresh smiley does NOT boot (150M steps, dark)
+  despite SAADC order verified correct (reg@70k << stage@762k) + forced 31
+  batches + TIMER2-drive + QSPI servicing + realistic sensor data: sensors
+  COMPLETE init (~250 TWIM then plateau), SAADC single batch consumed, TIMER2
+  one-shot stopped, then silence with system ALIVE (display strobes, polls
+  cycle, ISRs deliver, zero faults). Binaries differ ONLY at 0x47000 (user);
+  state/regs/RAM/pc-sets IDENTICAL at 6M steps — yet outcomes differ, so user
+  bytes are read pre-user (header/globals init) shifting a timing race, OR a
+  second producer is missing. 0x10e/0x37f4f faults proven Heisen artifacts
+  (wall-clock DRDY + fine-chunk timing), absent deterministic. No stubs exist
+  (zero TODO/unimplemented; reserved-offset defaults only). NEXT: wedge-2
+  producer (candidates: post-sensor streaming trigger; SECOND SAADC batch path).
+- 2026-10-03 (P156 wedge-2 ROOT CAUSE (deterministic, instruction-level proof) —
+  UNCOMMITTED, do not commit per standing order): the "Heisen" verdict in P155
+  is WITHDRAWN for the fault class: NEW dives 100% deterministically (slow
+  faithful wall clock t/64000). Primary: delivered HardFault@~32M (ipsr 3,
+  CFSR 0x8200 PRECISERR+BFARVALID, BFAR 0x118000), parked in default `b .`
+  0x37f4e (NOT zero-faults: fault_pc only reports UNDELIVERED halts). Chain
+  (single-stepped): TIMER1 handler tail-calls E 0x302d8 via `b.w` (0x303f2/
+  0x303f8) with LR=EXC_RETURN → E `pop {r4-r11,pc}` loads EXC_RETURN →
+  exception_return unstacks live-caller-below regs as frame → resumes stale
+  retpc mid-S 0x33e34 (or 0x0/MBR, or RAM data) → S-tail `pop {r4,pc}` loads
+  even → branch fault 0x33e3a (or MBR 0x10e `pop {r0-r4,pc}`, or erased-flash
+  0x703fc). Every step ARM-correct (LDM writeback-then-branch verified
+  silicon-faithful; xpsr ITSTATE=0 at faults; SPSEL=0 so banks moot; masks
+  audited) — NO cpu/ or peripheral misbehavior in the chain; Q (0x31cc0, 131
+  visits) and S slots healthy when uninvolved. Q/E have ZERO `bl` callers:
+  scheduler tail-chain co-routines, so stale-LR/unwind fragility is
+  firmware-constructed; same binary+events on silicon dives identically.
+  Phase proof (10 DRDY offsets, slow clock): 2/10 dive (O0 S@w114, O120 MBR@w82),
+  8/10 clean-park (WFE 0x37afa, one at 0x33ddc) — dive is event-alignment
+  detonated, firmware-race class. No stimulus reaches user yet (matrix dark):
+  stall (pre-user, display init never completes first frame) is the remaining
+  blocker, dive its noisy neighbor. NEXT: OLD-vs-NEW fiber/event forensics
+  6M→12M (which fiber/event fires in OLD but not NEW) for the stall; no src/
+  change indicated (270 green re-verified).
+- 2026-10-03 (P157 SMILEY RENDERS + render-rule fix + SENSE fix — UNCOMMITTED,
+  do not commit per standing order): full-coverage trace proves NEW user main
+  RUNS at w30 (both hexes, same pump!) — no pre-user stall; display setter
+  runs (image copy, flag 7), blocks in fiber-wait; renderer/state-machine
+  invocation mapped (0 hits); single fiber proven. Root visibility gap (not a
+  model stub): CODAL drives matrix COLUMNS via GPIOTE tasks (DIR stays input
+  by design; per-frame brightness in task OUTINIT, cleared=bright) with rows
+  GPIO-selected HIGH — matrix_state()'s both-DIR-output + row-LOW rule only
+  fits bit-bang firmware. Fix (lib.rs matrix_state + bench frame loop, same
+  switch): task-bound cols use CODAL rule, else GPIO rule (bit-bang proofs
+  untouched). Proof: real matrix_state() + persistence shows the EXACT smiley
+  (9/9: 1,3,6,8,15,19,21,22,23) on unmodified NEW; OLD stays dark (no false
+  positives). SENSE gap also closed (OUT/DIR writes re-evaluate SENSE;
+  GPIOTE poll uses IN-mixed level) + test — silicon-faithful, untriggered
+  here (matrix pins SENSE=0). Gates: cargo 272 + test:wasm 128 green, both
+  pkgs rebuilt. Standing dive (P156 firmware race, post-user, phase-
+  sensitive) unchanged by design — faithful emulation. NEXT: rotation/scroll
+  paths on the now-lit matrix; commit only on user approval.

@@ -33,6 +33,38 @@ impl Gpiote {
         Some(((psel >> 5) as u8, (psel & 0x1F) as u8))
     }
     fn polarity(cfg: u32) -> u32 { (cfg >> 16) & 3 }
+    /// True when a task-mode channel is bound to (port, pin).
+    /// CODAL's LED matrix drives its columns via GPIOTE tasks (PPI from
+    /// the display timer): those pins stay GPIO-input by design, so the
+    /// matrix render must consult task binding, not just GPIO DIR.
+    pub fn task_bound(&self, port: u8, pin: u8) -> bool {
+        for &cfg in &self.config {
+            if cfg & 3 != 3 {
+                continue;
+            }
+            let psel = (cfg >> 8) & 0x3F;
+            if (psel >> 5) as u8 == port && (psel & 0x1F) as u8 == pin {
+                return true;
+            }
+        }
+        false
+    }
+    /// True when a task-mode channel bound to (port, pin) currently has
+    /// OUTINIT clear. NRF52LEDMatrix::render encodes per-frame pixel
+    /// brightness there (bright clears bit 20, dark sets it), so this is
+    /// the frame's brightness latch for GPIOTE-driven matrix columns.
+    pub fn task_bright(&self, port: u8, pin: u8) -> bool {
+        for &cfg in &self.config {
+            if cfg & 3 != 3 {
+                continue;
+            }
+            let psel = (cfg >> 8) & 0x3F;
+            if (psel >> 5) as u8 == port && (psel & 0x1F) as u8 == pin {
+                return cfg & (1 << 20) == 0;
+            }
+        }
+        false
+    }
     fn fire(&self, sys: &System, bit: u32) {
         if self.intenset & bit != 0 {
             sys.p.nvic.borrow_mut().set_intr_pending(6);
@@ -47,7 +79,14 @@ impl Gpiote {
             let Some((port, pin)) = Self::cfg_pin(cfg) else { continue; };
             if cfg & 3 != 1 { continue; } // event mode only
             let lvl = if port < 2 && pin < 32 {
-                ((gpio.input_state[port as usize] >> pin) & 1) == 1
+                // Same mix the IN register reports: output latch for
+                // outputs (firmware-driven toggles edge-detect here, not
+                // just external input edges), input line for inputs.
+                if ((gpio.dir[port as usize] >> pin) & 1) == 1 {
+                    ((gpio.out[port as usize] >> pin) & 1) == 1
+                } else {
+                    ((gpio.input_state[port as usize] >> pin) & 1) == 1
+                }
             } else { false };
             let pol = Self::polarity(cfg);
             let edge = match pol {
@@ -100,6 +139,7 @@ impl Peripheral for Gpiote {
         match offset {
             0x100..=0x11C => self.ev_in[((offset - 0x100) >> 2) as usize] as u32,
             0x17C => self.ev_port as u32,
+            0x300 => self.intenset, // INTEN reads the enable word
             0x304 => self.intenset,
             0x510..=0x52C => self.config[((offset - 0x510) >> 2) as usize],
             _ => 0,
@@ -112,7 +152,8 @@ impl Peripheral for Gpiote {
             0x060..=0x07C => { let ch = ((offset - 0x060) >> 2) as usize; self.drive_task(sys, ch, Some(false)); }
             0x100..=0x11C => if value == 0 { self.ev_in[((offset - 0x100) >> 2) as usize] = false; }
             0x17C => if value == 0 { self.ev_port = false; }
-            0x304 => self.intenset |= value,
+            0x300 => self.intenset = value & 0x8000_00FF, // INTEN absolute
+            0x304 => self.intenset |= value & 0x8000_00FF, // IN[0-7] + PORT
             0x308 => self.intenset &= !value,
             0x510..=0x52C => self.config[((offset - 0x510) >> 2) as usize] = value,
             _ => {}

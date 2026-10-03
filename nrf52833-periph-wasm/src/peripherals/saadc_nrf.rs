@@ -3,7 +3,7 @@ use super::Peripheral;
 
 /// SAADC @ 0x40007000 (IRQ 7). Task/event handshake + RESULT EASYDMA:
 /// TASKS_START 0x000, TASKS_SAMPLE 0x004, TASKS_STOP 0x008,
-/// TASKS_CALIBRATEOFFSET 0x010, EVENTS_STARTED 0x100, EVENTS_END 0x104,
+/// TASKS_CALIBRATEOFFSET 0x00C, EVENTS_STARTED 0x100, EVENTS_END 0x104,
 /// EVENTS_DONE 0x108, EVENTS_RESULTDONE 0x10C, EVENTS_CALIBRATEDONE 0x110,
 /// EVENTS_STOPPED 0x114, EVENTS_CH[n].LIMITH 0x118+8n / LIMITL 0x11C+8n
 /// (n=0..7), INTEN 0x300 / SET 0x304 (STARTED 0, END 1, DONE 2, RESULTDONE 3,
@@ -45,7 +45,24 @@ pub struct Saadc {
     res_maxcnt: u32,
     res_amount: u32,
     res_pending: bool,
+    /// Earliest virtual time (INSTRUCTION_COUNT) at which a staged RESULT
+    /// transfer may be taken. Silicon converts in real time (TACQ ~10us +
+    /// TCCONV ~2us per sample at 64MHz ~= 768 core cycles); an instantly
+    /// completing model inverts init order — firmware registers its SAADC
+    /// driver (ISR vector/queue) AFTER starting the first conversion, so a
+    /// zero-time END fires the ISR before registration and the batch is
+    /// orphaned (MakeCode init wedged with exactly one 256-sample batch;
+    /// delaying completion past registration boots to user code). Staging
+    /// the offer only after the conversion would really finish restores
+    /// silicon order deterministically.
+    res_ready_at: u64,
 }
+
+/// Silicon conversion cost per sample, in core cycles: TACQ (ACQTIME reset
+/// 10us = 640 cy) + TCCONV (~2us = 128 cy). A MAXCNT-sample transfer takes
+/// MAXCNT * this long; the 256-sample batches CODAL streams hit ~196k steps
+/// (~3ms), matching silicon and dwarfing init-registration windows.
+const SAMPLE_COST_CYCLES: u64 = 768;
 
 impl Default for Saadc {
     fn default() -> Self {
@@ -55,7 +72,8 @@ impl Default for Saadc {
                intenset: 0, busy: false, ch_pselp: [0xFFFFFFFF; 8], ch_pseln: [0xFFFFFFFF; 8],
                ch_config: [0; 8], ch_limlo: [0; 8], ch_limhi: [0; 8],
                resolution: 1, oversample: 0, samplerate: 0,
-               res_ptr: 0, res_maxcnt: 0, res_amount: 0, res_pending: false }
+               res_ptr: 0, res_maxcnt: 0, res_amount: 0, res_pending: false,
+               res_ready_at: 0 }
     }
 }
 
@@ -127,6 +145,12 @@ impl Peripheral for Saadc {
                 if self.res_maxcnt > 0 {
                     self.res_pending = true; // driver completes
                     self.res_amount = 0;
+                    // Conversion takes real time: stage the offer only
+                    // after MAXCNT samples would really finish (see
+                    // res_ready_at). An instant offer inverts init order
+                    // (END before driver registration orphans the batch).
+                    self.res_ready_at = instruction_count()
+                        .wrapping_add(self.res_maxcnt as u64 * SAMPLE_COST_CYCLES);
                 } else {
                     self.ev_end = true; self.ev_done = true;
                     self.busy = false;
@@ -137,10 +161,11 @@ impl Peripheral for Saadc {
             0x008 => {
                 self.ev_started = false;
                 self.busy = false;
+                self.res_pending = false; // STOP aborts an in-flight conversion
                 self.ev_stopped = true;
                 self.fire(sys, 1 << 5);
             }
-            0x010 => { self.ev_cal = true; self.fire(sys, 1 << 4); }
+            0x00C => { self.ev_cal = true; self.fire(sys, 1 << 4); } // CALIBRATEOFFSET (SVD)
             0x100 => if value == 0 { self.ev_started = false; }
             0x104 => if value == 0 { self.ev_end = false; }
             0x108 => if value == 0 { self.ev_done = false; }
@@ -199,7 +224,13 @@ pub fn take_result(sys: &System) -> Option<(u32, u32)> {
                 Err(_) => return None,
             };
             if let Some(s) = b.as_any_mut().downcast_mut::<Saadc>() {
-                if s.res_pending {
+                // Conversion latency: the offer is takeable only after the
+                // samples would really finish (silicon order — see SAMPLE
+                // arm). An early take sees nothing staged; the transfer is
+                // still converting, not lost.
+                if s.res_pending
+                    && crate::system::instruction_count() >= s.res_ready_at
+                {
                     s.res_pending = false;
                     return Some((s.res_ptr, s.res_maxcnt));
                 }
@@ -293,11 +324,44 @@ mod tests {
         sys.p.write(&sys, 0x40007000, 4, 1);          // START
         sys.p.write(&sys, 0x40007004, 4, 1);          // SAMPLE
         assert_eq!(sys.p.read(&sys, 0x40007104, 4), 0, "END waits for driver");
-        let t = take_result(&sys).expect("staged");
+        // Conversion latency: 2 samples x 768 cy have not elapsed yet.
+        assert!(take_result(&sys).is_none(), "not staged mid-conversion");
+        crate::system::INSTRUCTION_COUNT.fetch_add(2 * 768, std::sync::atomic::Ordering::Relaxed);
+        let t = take_result(&sys).expect("staged after conversion time");
         assert_eq!(t, (0x20002000, 2));
         complete_result(&sys, 2);
         assert_eq!(sys.p.read(&sys, 0x40007104, 4), 1, "END after complete");
         assert_eq!(sys.p.read(&sys, 0x40007634, 4), 2, "AMOUNT");
+    }
+    #[test]
+    fn conversion_latency_orders_init_race() {
+        // MakeCode init wedged with exactly one 256-sample batch: a
+        // zero-time END fired the SAADC ISR before the driver registered
+        // its vector/queue, orphaning the batch. Staging the offer only
+        // after silicon conversion time restores the order (registration,
+        // being pure CPU, always wins).
+        use crate::system::test_dummy_system;
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x4000762C, 4, 0x20002000);
+        sys.p.write(&sys, 0x40007630, 4, 256); // MAXCNT=256 like CODAL
+        sys.p.write(&sys, 0x40007500, 4, 1);
+        sys.p.write(&sys, 0x40007000, 4, 1);
+        sys.p.write(&sys, 0x40007004, 4, 1); // SAMPLE
+        assert!(take_result(&sys).is_none(), "converting: nothing staged");
+        // A driver registration's worth of init code runs here on silicon
+        // while conversion proceeds; the offer must still wait.
+        crate::system::INSTRUCTION_COUNT.fetch_add(1000, std::sync::atomic::Ordering::Relaxed);
+        assert!(take_result(&sys).is_none(), "still converting");
+        crate::system::INSTRUCTION_COUNT.fetch_add(
+            256 * SAMPLE_COST_CYCLES, std::sync::atomic::Ordering::Relaxed);
+        let t = take_result(&sys).expect("staged after conversion time");
+        assert_eq!(t, (0x20002000, 256));
+        // STOP aborts an in-flight conversion (no stale offer later).
+        sys.p.write(&sys, 0x40007004, 4, 1); // SAMPLE again
+        sys.p.write(&sys, 0x40007008, 4, 1); // STOP
+        crate::system::INSTRUCTION_COUNT.fetch_add(
+            256 * SAMPLE_COST_CYCLES, std::sync::atomic::Ordering::Relaxed);
+        assert!(take_result(&sys).is_none(), "STOP aborted the transfer");
     }
     #[test]
     fn channel_config_limits_resultdone_stopped() {
@@ -329,6 +393,8 @@ mod tests {
         sys.p.write(&sys, 0x40007500, 4, 1);
         sys.p.write(&sys, 0x40007000, 4, 1);
         sys.p.write(&sys, 0x40007004, 4, 1);
+        // 1-sample conversion latency before the offer stages.
+        crate::system::INSTRUCTION_COUNT.fetch_add(768, std::sync::atomic::Ordering::Relaxed);
         let _ = take_result(&sys);
         complete_result(&sys, 1);
         assert_eq!(sys.p.read(&sys, 0x4000710C, 4), 1, "RESULTDONE");

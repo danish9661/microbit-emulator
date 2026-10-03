@@ -67,16 +67,29 @@ Thumb bit (§2, broke MBR→SD returns), subword peripheral reads
 shifting the wrong way (§3) — see `docs/cpu_bug.md` + regression
 tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
 
-## 3. Tests — 259 green (`cargo test`)
+## 3. Tests — 269 green (`cargo test`)
 
-- 117 cpu (`src/cpu/tests.rs`: 117 listed = 21 GCC-built firmware
+- 123 cpu (`src/cpu/tests.rs`: 123 listed = 27 GCC-built firmware
   proofs incl. `matrix_nrf` + handshake/marker/2nd-run checks —
   `blinky_nrf`, `sensors_nrf`, `extras_nrf`, `stubs_nrf`,
   `dma_nrf`, `air_nrf`, `c_irq_nrf.c`, `usbep_nrf`, `usbdev_nrf.c`,
   `i2s_nrf`, `wdt_nrf`, `nfct_nrf`, `ble_conformance.c`,
   `c_ble_face.bin`, `ble_cpp_face.cpp`, `ble_pairing_fw.c`, `ble_roles_fw.c`, `uarte1_nrf`, `spim23_nrf`,
-  `sd_evt_nrf`, `matrix_nrf`, +2nd-run reset-state checks each).
-- 120 peripherals + 4 sd_evt + 14 sd_ble + 4 smp_crypto unit tests (register handshake,
+  `sd_evt_nrf`, `matrix_nrf`, `clkpwrm_nrf`, `radiomode_nrf`, `periph2_nrf`,
+  `senseface_nrf`, `pdm_nrf`, `usbiso_nrf`, +2nd-run reset-state checks each).
+  +P151 new-firmware round (user asked for built firmware exercising the new
+  surface — 6 GCC probes + harness proofs, all green both runs): CLOCK CAL/CT/
+  RAM-power/SYSTEMOFF (`CLK:OK`), RADIO match/SYNC/PHYEND/RATEBOOST/DFE/BC
+  (`RDO:OK`), TIMER/RTC/PWM/UARTE/TWIM/SAADC/SPIS/GPIOTE/EGU/RNG (`PER:OK`),
+  GPIO/COMP/QDEC/WDT/NFCT/FICR/NVMC (`SEN:OK`), PDM DMA (`PDM:OK`), USBD ISO/
+  SOF/EPDATA/chained-EPIN (`USBI:OK`). Two correctness fixes fell out of the
+  bring-up: (a) stale-END — a latched event from a previous phase makes the
+  next phase's spin exit instantly, so the probe now clears END/PHYEND right
+  before each START (driver discipline documented in each probe); (b) SHORTS
+  self-chains (USBD EP0DATADONE_EP0STATUS, PWM LOOPSDONE_SEQSTARTn) terminate
+  via a chaining guard — silicon would loop forever there, the emulator
+  terminates by design (same as the RADIO cascade cap).
+- 124 peripherals + 4 sd_evt + 14 sd_ble + 4 smp_crypto unit tests (register handshake,
   SHORTS/NACK/OVERRUN/CAPTURE, FIPS-197, reboot latch, TXSTOPPED,
   SPIM RXD MISO, GPIO CNF→DIR, UARTE TX STARTTX-snapshot,
   TWIM shifted-ADDR match, SCB AIRCR SYSRESETREQ,
@@ -119,11 +132,34 @@ tests (`exception_svc_stacks_even_return_pc`, `subword_reads_shift_down`).
   `usbdev_nrf.c`, `stubs_nrf.s` rebuilt to SVD offsets). Dead duplicate MWU model
   removed from `misc_nrf.rs`; stale "stub/unmodeled" comments corrected to the
   modeled behavior throughout.
+  +P149 audit fixes (SVD-absolute re-audit caught 1 wrong offset + 5 gaps +
+  2 masks): SAADC TASKS_CALIBRATEOFFSET was at 0x010, SVD says 0x00C (moved —
+  no firmware/test used the wrong word); PPI FORK[%s].TEP 0x910+4n dispatches
+  the second task endpoint (`fork_fires_second_task` — the old "no FORK" note
+  predates the SVD read and was wrong); POWER RAM[%s].POWER/SET/CLR 0x900+0x10n
+  (`ram_section_power_latches`); UARTE PSEL.RTS/TXD/CTS/RXD 0x508-0x514
+  (`psel_pin_selects_store_disconnected_reset`); NFCT TXD/RXD.FRAMECONFIG/AMOUNT
+  + FRAMESTATUS.RX + rxerror inject (`frameconfig_amount_status_rxerror`,
+  `nfct_inject_rxerror` export); GPIOTE INTEN 0x300 + mask; EGU INTEN 0x300;
+  `radio_add_interference_dbm` pure-fn export. False positives closed as
+  designed: USBD BREQUEST-split SETUP words + EPIN/EPOUT stride words (covered
+  by range arms), UICR named regions (flat store), DWT CPICNT/SLEEPCNT/LSUCNT
+  = 0 (true in a 1-cycle/instruction zero-wait model).
+  +P150 bench pump wiring (demo/index.html pumpDma/frame): USBD ISOIN/ISOOUT
+  takes, RADIO DFE IQ takes (2 bytes/sample contract pinned in the model),
+  NVMC ERASEUICR via UICR word-fill, per-frame SOF ticker (gated on USBD
+  ENABLED+pullup), WFI sleep-edge notifies + WDT sleep gate, System OFF
+  wake-on-reset reboot. Gates re-verified on the wired pump: cargo 263/263,
+  test:wasm 128 ok, handshake all-OK, browser_verify_16 16/16 zero page
+  errors, ble_live_e2e 42/42 over air, MakeCode park unchanged (0x37f4f /
+  0x3d, zero faults). Bench-unwired by design (no bench source): POF level,
+  CTS level, AREF level, collision/rxerror/rateboost/sync/ctepresent air
+  injects — all exported + unit-tested + in API.md for external drivers.
 - Parallel-test flake (CLOSED P108; open pre-existing before that):
   stock multi-threaded `cargo test` intermittently failed sd_ble/MWU
   tests with `RefCell already borrowed` at `peripherals/mod.rs:457` /
   `mwu_nrf.rs:237` (~1/4 runs pre-P105; ~2/15 post-P105;
-   single-threaded `-- --test-threads=1` always 259/259). Two
+   single-threaded `-- --test-threads=1` always 269/269). Two
   mechanisms, separated by evidence (P105+P108):
   (a) DETERMINISTIC order-dependence (fixed P105): the MPU ENABLE +
   programmed regions live in the INSTALLED model and outlive the test
@@ -255,8 +291,12 @@ beyond proof-level driving remain future work.
   RX/TX IRQ paths, TX pacing, drip, parts, UICR, image, MBR pre-roll
   all excluded. Prime suspect: audio/speaker tick path (pin-toggle
   virtuals @`0x28744`, P0.00) into an MP call with no source.
-- MakeCode (`basic.showLeds` smiley, rebuilt 2026-09-29 with makecode
-  1.3.6, recipe in plan P19; project in `mc/`, gitignored): boots to
+- MakeCode (vendored hex rebuilt 2026-09-29 with makecode 1.3.6, recipe in
+  plan P19; project in `mc/`, gitignored; CORRECTION 2026-10-03: the hex's
+  user program is `pins.digitalWritePin(P0)`, NOT the `basic.showLeds` smiley
+  in `mc/main.ts` — see the compiler's own `mc/built/mbcodal-binary.asm`
+  `_main___P3096` and agent.md P152; matrix-dark is expected for this build):
+  boots to
   scheduler idle (decoded as the normal CODAL idle fiber, not a
   hang), but the user program never runs. Root cause (2026-09-29,
   objdump + live single-step trace): the CODAL init tail `post1`
@@ -298,6 +338,28 @@ beyond proof-level driving remain future work.
   "scroll fiber never created" framing: the scroll fiber is never
   created BECAUSE the user fiber that would create it is never created
   BECAUSE CODAL init never finishes.)
+  CORRECTION 2026-10-03 P156 (fresh pxt-build smiley): deterministic
+  delivered HardFault at ~32M instr (ipsr 3, CFSR 0x8200 PRECISERR+
+  BFARVALID, BFAR 0x118000), parked in default b-loop 0x37f4e. Chain
+  (single-stepped): TIMER1 handler tail-calls worker E 0x302d8 via b.w
+  with LR=EXC_RETURN, E pop-pc triggers exception return into stale
+  buried frame, resumes mid-S 0x33e34, S-tail pop loads even PC ->
+  branch fault 0x33e3a (variants: MBR 0x10e, erased 0x703fc). All steps
+  ARM-correct; Q/E have zero bl callers (scheduler tail-chain); dive is
+  firmware-constructed unwind fragility detonated by event alignment
+  (phase proof 2/10 dive, 8/10 clean park). No stimulus reaches user yet.
+  NEXT: OLD-vs-NEW fiber/event forensics 6M-12M; no src change indicated.
+  CORRECTION 2026-10-03 P157 (fresh pxt-build smiley proceeds further than
+  believed): the user main RUNS at ~9.2M instr (full-coverage trace, both
+  hexes same pump) and the display setter stages the image (flag 7) but
+  blocks in its fiber-wait; the animation renderer/state-machine is never
+  invoked (0 hits) and only one fiber exists. The matrix stayed dark for a
+  render-visibility reason, not a model stub: CODAL drives columns via
+  GPIOTE tasks (DIR=input by design, brightness in task OUTINIT) with rows
+  GPIO-selected HIGH — fixed in matrix_state() + bench frame loop (task
+  rule vs GPIO bit-bang rule switch). Real matrix_state() now shows the
+  EXACT smiley (9/9) on unmodified NEW; OLD stays dark. SENSE also completed
+  (OUT/DIR writes re-evaluate; poll uses IN-mixed level).
 - Espruino 2v29: boots (needed the CoreSight PID map); console is
   P0.06 bit-bang serial, nothing transmitted in early windows.
 - Bootloader chain (P22–P23 + Sept-12 anchor): entry decoded at BL
@@ -558,7 +620,7 @@ beyond proof-level driving remain future work.
      post_user_mem/post_rw_authorize/post_sys_attr/post_sc_confirm/
       complete_service_changed` exports + SMP toolbox (`ble_lesc_dhkey`,
       `ble_lesc_public_key`, `ble_smp_f4/f5/f6/g2`, P125); 14 native tests + SVC-hook proof
-       in cpu/tests.rs (259 green); headless `MockBleSvc` executes REAL SVC
+       in cpu/tests.rs (269 green); headless `MockBleSvc` executes REAL SVC
      bytes on a WasmCpu end to end (enable→table→connect→disc×6→read→
      write→L2CAP→pairing→peer-pairing(passkey)→HVX-indicate→
      service-changed→ADV/SCAN roles→scan→rssi→disconnect, 18 mocks OK). Bridge peers ×2: battery
@@ -613,7 +675,7 @@ beyond proof-level driving remain future work.
 ## 8. Verify
 
 ```
-cargo test -- --test-threads=1    # 259 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
+cargo test -- --test-threads=1    # 269 green (crate dir; parallel ~30/31 on the P114 tree — see §3)
 npm run test:wasm --prefix demo  # handshake 18/18 + smoke + MPY/JS/PY/TS-idiom faces + REPL + MPY-radio TX, all vs the BUILT pkg
 python3 tools/ble_air_bridge.py --port 18771 &  # live air peers (PeerBatt 87 + PeerHR 64)
 node demo/parts/ble_live_e2e.mjs ws://127.0.0.1:18771  # 42 over-air checks green (two links)

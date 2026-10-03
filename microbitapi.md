@@ -1,7 +1,7 @@
 # microbitapi.md — micro:bit v2.2 (`microbit-emu@0.1.0`) API + OpenHW gap spec
 
-Probed from `"board/microbit-v2"` (`demo/pkg/*.d.ts` 157 named exports =
-`WasmCpu` class + `default` init + `initSync` + 155 free fns: 61 `ble_*` + 94 others,
+Probed from `"board/microbit-v2"` (`demo/pkg/*.d.ts` 180 named exports =
+`WasmCpu` class + `default` init + `initSync` + 177 free fns: 61 `ble_*` + 116 others,
 `demo/API.md` frozen v1, `demo/index.html`, `demo/parts/*`, `blinky/`,
 `tools/ble_air_bridge.py`, `demo/package.json`). All names dumped live from
 the built glue; lifecycle order is `API.md` §Lifecycle, verified in
@@ -54,8 +54,8 @@ Clock = `INSTRUCTION_COUNT/64MHz` virtual only (`tick`=1 insn, `tick_n`=batch,
 `cpu.set_deliver_irqs(true)` to preempt. Reboot: poll
 `is_watchdog_reset_requested()` → `cpu.reset_cpu(read32(0), read32(4))`.
 
-## 3. `WasmCpu` + free fns (`demo/pkg/nrf52833_periph_wasm.d.ts`: 157 named
-exports = `WasmCpu` class + `default` init + `initSync` + 155 free fns: 61 `ble_*` + 94 others)
+## 3. `WasmCpu` + free fns (`demo/pkg/nrf52833_periph_wasm.d.ts`: 180 named
+exports = `WasmCpu` class + `default` init + `initSync` + 177 free fns: 61 `ble_*` + 116 others)
 
 `WasmCpu(sp,pc,flash,ram)`: `step(budget)→executed, reset_cpu,
 set_deliver_irqs, sleeping/wake, get_pc/sp/regs/xpsr/sregs/fpscr/primask/ipsr,

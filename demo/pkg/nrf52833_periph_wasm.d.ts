@@ -8,6 +8,9 @@ export class WasmCpu {
     fault_op1(): number;
     fault_op2(): number;
     fault_pc(): number;
+    get_basepri(): number;
+    get_control(): number;
+    get_faultmask(): number;
     get_fpscr(): number;
     get_ipsr(): number;
     get_pc(): number;
@@ -467,9 +470,16 @@ export function is_watchdog_reset_requested(): boolean;
 
 /**
  * 5x5 LED matrix state for an OpenHW matrix component: 25 bytes,
- * row-major, 1 = lit. Lit <=> row OUT==0 && col OUT==1 with both pins
- * configured output (same rule the bench frame loop uses).
+ * row-major, 1 = lit. Two firmware designs share these pins, told apart
+ * by how the columns are driven (same rule the bench frame loop uses).
  * Rows: P0.21/P0.22/P0.15/P0.24/P0.19. Cols: P0.28/P0.11/P0.31/P1.05/P0.30.
+ * Direct-GPIO bit-bang (both sides GPIO-output): lit <=> row OUT==0 &&
+ * col OUT==1 with both pins configured output.
+ * CODAL NRF52LEDMatrix (columns GPIOTE-task-driven, DIR stays input by
+ * design; rows GPIO-selected HIGH): lit <=> row OUT==1 (output) && the
+ * column's task channel has OUTINIT clear (per-frame brightness latch
+ * written by the render path). The task-bound design wins when any
+ * matrix column has a task-mode GPIOTE channel; otherwise the GPIO rule.
  */
 export function matrix_state(): Uint8Array;
 
@@ -491,6 +501,12 @@ export function nfct_field_present(present: boolean): void;
  * Host-inject an NFC modulation collision (two tags answering at once).
  */
 export function nfct_inject_collision(): void;
+
+/**
+ * Host-inject an NFC RX frame error (corrupt air): FRAMESTATUS.RX flags
+ * (bit0 CRCERROR, bit2 PARITYSTATUS, bit3 OVERRUN) + EVENTS_RXERROR.
+ */
+export function nfct_inject_rxerror(flags: number): void;
 
 export function nfct_take_rx(): Uint32Array;
 
@@ -543,6 +559,12 @@ export function qspi_take_erase(): Uint32Array;
 export function qspi_take_read(): Uint32Array;
 
 export function qspi_take_write(): Uint32Array;
+
+/**
+ * Log-power add of an ambient floor onto a packet level (both dBm).
+ * Pure function sharing the ED/CCA/RX-stamp number with the model.
+ */
+export function radio_add_interference_dbm(packet_dbm: number, ambient_dbm: number): number;
 
 /**
  * Link-budget air level: TX dBm minus path loss, clamped [-127, 0].
@@ -876,6 +898,7 @@ export interface InitOutput {
     readonly nfct_complete_tx: () => void;
     readonly nfct_field_present: (a: number) => void;
     readonly nfct_inject_collision: () => void;
+    readonly nfct_inject_rxerror: (a: number) => void;
     readonly nfct_take_rx: (a: number) => void;
     readonly nfct_take_tx: (a: number) => void;
     readonly nvmc_complete_erase: () => void;
@@ -896,6 +919,7 @@ export interface InitOutput {
     readonly qspi_take_erase: (a: number) => void;
     readonly qspi_take_read: (a: number) => void;
     readonly qspi_take_write: (a: number) => void;
+    readonly radio_add_interference_dbm: (a: number, b: number) => number;
     readonly radio_air_rssi_dbm: (a: number, b: number) => number;
     readonly radio_clear_interference: () => void;
     readonly radio_complete_dfe: (a: number) => void;
@@ -960,6 +984,9 @@ export interface InitOutput {
     readonly wasmcpu_fault_op1: (a: number) => number;
     readonly wasmcpu_fault_op2: (a: number) => number;
     readonly wasmcpu_fault_pc: (a: number) => number;
+    readonly wasmcpu_get_basepri: (a: number) => number;
+    readonly wasmcpu_get_control: (a: number) => number;
+    readonly wasmcpu_get_faultmask: (a: number) => number;
     readonly wasmcpu_get_fpscr: (a: number) => number;
     readonly wasmcpu_get_ipsr: (a: number) => number;
     readonly wasmcpu_get_pc: (a: number) => number;

@@ -81,6 +81,7 @@ pub struct UsbdNrf {
     lowpower: bool,
     isoinconfig: u32,
     ep0stalled: bool,
+    chaining: bool,
     setup: [u32; 8],
     epin_ptr: [u32; 8],
     epin_maxcnt: [u32; 8],
@@ -112,7 +113,7 @@ impl Default for UsbdNrf {
                edata_in: 0, edata_out: 0, size_out: [0; 8], size_isoout: 0,
                usbaddr: 0, dpdmvalue: 0, dpdm_driving: false, dtoggle: 0,
                epstall: 0, isosplit: 0, framecntr: 0, lowpower: false,
-               isoinconfig: 0, ep0stalled: false, setup: [0; 8],
+               isoinconfig: 0, ep0stalled: false, chaining: false, setup: [0; 8],
                epin_ptr: [0; 8], epin_maxcnt: [0; 8], epin_amount: [0; 8], epin_pending: [false; 8],
                isoin_ptr: 0, isoin_maxcnt: 0, isoin_amount: 0, isoin_pending: false,
                epout_ptr: [0; 8], epout_maxcnt: [0; 8], epout_amount: [0; 8], epout_pending: [false; 8],
@@ -161,28 +162,30 @@ impl UsbdNrf {
         }
         self.ev_started = true;
     }
-    /// Chain-free EP0RCVOUT effect (task arm + ENDEPOUT0_EP0RCVOUT
-    /// short): stage EPOUT[0] receive, or DATADONE at once when empty.
+    /// EP0RCVOUT effect (task arm + ENDEPOUT0_EP0RCVOUT short):
+    /// stage EPOUT[0] receive, or DATADONE at once when empty.
     fn do_ep0rcvout(&mut self, sys: &System) {
         self.epout_pending[0] = self.epout_maxcnt[0] > 0;
         if !self.epout_pending[0] {
-            self.set_ep0datadone(sys, false);
+            self.set_ep0datadone(sys);
         }
     }
-    /// Chain-free EP0STATUS effect (task arm + ENDEPOUT0_EP0STATUS
-    /// short): the status stage ACKs at once with EP0DATADONE.
+    /// EP0STATUS effect (task arm + ENDEPOUT0_EP0STATUS short): the status
+    /// stage ACKs at once with EP0DATADONE.
     fn do_ep0status(&mut self, sys: &System) {
-        self.set_ep0datadone(sys, false);
+        self.set_ep0datadone(sys);
     }
-    /// Latch EP0DATADONE (+IRQ 10); with `chain`, consume the
-    /// EP0DATADONE_* SHORTS once (single pass — the chained tasks never
-    /// re-enter this helper).
-    fn set_ep0datadone(&mut self, sys: &System, chain: bool) {
+    /// Latch EP0DATADONE (+IRQ 10) and consume the EP0DATADONE_* SHORTS.
+    /// SHORTS respond to the EVENT from any source (task, short, or
+    /// completion); the chaining guard makes consumption single-pass so
+    /// EP0DATADONE_EP0STATUS (which re-latches DATADONE) terminates.
+    fn set_ep0datadone(&mut self, sys: &System) {
         self.ev_ep0datadone = true;
         self.fire(sys, 1 << 10);
-        if !chain {
+        if self.chaining {
             return;
         }
+        self.chaining = true;
         if self.shorts & 1 != 0 {
             self.do_startepin(sys, 0); // EP0DATADONE_STARTEPIN0
         }
@@ -190,8 +193,9 @@ impl UsbdNrf {
             self.do_startepout(sys, 0); // EP0DATADONE_STARTEPOUT0
         }
         if self.shorts & (1 << 2) != 0 {
-            self.do_ep0status(sys); // EP0DATADONE_EP0STATUS
+            self.set_ep0datadone(sys); // EP0DATADONE_EP0STATUS (guarded)
         }
+        self.chaining = false;
     }
 }
 
@@ -585,7 +589,7 @@ pub fn complete_epout(sys: &System, ep: usize, amount: u32) {
             u.ev_epdata = true;
             irq |= u.intenset & (1 << 24) != 0;
         } else {
-            u.set_ep0datadone(sys, false);
+            u.set_ep0datadone(sys); // auto-chains EP0DATADONE_* (guarded)
             irq |= u.intenset & (1 << 10) != 0;
             if u.shorts & (1 << 3) != 0 {
                 u.do_ep0status(sys); // ENDEPOUT0_EP0STATUS

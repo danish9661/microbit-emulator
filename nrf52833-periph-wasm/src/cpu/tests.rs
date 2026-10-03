@@ -874,6 +874,257 @@ fn nrf_i2s_streaming_roundtrip() {
     assert!(out.contains("I2S:OK"), "missing I2S marker, got {out:?}");
     crate::system::i2s_clear();
 }
+#[test]
+fn nrf_clkpwrm_cal_ct_ram_systemoff() {
+    // clkpwrm_nrf.s (GCC): CLOCK CAL->DONE, CTSTART->CTSTARTED,
+    // CTSTOP->CTSTOPPED, INTEN mask, debounce/TRACE store, CONSTLAT/LOWPWR,
+    // RAM POWERCLR/SET, SYSTEMOFF arm+readback -> prints CLK:OK.
+    // No driver needed (all synchronous); 2nd run reboots clean.
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    for run in 0..2 {
+        if run == 1 {
+            crate::system::reset_globals();
+        }
+        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/clkpwrm_nrf.bin"));
+        let sys = crate::sys();
+        cpu.run(sys, &mut mem, 1_000_000);
+        assert!(cpu.fault.is_none(), "clkpwrm faulted: {:?}", cpu.fault);
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        assert!(out.contains("CLK:OK"), "missing CLK marker (run {run}), got {out:?}");
+        assert!(!out.contains("CLK:BAD"), "CLK:BAD (run {run}), got {out:?}");
+    }
+    crate::system::reset_globals();
+}
+
+#[test]
+fn nrf_radiomode_air_edges() {
+    // radiomode_nrf.s (GCC): DACNF-gated DEVMATCH + SYNC/MHR/CRCOK on an
+    // injected packet, TX END+PHYEND, LR125K RATEBOOST, DFE block,
+    // BCSTART/BCMATCH -> prints RDO:OK. Mailbox rendezvous (like the i2s
+    // probe): firmware parks on RAM 0x20003000, the driver queues air +
+    // releases, firmware STARTs once (queue non-empty -> stages) and
+    // spins the latched event the driver completes. 2nd run reboots clean.
+    use crate::peripherals::radio_nrf as radio;
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    for run in 0..2 {
+        if run == 1 {
+            crate::system::reset_globals();
+        }
+        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/radiomode_nrf.bin"));
+        let sys = crate::sys();
+        // Phase 1: firmware parks on mailbox==1; queue packet + release.
+        cpu.run(sys, &mut mem, 30_000);
+        radio::inject_rx(sys, vec![0xEF, 0xBE, 0x01]);
+        mem.write32(0x2000_3000, 1);
+        cpu.run(sys, &mut mem, 20_000);
+        let rxp = radio::take_rx(sys).expect("rx staged after mailbox release");
+        for (i, &b) in [0xEFu8, 0xBE, 0x01].iter().enumerate() {
+            mem.write8(rxp.wrapping_add(i as u32), b);
+        }
+        radio::complete_rx(sys);
+        // Phase 2: firmware TXEN+STARTs, spins END; complete the TX.
+        cpu.run(sys, &mut mem, 300_000);
+        let t = radio::take_tx(sys).expect("tx staged");
+        assert_eq!(t.0, 0x20001000, "TX packetptr");
+        radio::complete_tx(sys);
+        // Phase 3: firmware parks on mailbox==2; second packet + release.
+        cpu.run(sys, &mut mem, 300_000);
+        radio::inject_rx(sys, vec![0xAA, 0xBB]);
+        mem.write32(0x2000_3000, 2);
+        cpu.run(sys, &mut mem, 20_000);
+        let rxp2 = radio::take_rx(sys).expect("rx staged (LR leg)");
+        for (i, &b) in [0xAAu8, 0xBB].iter().enumerate() {
+            mem.write8(rxp2.wrapping_add(i as u32), b);
+        }
+        radio::complete_rx(sys);
+        cpu.run(sys, &mut mem, 1_000_000);
+        assert!(cpu.fault.is_none(), "radiomode faulted: {:?}", cpu.fault);
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        assert!(out.contains("RDO:OK"), "missing RDO marker (run {run}), got {out:?}");
+        assert!(!out.contains("RDO:BAD"), "RDO:BAD (run {run}), got {out:?}");
+    }
+    crate::system::reset_globals();
+}
+
+#[test]
+fn nrf_periph2_timers_serial_slave() {
+    // periph2_nrf.s (GCC): TIMER0 COUNT/MODE, RTC0 TRIGOVRFLW/EVTEN, PWM1
+    // LOOP/NEXTSTEP, UARTE0 CONFIG/PSEL/STARTED/FLUSHRX/RXTO, TWIM1/SPIM2
+    // regs, SAADC STATUS/CAL, SPIS exchange, GPIOTE edge, EGU0, RNG ->
+    // prints PER:OK. Driver drips a UART byte, toggles the button pin,
+    // and exchanges one SPIS frame.
+    use crate::peripherals::twim_nrf as twim;
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    for run in 0..2 {
+        if run == 1 {
+            crate::system::reset_globals();
+        }
+        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/periph2_nrf.bin"));
+        let sys = crate::sys();
+        // Phase 1: firmware inits + STARTRX, spins RXDRDY; drip one byte.
+        cpu.run(sys, &mut mem, 60_000);
+        sys.p.rx_byte(&sys, 0x4000_2000, 0x41);
+        // Phase 2: firmware FLUSHRXes through SPIS ACQUIRE, spins END.
+        cpu.run(sys, &mut mem, 400_000);
+        let miso = twim::spis_exchange(&sys, &mut mem, 0x4000_3000, &[9, 8, 7]);
+        assert_eq!(miso.len(), 3, "spis clocked 3 (run {run})");
+        // Phase 3: firmware spins GPIOTE IN0; press the button low->high.
+        cpu.run(sys, &mut mem, 100_000);
+        sys.p.gpio.borrow_mut().set_input_pin(0, 14, false);
+        sys.tick();
+        cpu.run(sys, &mut mem, 50_000);
+        sys.p.gpio.borrow_mut().set_input_pin(0, 14, true);
+        sys.tick();
+        cpu.run(sys, &mut mem, 2_000_000);
+        assert!(cpu.fault.is_none(), "periph2 faulted: {:?}", cpu.fault);
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        assert!(out.contains("PER:OK"), "missing PER marker (run {run}), got {out:?}");
+        assert!(!out.contains("PER:BAD"), "PER:BAD (run {run}), got {out:?}");
+    }
+    crate::system::reset_globals();
+}
+
+#[test]
+fn nrf_senseface_full() {
+    // senseface_nrf.s (GCC): GPIO SENSE latch, COMP Int1V2 auto-sample,
+    // QDEC auto-read, WDT CONFIG+pet, NFCT auto-select+TX, FICR face,
+    // NVMC ERASEPCR0 stage -> prints SEN:OK. Driver steps QDEC, raises
+    // the NFC field, completes the TX frame, takes the staged erase.
+    use crate::peripherals::qdec_nrf as qdec;
+    use crate::peripherals::nfct_nrf as nfct;
+    use crate::peripherals::nvmc_nrf as nvmc;
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    for run in 0..2 {
+        if run == 1 {
+            crate::system::reset_globals();
+        }
+        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/senseface_nrf.bin"));
+        let sys = crate::sys();
+        // QDEC steps land before the first sample fires (8192-instr
+        // period): the auto-read then snapshots exactly 5, race-free.
+        qdec::qdec_step(sys, 5);
+        // Phase 1: firmware through QDEC START, spins REPORTRDY.
+        cpu.run(sys, &mut mem, 40_000);
+        // Phase 2: firmware through NFCT SENSE, spins SELECTED.
+        cpu.run(sys, &mut mem, 100_000);
+        nfct::nfct_field_present(sys, true);
+        cpu.run(sys, &mut mem, 100_000);
+        let t = nfct::take_nfct_tx(sys).expect("nfct tx staged");
+        assert_eq!(t, (0x20001000, 4), "nfct staged PTR/MAXCNT");
+        nfct::complete_nfct_tx(sys);
+        // Phase 3: firmware through NVMC ERASEPCR0; take + complete clean.
+        cpu.run(sys, &mut mem, 200_000);
+        let mut erase = None;
+        for _ in 0..10 {
+            if let Some(b) = nvmc::take_erase(sys) {
+                erase = Some(b);
+                break;
+            }
+            cpu.run(sys, &mut mem, 20_000);
+        }
+        assert_eq!(erase, Some(0x0007_0000), "erasePCR0 page staged");
+        nvmc::complete_erase(sys);
+        cpu.run(sys, &mut mem, 1_000_000);
+        assert!(cpu.fault.is_none(), "senseface faulted: {:?}", cpu.fault);
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        assert!(out.contains("SEN:OK"), "missing SEN marker (run {run}), got {out:?}");
+        assert!(!out.contains("SEN:BAD"), "SEN:BAD (run {run}), got {out:?}");
+    }
+    crate::system::reset_globals();
+}
+
+#[test]
+fn nrf_pdm_sample_roundtrip() {
+    // pdm_nrf.s (GCC): ENABLE + MODE/RATIO/GAIN, SAMPLE PTR/MAXCNT at the
+    // SVD offsets, START -> END, mailbox rendezvous (driver fills 8x0x55),
+    // STOP -> STOPPED -> prints PDM:OK.
+    use crate::peripherals::pdm_nrf as pdm;
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    for run in 0..2 {
+        if run == 1 {
+            crate::system::reset_globals();
+        }
+        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/pdm_nrf.bin"));
+        let sys = crate::sys();
+        cpu.run(sys, &mut mem, 100_000);
+        let (ptr, len) = pdm::take_sample(sys).expect("pdm staged");
+        assert_eq!((ptr, len), (0x20001000, 8));
+        for k in 0..len {
+            mem.write8(ptr.wrapping_add(k), 0x55);
+        }
+        pdm::complete_sample(sys);
+        mem.write32(0x2000_3000, 1);
+        cpu.run(sys, &mut mem, 1_000_000);
+        assert!(cpu.fault.is_none(), "pdm faulted: {:?}", cpu.fault);
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        assert!(out.contains("PDM:OK"), "missing PDM marker (run {run}), got {out:?}");
+        assert!(!out.contains("PDM:BAD"), "PDM:BAD (run {run}), got {out:?}");
+    }
+    crate::system::reset_globals();
+}
+
+#[test]
+fn nrf_usbiso_endpoints_sof_event() {
+    // usbiso_nrf.s (GCC): USBD attach + EPSTALL/HALTED, ISOIN/ISOOUT
+    // takes, EPOUT1 EPDATA, host SOF/USBEVENT, EP0STATUS + chained EPIN0
+    // -> prints USBI:OK.
+    use crate::peripherals::usbd_nrf as usbd;
+    let _u = crate::system::lock_uart();
+    crate::system::get_uart_output().lock().unwrap().clear();
+    let _g = lock_boot();
+    for run in 0..2 {
+        if run == 1 {
+            crate::system::reset_globals();
+        }
+        let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/usbiso_nrf.bin"));
+        let sys = crate::sys();
+        // Phase 1: firmware STARTISOINs, spins ENDISOIN.
+        cpu.run(sys, &mut mem, 60_000);
+        let t = usbd::take_isoin(sys).expect("isoin staged");
+        assert_eq!(t, (0x20001000, 4));
+        let bytes: Vec<u8> = (0..t.1).map(|k| mem.read8(t.0.wrapping_add(k))).collect();
+        usbd::complete_isoin(sys, &bytes);
+        // Phase 2: firmware STARTISOOUTs, spins ENDISOOUT.
+        cpu.run(sys, &mut mem, 200_000);
+        let o = usbd::take_isoout(sys).expect("isoout staged");
+        for k in 0..o.1 {
+            mem.write8(o.0.wrapping_add(k), 0x33);
+        }
+        usbd::complete_isoout(sys, o.1);
+        // Phase 3: firmware STARTEPOUT1s + spins SOF/USBEVENT (host legs).
+        cpu.run(sys, &mut mem, 200_000);
+        let e = usbd::take_epout(sys).expect("epout staged");
+        assert_eq!(e.0, 1, "epout ep1");
+        usbd::complete_epout(sys, e.0, e.2);
+        usbd::signal_sof(sys);
+        usbd::signal_usbevent(sys, 1 << 8);
+        // Phase 4: chained EPIN0 from the EP0STATUS short.
+        cpu.run(sys, &mut mem, 400_000);
+        let i = usbd::take_epin(sys).expect("chained epin0 staged");
+        assert_eq!(i.0, 0, "epin ep0");
+        let ibytes: Vec<u8> = (0..i.2).map(|k| mem.read8(i.1.wrapping_add(k))).collect();
+        usbd::complete_epin(sys, i.0, &ibytes);
+        cpu.run(sys, &mut mem, 1_000_000);
+        assert!(cpu.fault.is_none(), "usbiso faulted: {:?}", cpu.fault);
+        let out = crate::system::get_uart_output().lock().unwrap().clone();
+        assert!(out.contains("USBI:OK"), "missing USBI marker (run {run}), got {out:?}");
+        assert!(!out.contains("USBI:BAD"), "USBI:BAD (run {run}), got {out:?}");
+    }
+    crate::system::reset_globals();
+}
+
+
+
 
 #[test]
 fn nrf_boot_flash_at_zero() {

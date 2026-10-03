@@ -42,6 +42,27 @@ export class WasmCpu {
     /**
      * @returns {number}
      */
+    get_basepri() {
+        const ret = wasm.wasmcpu_get_basepri(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    get_control() {
+        const ret = wasm.wasmcpu_get_control(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
+    get_faultmask() {
+        const ret = wasm.wasmcpu_get_faultmask(this.__wbg_ptr);
+        return ret >>> 0;
+    }
+    /**
+     * @returns {number}
+     */
     get_fpscr() {
         const ret = wasm.wasmcpu_get_fpscr(this.__wbg_ptr);
         return ret >>> 0;
@@ -1553,9 +1574,16 @@ export function is_watchdog_reset_requested() {
 
 /**
  * 5x5 LED matrix state for an OpenHW matrix component: 25 bytes,
- * row-major, 1 = lit. Lit <=> row OUT==0 && col OUT==1 with both pins
- * configured output (same rule the bench frame loop uses).
+ * row-major, 1 = lit. Two firmware designs share these pins, told apart
+ * by how the columns are driven (same rule the bench frame loop uses).
  * Rows: P0.21/P0.22/P0.15/P0.24/P0.19. Cols: P0.28/P0.11/P0.31/P1.05/P0.30.
+ * Direct-GPIO bit-bang (both sides GPIO-output): lit <=> row OUT==0 &&
+ * col OUT==1 with both pins configured output.
+ * CODAL NRF52LEDMatrix (columns GPIOTE-task-driven, DIR stays input by
+ * design; rows GPIO-selected HIGH): lit <=> row OUT==1 (output) && the
+ * column's task channel has OUTINIT clear (per-frame brightness latch
+ * written by the render path). The task-bound design wins when any
+ * matrix column has a task-mode GPIOTE channel; otherwise the GPIO rule.
  * @returns {Uint8Array}
  */
 export function matrix_state() {
@@ -1620,6 +1648,15 @@ export function nfct_field_present(present) {
  */
 export function nfct_inject_collision() {
     wasm.nfct_inject_collision();
+}
+
+/**
+ * Host-inject an NFC RX frame error (corrupt air): FRAMESTATUS.RX flags
+ * (bit0 CRCERROR, bit2 PARITYSTATUS, bit3 OVERRUN) + EVENTS_RXERROR.
+ * @param {number} flags
+ */
+export function nfct_inject_rxerror(flags) {
+    wasm.nfct_inject_rxerror(flags);
 }
 
 /**
@@ -1838,6 +1875,18 @@ export function qspi_take_write() {
     } finally {
         wasm.__wbindgen_add_to_stack_pointer(16);
     }
+}
+
+/**
+ * Log-power add of an ambient floor onto a packet level (both dBm).
+ * Pure function sharing the ED/CCA/RX-stamp number with the model.
+ * @param {number} packet_dbm
+ * @param {number} ambient_dbm
+ * @returns {number}
+ */
+export function radio_add_interference_dbm(packet_dbm, ambient_dbm) {
+    const ret = wasm.radio_add_interference_dbm(packet_dbm, ambient_dbm);
+    return ret;
 }
 
 /**

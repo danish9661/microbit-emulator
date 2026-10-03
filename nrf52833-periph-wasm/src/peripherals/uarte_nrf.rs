@@ -55,6 +55,8 @@ fn snapshot_tx_bytes(ptr: u32, len: u32) -> Option<Vec<u8>> {
 /// TASKS_STARTRX 0x000 / TASKS_STOPRX 0x004 / TASKS_STARTTX 0x008 /
 /// TASKS_STOPTX 0x00C / TASKS_FLUSHRX 0x02C (flushes the RX byte state),
 /// RXD.PTR 0x534 / MAXCNT 0x538 / AMOUNT 0x53C,
+/// PSEL.RTS 0x508 / TXD 0x50C / CTS 0x510 / RXD 0x514 (pin selects,
+/// reset disconnected — stored; the wires stay driver-side),
 /// TXD.PTR 0x544 / MAXCNT 0x548 / AMOUNT 0x54C,
 /// INTEN 0x300 / SET 0x304 / CLR 0x308 (CTS 0, NCTS 1, RXDRDY 2,
 /// ENDRX 4, TXDRDY 7, ENDTX 8, ERROR 9, RXTO 17, RXSTARTED 19,
@@ -77,6 +79,7 @@ pub struct Uarte {
     enable: u32,
     baudrate: u32,
     config: u32,
+    psel: [u32; 4], // PSEL.RTS/TXD/CTS/RXD (0x508-0x514, reset disconnected)
     ev_cts: bool,
     ev_ncts: bool,
     ev_rxto: bool,
@@ -124,7 +127,7 @@ pub struct Uarte {
 
 impl Default for Uarte {
     fn default() -> Self {
-        Self { irq: 2, enable: 0, baudrate: 0, config: 0,
+        Self { irq: 2, enable: 0, baudrate: 0, config: 0, psel: [0xFFFF_FFFF; 4],
                ev_cts: false, ev_ncts: false, ev_rxto: false,
                ev_rxstarted: false, ev_txstarted: false, cts_level: false,
                ev_txdrdy: false, ev_endtx: false,
@@ -193,6 +196,7 @@ impl Peripheral for Uarte {
             0x304 => self.intenset,
             0x480 => self.errorsrc,
             0x500 => self.enable,
+            0x508 | 0x50C | 0x510 | 0x514 => self.psel[((offset - 0x508) >> 2) as usize],
             0x518 => self.rxd as u32,
             0x524 => self.baudrate,
             0x534 => self.rx_ptr,
@@ -316,6 +320,9 @@ impl Peripheral for Uarte {
             0x308 => self.intenset &= !value,
             0x480 => self.errorsrc &= !value, // write-1-clears
             0x500 => self.enable = value & 0xF,
+            0x508 | 0x50C | 0x510 | 0x514 => {
+                self.psel[((offset - 0x508) >> 2) as usize] = value;
+            }
             0x518 => {} // RXD read-only
             0x51C => {
                 // TXD byte: console lifeline. Guarded by ENABLE (silicon
@@ -961,5 +968,23 @@ mod tests {
         // 2nd run: fresh instance, no leak.
         let u2 = Uarte::default();
         assert!(!u2.ev_cts && !u2.ev_rxto && u2.config == 0);
+    }
+    #[test]
+    fn psel_pin_selects_store_disconnected_reset() {
+        // PSEL.RTS/TXD/CTS/RXD (SVD 0x508-0x514) store the pin selects;
+        // reset is disconnected (0xFFFFFFFF) on all four lanes.
+        use crate::system::test_dummy_system;
+        let sys = test_dummy_system();
+        assert_eq!(sys.p.read(&sys, 0x40002508, 4), 0xFFFF_FFFF, "RTS disconnected");
+        assert_eq!(sys.p.read(&sys, 0x40002514, 4), 0xFFFF_FFFF, "RXD disconnected");
+        sys.p.write(&sys, 0x40002508, 4, 0x05); // RTS P0.05
+        sys.p.write(&sys, 0x4000250C, 4, 0x06); // TXD P0.06
+        sys.p.write(&sys, 0x40002510, 4, 0x07); // CTS P0.07
+        sys.p.write(&sys, 0x40002514, 4, 0x08); // RXD P0.08
+        assert_eq!(sys.p.read(&sys, 0x40002508, 4), 0x05, "RTS P0.05");
+        assert_eq!(sys.p.read(&sys, 0x4000250C, 4), 0x06, "TXD P0.06");
+        assert_eq!(sys.p.read(&sys, 0x40002510, 4), 0x07, "CTS P0.07");
+        assert_eq!(sys.p.read(&sys, 0x40002514, 4), 0x08, "RXD P0.08");
+        assert_eq!(Uarte::default().psel, [0xFFFF_FFFF; 4], "fresh default");
     }
 }
