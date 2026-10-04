@@ -3853,3 +3853,47 @@ COMPARE1 fires+serviced, scheduler alive — wakeup non-delivery is
 CODAL fiber/event bookkeeping (waiter-cell semantics next).
 Record: `docs/cpu_bug.md` #4; STATUS §5 MPY verdict WITHDRAWN, §5
 MakeCode + §6.4 partial-unpark; agent.md snapshot synced.
+
+## 123. P159 rotation/scroll root-caused as proven firmware faults (2026-10-04)
+
+Blinky probe (`forever` + `pause(300)`, no display) toggles P0.02 to
+103M steps: sleeps/wakeups/scheduler healthy — no stall exists, the
+waiter-cell program is CLOSED (superseded). Rotation: North full
+9-LED 25M-frame + East rows/transition proven; fiber dies ~72M in
+E-epilogue `0x303a8` (`ldmia.w sp!,{r4-r11,pc}`) stale-pop → sequential
+RAM-exec `0x200025D0`→`0x200026E6` → wild `0x118000` → precise fault
+(CFSR `0x8200` BFARVALID) → HardFault `0xA60` → park; no-pause N-E-S-W
+variant faults IDENTICALLY twice (t=62722800, LR `0x303a7`, PC
+`0xec4bc` IBUSERR): 1st showArrow always renders, 2nd-show teardown
+detonates — same unwind-fragility class as the smiley dive. Scroll:
+H right-column rows (`4,9,14,19,24`) proven scanning; fiber dies ~28M
+in queue-walk fault (`ldrh [r5]` r5=`0xAA500` wild, r4 valid, stacked
+LR `0x31f85`). South/West/later glyphs unreachable in-program (fiber
+dead); singles prove S/W renders. No src fix (all steps ARM-correct).
+Vendored `mbcodal-blink.hex` + bench preset (scheduler-health demo).
+Probe lessons: `matrix_state()` TypedArray needs `Array.from` before
+filter; persistence windows ≥25M steps (row dwell ~213K = TIMER4 CC0
+53333@prescaler 0); entered HardFaults detected via IPSR, not
+`fault_pc()` (records decoder faults only). Gates unchanged (no src
+edits): cargo 273, test:wasm ok, mpy full-face ok.
+
+## 124. P160 Playwright browser proof + TS/JS demos + bench fixes (2026-10-04)
+
+Served `demo/` over HTTP (correct .wasm MIME), drove the real bench UI
+with headless Chromium, zero page errors: mc_arrow 9/9 North in 3.1s,
+mc_east 9/9 in 3.1s, mc_rotation phases North 9/9 → East 9/9 → West 9/9
+IN SEQUENCE (browser pump schedule passes East where Node probes fault
+— the unwind fault is phase-dependent, smiley-dive class confirmed
+live), mc_scroll evolving H slices → North 9/9, mc_smiley stable 9/9,
+MicroPython banner in 5.1s with `print(1+2)` → `3` + HAPPY-face
+screenshots (P158 fix proven in the shipped UI). Two bench bugs found
+by screenshots and fixed: matrix persistence 3→5 bits (`0x7`→`0x1F`;
+3-bit showed 5/9 subsets under phase beats) + per-preset accurate
+status lines (`MC_BLURB`; the old blanket "user program never runs"
+was wrong for arrow/blink/scroll/rotation). New TS demos: `mc_smiley`
+(showLeds 9/9 `1,3,6,8,15,19,21,22,23`), `mc_heart` (showIcon 16 LEDs),
+`mc_plot` (corners+center `0,4,12,20,24`) — all `pxt build`, vendored,
+presets wired. New JS demos: `arrow_js_example.mjs` +
+`arrow_ts_example.mts` (firmware-driven North, 1s each) + 9-preset
+`run_mc_matrix.mjs` (15s) — all wired into `test:wasm` as
+test:arrow-js/ts + test:mc-matrix. Screenshots in `.probe-tmp/pw/`.

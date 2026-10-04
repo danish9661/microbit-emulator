@@ -4,13 +4,13 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-10-04, P158 MicroPython IT-flags fix + arrow E/S/W — gates green this turn)
+## 0. Snapshot (2026-10-04, P160 Playwright browser proof + TS/JS demos — gates green)
 
-- HEAD: `ef5a193` "P149-P157 full-implementation round: smiley renders, no stubs left".
-- Branch: `master`, in sync with `origin/master` (P158 uncommitted until user approval — now approved, committing).
-- Suite: **273 single green** (272 + new `it_pred_shift_preserves`) + test:wasm ok + `run_mpy_full.mjs` full-face green (banner/display/pins/accel, zero faults).
-- P158 (this turn): predicated-T1 IT-flags CPU bug fixed (`thumb.rs` exec16 guards; pure CMP/TST/CMN still set; T2 untouched) + `docs/cpu_bug.md` #4 + STATUS §5/§6.4 corrections (old "firmware-side TypeError" verdict WITHDRAWN — was emulator bug); `print(machine.mem32[0])` → 536871936, heap `13 LOAD_ATTR,80,55` matches host mpy-cross; arrow East/South/West `pxt build` hexes vendored (`demo/firmware/mbcodal-{east,south,west}.hex`) + 6 bench presets, all 9-LED patterns lit pre-fault; rotation stall narrowed to CODAL fiber/event bookkeeping (TIMER1 CC1/CC3 advance, COMPARE1 fires+serviced, scheduler alive); both wasm pkgs rebuilt.
-- Working tree: P158 files (src/cpu/thumb.rs, src/cpu/tests.rs, demo/index.html, demo/pkg wasm, 6 firmware hexes, run_mpy_full.mjs, STATUS.md, docs/cpu_bug.md, agent.md) + gitignored probe scratch `.probe-tmp/` (110M, never commit).
+- HEAD: `592aa0a` "P158 predicated-T1 IT-flags CPU fix…".
+- Branch: `master`, in sync with `origin/master` (P159 staged-uncommitted per user call; P160 uncommitted until user approval).
+- Suite: **273 single green** + test:wasm ok incl. new test:arrow-js/ts + test:mc-matrix (9 presets) + `run_mpy_full.mjs` full-face green.
+- P160 (this turn): served `demo/` over HTTP + Playwright headless proofs, zero page errors — mc_arrow/mc_east 9/9 in 3.1s, rotation N→E→W in sequence (unwind fault is phase-dependent), scroll H→North, smiley stable 9/9, mpy banner 5.1s + `print(1+2)`→`3` + HAPPY screenshot. Bench fixes: matrix persistence 3→5 bits, per-preset accurate status lines (old blanket "never runs" withdrawn for arrow/blink/scroll/rotation). New TS demos (mc_smiley/heart/plot `pxt build`, vendored + presets) + new JS demos (arrow_js_example.mjs, arrow_ts_example.mts, run_mc_matrix.mjs — all wired into `test:wasm`).
+- Working tree: P160 files (demo/index.html persistence+status+3 presets, demo/package.json chain, demo/firmware 3 new hexes, 3 new ble_lang demos, STATUS.md, agent.md, plan.md) + P159 staged set + gitignored `.probe-tmp/` (never commit).
 - CORRECTION to the P145 "Big news" below: the Sept-29 vendored hex's user
   program is NOT the `showLeds` smiley — the compiler's own
   `mc/built/mbcodal-binary.asm` (`_main___P3096`: `movs r0,#100; movs r1,#1;
@@ -245,3 +245,9 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
   E/S/W singles lit, rotation sequencing narrowed to fiber/event
   bookkeeping): waiter-cell semantics for the parked forever fiber +
   scroll glyph phase-alignment; commit+push approved 2026-10-04.
+   P159 2026-10-04 DONE: no stall exists — blinky proves sleeps/wakeups;
+  rotation dies ~72M in E-epilogue stale-pop HardFault (same class as
+  smiley), scroll dies ~28M in queue-walk fault (same family); both
+  renders proven pre-fault. NEXT: commit+push on approval; npm login
+  for publish (user); waiter-cell work CLOSED (superseded by fault
+  proof).

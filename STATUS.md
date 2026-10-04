@@ -405,6 +405,46 @@ beyond proof-level driving remain future work.
    scheduler/display ISRs run — timer IRQ delivery works, so the
    non-wakeup is isolated to CODAL fiber/event bookkeeping (waiter-cell
    semantics next), not timers. RTC0 never configured (COUNTER 0).
+   P160 2026-10-04 (Playwright browser proof — served `demo/` over HTTP,
+   drove the real bench UI headless, zero page errors): mc_arrow 9/9
+   North in 3.1s, mc_east 9/9 in 3.1s, mc_rotation phases North 9/9 →
+   East 9/9 → West 9/9 IN SEQUENCE (browser pump schedule passes East
+   where Node probes faulted — the unwind fault is phase-dependent,
+   smiley-dive class confirmed live), mc_scroll evolving H slices →
+   North 9/9, mc_smiley stable 9/9, MicroPython banner in 5.1s with
+   `print(1+2)` → `3` + HAPPY-face screenshot (P158 fix proven in the
+   shipped UI). Bench fixes from this: matrix persistence 3→5 bits
+   (`0x7`→`0x1F`; 3-bit showed 5/9 subsets under phase beats) +
+   per-preset accurate status lines (the old blanket "user program
+   never runs" was wrong for arrow/blink/scroll/rotation). New demos:
+   MakeCode TS `mc_smiley` (showLeds 9/9), `mc_heart` (showIcon 16
+   LEDs), `mc_plot` (corners+center 5/5), all vendored + presets; JS
+   `arrow_js_example.mjs` + TS `arrow_ts_example.mts` (firmware-driven
+   North, wired into `test:wasm`); `run_mc_matrix.mjs` (9-preset matrix
+   regression, wired as `test:mc-matrix`). Screenshots in `.probe-tmp/pw/`.
+   P159 2026-10-04 (rotation ROOT-CAUSED — not a sleep stall): a
+   `forever`-blink probe (`digitalWritePin` + `pause(300)`, no display)
+   toggles P0.02 across 103M steps, so sleeps/wakeups/scheduler work;
+   the rotation fiber instead DIES in a HardFault at ~72M during the
+   East transition (IPSR=3 parked at `0x37f4e`, `fault_pc()` stays null
+   — it only records decoder faults, NOT entered HardFaults).
+   Chain (2.78M-branch trace): North scans full frames (row dwell
+   ~213K steps = TIMER4 CC0 53333 @prescaler 0), East rows take over
+   ~67M, then E-epilogue `0x303a8` (`ldmia.w sp!,{r4-r11,pc}` after
+   `add sp,#44`) pops a stale slot → PC into fiber-stack data
+   (`0x200025D0`→`0x200026E6` sequential exec) → wild access
+   `0x118000` → precise bus fault (CFSR `0x8200` BFARVALID) →
+   HardFault entry `0xA60` → `0x1AD8x` → park. A no-pause
+   N-E-S-W variant faults IDENTICALLY (t=62722800 both runs, stacked
+   LR=`0x303a7`, PC=`0xec4bc` IBUSERR): 1st showArrow always renders,
+   2nd-show teardown detonates — same unwind-fragility class as the
+   smiley dive (same `0x303a8` epilogue), firmware-constructed (every
+   step ARM-correct, memory exact, multi-switch success precedes it).
+   South/West in-sequence unreachable (fiber dead at East); singles
+   prove S/W renders. Probe lessons: `matrix_state()` returns a
+   TypedArray (`filter(x!==...)` keeps zeros — wrap `Array.from`);
+   persistence windows need ≥25M steps (5-row frame ≈1M); detect
+   entered faults via IPSR, not `fault_pc()`.
 - Espruino 2v29: boots (needed the CoreSight PID map); console is
   P0.06 bit-bang serial, nothing transmitted in early windows.
 - Bootloader chain (P22–P23 + Sept-12 anchor): entry decoded at BL
@@ -614,6 +654,16 @@ beyond proof-level driving remain future work.
    after first pause; TIMER1 compares fire and are serviced, scheduler
    alive, so wakeup non-delivery is CODAL fiber/event bookkeeping,
    waiter-cell semantics next) and exact scroll glyph phase-alignment.
+   P159 2026-10-04 (sequencing CLOSED as proven-fault, both programs):
+   rotation North full 9-LED frame + East rows/transition proven, then
+   the fiber dies at ~72M in the E-epilogue stale-pop HardFault above
+   (South/West unreachable in-program; singles prove their renders).
+   Scroll (`showString Hi!`): H right-column rows (`4,9,14,19,24`)
+   proven scanning, then the fiber dies at ~28M in a queue-walk fault
+   (`ldrh [r5]` with r5=`0xAA500` wild, r4 valid, stacked LR=`0x31f85`,
+   same family) — later glyphs unreachable in-program. No emulator
+   fix indicated on either path (all steps ARM-correct); blinky proves
+   the sleep/wake subsystem healthy.
 5. **SPIM2/3** — done, firmware-proven twice AND browser-proven
    (P70): extended `stubs_nrf` (START/STOP→STOPPED on SPIM0/2/3, 326B,
    preset base64 byte-identical) prints `STUBS:OK` in-browser in 10s

@@ -89,6 +89,10 @@
           <option value="mpy">MicroPython v2.1.2 (built-in, auto-boots)</option>
           <option value="makecode">MakeCode showLeds (built-in, scheduler-idle)</option>
           <option value="mc_arrow">MakeCode arrow North (built-in)</option>
+          <option value="mc_smiley">MakeCode smiley showLeds (built-in)</option>
+          <option value="mc_heart">MakeCode heart icon (built-in)</option>
+          <option value="mc_plot">MakeCode corner plot (built-in)</option>
+          <option value="mc_blink">MakeCode blink P0 forever+pause (built-in)</option>
           <option value="mc_east">MakeCode arrow East (built-in)</option>
           <option value="mc_south">MakeCode arrow South (built-in)</option>
           <option value="mc_west">MakeCode arrow West (built-in)</option>
@@ -875,6 +879,10 @@ emu.init();</textarea>
     if (name === 'mpy') { bootPresetMicroPython(); return; }
     if (name === 'makecode') { bootPresetMakeCode(); return; }
     if (name === 'mc_arrow') { bootPresetMakeCodeFile('./firmware/mbcodal-arrow.hex', 'mc_arrow'); return; }
+    if (name === 'mc_smiley') { bootPresetMakeCodeFile('./firmware/mbcodal-smiley.hex', 'mc_smiley'); return; }
+    if (name === 'mc_heart') { bootPresetMakeCodeFile('./firmware/mbcodal-heart.hex', 'mc_heart'); return; }
+    if (name === 'mc_plot') { bootPresetMakeCodeFile('./firmware/mbcodal-plot.hex', 'mc_plot'); return; }
+    if (name === 'mc_blink') { bootPresetMakeCodeFile('./firmware/mbcodal-blink.hex', 'mc_blink'); return; }
     if (name === 'mc_east') { bootPresetMakeCodeFile('./firmware/mbcodal-east.hex', 'mc_east'); return; }
     if (name === 'mc_south') { bootPresetMakeCodeFile('./firmware/mbcodal-south.hex', 'mc_south'); return; }
     if (name === 'mc_west') { bootPresetMakeCodeFile('./firmware/mbcodal-west.hex', 'mc_west'); return; }
@@ -993,7 +1001,7 @@ emu.init();</textarea>
   // MBR/BL in emulation, so both boot the app table directly with the
   // MBR parameter page hand-installed). No model change: this is the
   // documented direct-app recipe both native probes use.
-  function bootDirectApp(label) {
+  function bootDirectApp(label, blurb) {
     if (!cpu) { status.textContent = 'load a micro:bit hex first'; return; }
     const w = (a) => cpu.read32(a);
     if (w(0x1C000) === 0xFFFFFFFF) { status.textContent = 'no app vector table at 0x1C000'; return; }
@@ -1021,17 +1029,32 @@ emu.init();</textarea>
     appBoot = { sp, pc };
     uartBox.value = '';
     status.textContent = label === 'MakeCode'
-      ? `${label} app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}): scheduler-idle, no UART output by design — the user program never runs (CODAL init parks the main fiber; see Docs)`
+      ? `${label} app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}): ${blurb || 'see Docs'}`
       : `${label} app boot (SP=${sp.toString(16)} PC=${pc.toString(16)}), banner follows`;
   }
   // MakeCode direct-app boot: same recipe as MicroPython (S140 +
-  // CODAL app at 0x1C000, MBR params hand-installed). Boots to
-  // scheduler idle (user program never runs — CODAL init tail post1
-  // 0x2504c never returns, wait code 0x3d parks the main fiber; see
-  // STATUS §5): TIMER4/DIR/matrix prove init ran, user fiber never
-  // created. Same path the native probes use.
+  // CODAL app at 0x1C000, MBR params hand-installed). The stock
+  // `makecode` hex parks in scheduler idle (user program never runs —
+  // CODAL init tail post1 never returns; see STATUS §5), but the
+  // arrow/blink/scroll/rotation preset programs DO run (proven lit in
+  // P158/P159; arrows + scroll + rotation take post-render firmware
+  // unwind faults, matrix keeps the last frame). Same path the native
+  // probes use.
+  const MC_BLURB = {
+    makecode: 'scheduler-idle, no UART output by design — dark matrix expected (see Docs)',
+    mc_arrow: 'arrow North renders 9 LEDs (post-render firmware fault parks; see Docs)',
+    mc_smiley: 'smiley renders 9 LEDs via showLeds (see Docs)',
+    mc_heart: 'heart icon renders 16 LEDs (see Docs)',
+    mc_plot: 'corner plot renders 5 LEDs (see Docs)',
+    mc_east: 'arrow East renders 9 LEDs (post-render firmware fault parks; see Docs)',
+    mc_south: 'arrow South renders 9 LEDs (post-render firmware fault parks; see Docs)',
+    mc_west: 'arrow West renders 9 LEDs (post-render firmware fault parks; see Docs)',
+    mc_blink: 'blink runs: forever+pause toggles P0.02 (scheduler healthy)',
+    mc_scroll: 'scroll renders H column, faults ~28M in (firmware queue fault; see Docs)',
+    mc_rotation: 'rotation shows North→East, faults ~72M (firmware unwind; see Docs)',
+  };
   function bootMakeCodeApp() {
-    bootDirectApp('MakeCode');
+    bootDirectApp('MakeCode', MC_BLURB[stagedKind] || MC_BLURB.makecode);
   }
   // Staged image: Load/preset parses and holds it here WITHOUT booting;
   // Run boots it via bootImage. Nothing runs until Run is pressed.
@@ -1069,7 +1092,7 @@ emu.init();</textarea>
     // must too (radio loopback is already in pumpDma).
     if (stagedKind === 'air') { try { wasm.usbd_signal_reset(); } catch (e) {} }
     if (stagedKind === 'mpy') bootMicroPythonApp();
-    if (stagedKind === 'makecode' || stagedKind === 'mc_arrow' || stagedKind === 'mc_east' || stagedKind === 'mc_south' || stagedKind === 'mc_west' || stagedKind === 'mc_scroll' || stagedKind === 'mc_rotation') bootMakeCodeApp();
+    if (stagedKind === 'makecode' || stagedKind === 'mc_arrow' || stagedKind === 'mc_smiley' || stagedKind === 'mc_heart' || stagedKind === 'mc_plot' || stagedKind === 'mc_blink' || stagedKind === 'mc_east' || stagedKind === 'mc_south' || stagedKind === 'mc_west' || stagedKind === 'mc_scroll' || stagedKind === 'mc_rotation') bootMakeCodeApp();
   });
   document.getElementById('fw').addEventListener('change', async (e) => {
     const f = e.target.files[0];
@@ -1634,8 +1657,11 @@ emu.init();</textarea>
     // core matrix_state()): GPIO bit-bang (row sinks LOW, both DIR=output;
     // a toggling latch on an input pin stays dark) and CODAL (rows
     // GPIO-selected HIGH, columns GPIOTE-task-driven with DIR=input by
-    // design and per-frame brightness in the task OUTINIT). Depth 3
-    // frames: one full 5-row sweep at 60fps.
+    // design and per-frame brightness in the task OUTINIT). Depth 5
+    // frames: two full 5-row sweeps at the bench's 400K-steps/frame
+    // batching, so a whole multiplexed glyph stays solid instead of
+    // flickering rows (P160: 3-bit persistence showed arrow subsets
+    // like 5/9 under phase beats).
     if (!frame.pers) frame.pers = new Uint8Array(25);
     {
       const dir0 = wasm.periph_read(0x50000514, 4), dir1 = wasm.periph_read(0x50000814, 4);
@@ -1666,7 +1692,7 @@ emu.init();</textarea>
         const lit = codal
           ? (isOut(ROWS[r]) && row && taskBright(COLS[c]))
           : ((isOut(ROWS[r]) && !row && isOut(COLS[c]) && col) ? 1 : 0);
-        frame.pers[i] = ((frame.pers[i] << 1) & 0x7) | (lit ? 1 : 0);
+        frame.pers[i] = ((frame.pers[i] << 1) & 0x1F) | (lit ? 1 : 0);
         leds[i].classList.toggle('on', frame.pers[i] !== 0);
       }
     }
