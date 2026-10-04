@@ -92,6 +92,16 @@ jobs:
           RUSTFLAGS: "--remap-path-prefix=/home/runner=/build"
         run: npm run build:wasm
 
+      - name: Build handshake test package
+        # test:wasm opens with test:handshake, which imports the wasm
+        # from demo/parts/pkg-test-handshake — a gitignored build
+        # output that a fresh checkout does not have. Build it here
+        # (same crate, second out-dir) before running the suite.
+        working-directory: demo
+        env:
+          RUSTFLAGS: "--remap-path-prefix=/home/runner=/build"
+        run: npm run build:handshake
+
       - name: Set package version
         working-directory: demo
         run: |
