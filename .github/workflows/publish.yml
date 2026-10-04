@@ -77,9 +77,13 @@ jobs:
           echo "/tmp/binaryen-version_132/bin" >> "$GITHUB_PATH"
 
       - name: Setup Node.js
+        # test:ts / test:ts-example / test:arrow-ts run .mts via
+        # --experimental-strip-types (needs Node >= 22.6); Node 20
+        # fails with "bad option" (exit 9). Keep CI on the same
+        # major the test chain is proven on locally.
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x'
+          node-version: '22.x'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install dependencies
@@ -122,6 +126,24 @@ jobs:
         working-directory: demo
         run: npm run test:wasm
 
+      - name: Live BLE E2E over air bridge
+        # The 42-check live suite needs the Bumble bridge process beside
+        # the Node runner (pinned deps match local 4/4-green runs). The
+        # bridge is loopback-local (LocalLink, no radio hardware).
+        # --break-system-packages: stock ubuntu-latest python is PEP 668
+        # managed; this is a disposable CI container, user installs only.
+        working-directory: demo
+        run: |
+          python3 --version
+          pip install --break-system-packages "bumble==0.0.231" "websockets==16.0"
+          python3 ../tools/ble_air_bridge.py --port 18771 &
+          BRIDGE_PID=$!
+          sleep 8
+          node parts/ble_live_e2e.mjs ws://127.0.0.1:18771
+          STATUS=$?
+          kill $BRIDGE_PID 2>/dev/null || true
+          exit $STATUS
+
       - name: Run Rust suite
         run: cargo test --manifest-path nrf52833-periph-wasm/Cargo.toml -- --test-threads=1
 
@@ -132,9 +154,11 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Setup Node.js for GitHub Packages
+        # Same Node major as above (kept in sync; avoids any future
+        # publish-time script hitting the missing type-stripping flag).
         uses: actions/setup-node@v4
         with:
-          node-version: '20.x'
+          node-version: '22.x'
           registry-url: 'https://npm.pkg.github.com'
 
       - name: Publish to GitHub Packages

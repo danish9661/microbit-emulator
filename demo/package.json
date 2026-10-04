@@ -1,6 +1,9 @@
 {
   "name": "microbit-emu",
   "version": "0.1.0",
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "description": "BBC micro:bit v2.2 emulator core (nRF52833 WASM) + virtual parts for Wokwi-style setups. Boot real firmware in the browser: MicroPython REPL, MakeCode builds, 5x5 LED matrix, sensors, BLE SoftDevice face.",
   "keywords": [
     "microbit",
