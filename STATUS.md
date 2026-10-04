@@ -450,6 +450,23 @@ beyond proof-level driving remain future work.
    `arrow_js_example.mjs` + TS `arrow_ts_example.mts` (firmware-driven
    North, wired into `test:wasm`); `run_mc_matrix.mjs` (9-preset matrix
    regression, wired as `test:mc-matrix`). Screenshots in `.probe-tmp/pw/`.
+   P162 package contents (per user decision: full but clean): 1.0.1
+   shipped WITHOUT `pkg/` (dead tarball) — wasm-pack's `pkg/.gitignore`
+   (`*`) is honored by npm's hierarchical ignore-walk despite the
+   `files[]` whitelist (reproduced: 0 pkg files in dry-run). Fixed by
+   deleting it + `rm -f` in both build scripts (regenerated per build);
+   5/5 engine files pack. New `demo/emulator.js` entry (`main`+`exports`,
+   ESM) proven by booting arrow North 9/9 through it. Pruned 14 dev-only
+   paths (harnesses, faces, sources); kept examples repointed at the
+   shipped `../../pkg` build (caught a short repoint via chain red).
+   Tarball: 48 files. Full chain exit 0 (143 oks) on the final tree.
+   P163 slim (user picked wokwi convention): real avr8js/rp2040js tarballs
+   compared (48–112 KB, lib-only, user supplies `.hex`) — new `files[]` is
+   14 files / 1.1 MB (entry + types, `pkg/`, `lsm303`+`kl27` runtime,
+   MicroPython image kept per user, new `LICENSE`, README, API.md).
+   `exports` gains `./firmware/*`; npm README links the repo + MicroPython
+   quickstart. Proof: installed packed tgz in /tmp, booted MicroPython via
+   the public entry — 105B banner, zero faults.
    P159 2026-10-04 (rotation ROOT-CAUSED — not a sleep stall): a
    `forever`-blink probe (`digitalWritePin` + `pause(300)`, no display)
    toggles P0.02 across 103M steps, so sleeps/wakeups/scheduler work;

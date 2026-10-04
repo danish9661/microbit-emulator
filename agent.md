@@ -4,14 +4,13 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-10-04, full emulator: RX closed, E2E gated, release CI fixed — all green)
+## 0. Snapshot (2026-10-04, P163 slim library-only package, tarball-proven)
 
-- HEAD: `e797ae1` "CI: build handshake pkg before test:wasm in publish workflow".
-- Branch: `master`, in sync with `origin/master` (user delegated decisions: committing verified work in two clean commits, then push + CI check).
-- Suite: **274 single green** (273 + `end_clear_preserves_crcstatus`) + test:wasm exit 0 (143 oks) + `run_mpy_full.mjs` full-face green.
-- P160 (this turn): served `demo/` over HTTP + Playwright headless proofs, zero page errors — mc_arrow/mc_east 9/9 in 3.1s, rotation N→E→W in sequence (unwind fault is phase-dependent), scroll H→North, smiley stable 9/9, mpy banner 5.1s + `print(1+2)`→`3` + HAPPY screenshot. Bench fixes: matrix persistence 3→5 bits, per-preset accurate status lines (old blanket "never runs" withdrawn for arrow/blink/scroll/rotation). New TS demos (mc_smiley/heart/plot `pxt build`, vendored + presets) + new JS demos (arrow_js_example.mjs, arrow_ts_example.mts, run_mc_matrix.mjs — all wired into `test:wasm`).
-- P161 (this turn): MPY `radio.receive()` RX leg CLOSED as proven-working — two gaps found and fixed: (1) driver-side, nothing ever injected (bench loopback now injects whitened+CRC-valid air per live config; RAM staging stays CRC-free); (2) model-side, EVENTS_END-clear wrongly cleared CRCSTATUS (`radio_nrf.rs:651`), but the MPY handler clears END first and reads CRCSTATUS after (drv_radio.c ground truth) → always saw 0, skipped the queue copy. Handler forensics (29-step pre-fix skip vs 189-step copy path) match source line-for-line. `run_mpy_radio.mjs` extended: `send('ping')` → `receive()` → `ping`, zero faults. Bench pumpDma loopback content-fixed the same way (CRC-off flows byte-identical).
-- Working tree: P161 files (radio_nrf.rs fix+test, run_mpy_radio.mjs RX leg, demo/index.html loopback, STATUS.md, agent.md, plan.md) + gitignored `.probe-tmp/` (never commit).
+- HEAD: `4f7cc5e` "RX leg complete: CRCSTATUS fix + loopback air emulation + proofs".
+- Branch: `master`, in sync with `origin/master` (P162 packaging changes uncommitted; user chose "full but clean").
+- Suite: **274 single green** + test:wasm exit 0 (143 oks) on the final tree + `run_mpy_full.mjs` full-face green.
+- P162 (this turn): 1.0.1 shipped WITHOUT `pkg/` (dead tarball) — wasm-pack's `pkg/.gitignore` (`*`) is honored by npm's hierarchical ignore-walk despite `files[]`; fixed by deleting it + `rm -f` in both build scripts, 5/5 engine files pack. New `demo/emulator.js` entry (`main`+`exports`, ESM) proven by booting arrow North 9/9 through it. Pruned 14 dev-only paths from `files[]`; kept examples repointed at shipped `../../pkg` (caught a short repoint via chain red). Tarball: 48 files.
+- Working tree: P162 files (demo/emulator.js new, package.json main/exports/files, .npmignore comment, 4 example repoints, STATUS.md, agent.md, plan.md) + gitignored `.probe-tmp/` (never commit).
 - CORRECTION to the P145 "Big news" below: the Sept-29 vendored hex's user
   program is NOT the `showLeds` smiley — the compiler's own
   `mc/built/mbcodal-binary.asm` (`_main___P3096`: `movs r0,#100; movs r1,#1;

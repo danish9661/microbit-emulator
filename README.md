@@ -1,5 +1,12 @@
 # microbit-emu — BBC micro:bit v2.2 (nRF52833) emulator in WebAssembly
 
+[![npm version](https://img.shields.io/npm/v/microbit-emu.svg)](https://www.npmjs.com/package/microbit-emu)
+[![npm downloads](https://img.shields.io/npm/dm/microbit-emu.svg)](https://www.npmjs.com/package/microbit-emu)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/danish9661/microbit-emulator/actions/workflows/publish.yml/badge.svg)](https://github.com/danish9661/microbit-emulator/actions/workflows/publish.yml)
+[![Pages](https://github.com/danish9661/microbit-emulator/actions/workflows/pages.yml/badge.svg)](https://danish9661.github.io/microbit-emulator/)
+[![Demo](https://img.shields.io/website?url=https%3A%2F%2Fdanish9661.github.io%2Fmicrobit-emulator%2F)](https://danish9661.github.io/microbit-emulator/)
+
 Browser-based emulator for the **BBC micro:bit v2 / v2.2** (Nordic
 **nRF52833**, Cortex-M4F). Run real firmware built for flash `0x0`,
 drive the 5×5 LED matrix, buttons, LSM303 motion sensor, OLED/SPI

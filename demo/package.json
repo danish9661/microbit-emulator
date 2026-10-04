@@ -32,18 +32,15 @@
   },
   "type": "module",
   "files": [
+    "emulator.js",
+    "emulator.d.ts",
     "pkg/",
-    "parts/",
-    "firmware/",
-    "assets/",
-    "index.html",
-    "doc.html",
-    "about.html",
-    "bench.css",
-    "robots.txt",
-    "sitemap.xml",
-    "API.md",
-    "README.md"
+    "parts/lsm303.js",
+    "parts/kl27.js",
+    "firmware/micropython-microbit-v2.1.2.hex",
+    "LICENSE",
+    "README.md",
+    "API.md"
   ],
   "scripts": {
     "test:parts": "node parts/smoke.mjs",
@@ -61,10 +58,16 @@
     "test:ts-example": "node --experimental-strip-types parts/ble_lang/gpio_ts_example.mts",
     "test:live": "node parts/ble_live_e2e.mjs",
     "test:wasm": "npm run test:handshake && npm run test:parts && npm run test:mpy && npm run test:js && npm run test:py && npm run test:ts && npm run test:repl && npm run test:mpy-radio && npm run test:js-example && npm run test:ts-example && npm run test:arrow-js && npm run test:arrow-ts && npm run test:mc-matrix",
-    "build:wasm": "wasm-pack build ../nrf52833-periph-wasm --target web --out-dir ../demo/pkg",
-    "build:handshake": "wasm-pack build ../nrf52833-periph-wasm --target web --out-dir ../demo/parts/pkg-test-handshake",
+    "build:wasm": "wasm-pack build ../nrf52833-periph-wasm --target web --out-dir ../demo/pkg && rm -f pkg/.gitignore",
+    "build:handshake": "wasm-pack build ../nrf52833-periph-wasm --target web --out-dir ../demo/parts/pkg-test-handshake && rm -f parts/pkg-test-handshake/.gitignore",
     "serve": "python3 -m http.server 8080",
     "bridge": "python3 ../tools/ble_air_bridge.py"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "main": "./emulator.js",
+  "exports": {
+    ".": "./emulator.js",
+    "./package.json": "./package.json",
+    "./firmware/*": "./firmware/*"
+  }
 }

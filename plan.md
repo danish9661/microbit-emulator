@@ -3926,3 +3926,38 @@ Other harnesses inventoried without it (all green, left alone).
 Live BLE E2E wired into release CI (publish.yml step after test suite:
 pinned bumble/websockets, bridge :18771, 4/4×42/42 locally) — the air
 path is now gated, closing the last "not in CI" sub-item.
+
+## 126. P162 npm package contents: engine restored, entry added, dev files pruned (2026-10-04)
+
+1.0.1 shipped WITHOUT pkg/ (dead tarball): wasm-pack writes
+pkg/.gitignore containing `*`, and npm's ignore-walk honors
+subdirectory .gitignore files, so the whole engine was excluded
+despite files[] whitelisting it (reproduced locally: 0 pkg files in
+dry-run; the demo/.npmignore comment claiming an override was wrong).
+Fix: delete the poison file + `rm -f` appended to both build scripts
+(regenerated every build); verified 5/5 pkg files pack. Kept examples
+(arrow/gpio JS+TS) repointed `pkg-test-handshake` -> `../../pkg` so
+they run against the SHIPPED engine (caught a one-`..`-short repoint
+via chain red: ERR_MODULE_NOT_FOUND, fixed, green).
+New `demo/emulator.js` programmatic entry (`main`+`exports`, ESM):
+bootEmulator(hex) + parseHex + step/matrix/fault, proven by booting
+arrow North 9/9 through the entry. files[] now: emulator.js, pkg/,
+site, firmware presets, runtime parts; pruned 14 dev-only paths
+(harness/smoke/E2E scripts, run_*/faces/sources). Tarball: 48 files,
+engine + demos + docs, no build scratch.
+
+## 127. P163 slim to library-only per wokwi convention, keep MicroPython (2026-10-04)
+
+Compared real tarballs: avr8js 75 files/48KB, rp2040js 212 files/112KB —
+both ship ONLY dist+README+LICENSE+package.json (no firmware, no site, no
+examples; user supplies `.hex` at runtime). Our 48-file/5.4MB tarball broke
+all four conventions. New files[] (14 files, 1.1MB tarball): emulator.js,
+emulator.d.ts (new types), pkg/, parts/lsm303.js+kl27.js (entry's only
+runtime deps), firmware/micropython-microbit-v2.1.2.hex (kept per user: the
+image the suite boots), LICENSE (new MIT, was declared-but-missing),
+README.md, API.md. exports gains `./firmware/*` so
+require.resolve works. demo/README.md (the npm page) links the repo as the
+home of all files + MicroPython quickstart. Proof: packed, installed the
+tgz in /tmp, booted MicroPython through the PUBLIC entry — 105B banner
+(`MicroPython v1.18` + `>>>`), zero faults, matching run_mpy_repl.
+

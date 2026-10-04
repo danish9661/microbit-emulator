@@ -1,4 +1,7 @@
-# NOTE: pkg/ ships its own .gitignore (wasm-pack default) that would hide
-# the built wasm from npm. This file overrides .gitignore entirely for
-# packaging, so keep it permissive: everything in files[] ships.
+# NOTE: wasm-pack writes pkg/.gitignore containing `*`, and npm's
+# ignore-walk honors subdirectory .gitignore files, so that single file
+# hid the entire built engine from the tarball (1.0.1 shipped without
+# pkg/). The build scripts delete it after every build (`rm -f
+# pkg/.gitignore`); do NOT re-add it. This file stays permissive so
+# everything in package.json files[] ships. Keep node_modules out.
 node_modules

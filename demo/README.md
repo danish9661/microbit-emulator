@@ -1,5 +1,45 @@
 # demo/ — browser front-end + virtual parts (micro:bit v2.2)
 
+[![npm version](https://img.shields.io/npm/v/microbit-emu.svg)](https://www.npmjs.com/package/microbit-emu)
+[![npm downloads](https://img.shields.io/npm/dm/microbit-emu.svg)](https://www.npmjs.com/package/microbit-emu)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/danish9661/microbit-emulator/actions/workflows/publish.yml/badge.svg)](https://github.com/danish9661/microbit-emulator/actions/workflows/publish.yml)
+[![Pages](https://github.com/danish9661/microbit-emulator/actions/workflows/pages.yml/badge.svg)](https://danish9661.github.io/microbit-emulator/)
+[![Demo](https://img.shields.io/website?url=https%3A%2F%2Fdanish9661.github.io%2Fmicrobit-emulator%2F)](https://danish9661.github.io/microbit-emulator/)
+
+**GitHub repo (all files):** https://github.com/danish9661/microbit-emulator —
+every firmware preset (MakeCode arrows/smiley/scroll/rotation, BLE faces),
+the interactive demo site, JS/TS examples, and the Rust source live there.
+The npm tarball ships only the library + a MicroPython image (wokwi-style:
+you supply firmware as input); grab anything else from the repo.
+**Live demo:** https://danish9661.github.io/microbit-emulator/
+
+## npm use (`microbit-emu`)
+
+```bash
+npm i microbit-emu
+```
+
+```js
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { bootEmulator } from "microbit-emu";
+
+const require = createRequire(import.meta.url);
+// Bundled MicroPython image (the build our test-suite boots); or pass
+// any micro:bit v2 `.hex` you built yourself.
+const hex = readFileSync(
+  require.resolve("microbit-emu/firmware/micropython-microbit-v2.1.2.hex"),
+  "utf8"
+);
+const emu = await bootEmulator(hex); // MicroPython REPL boots on the emulated nRF52833
+for (let i = 0; i < 200; i++) emu.step(20000);
+console.log(emu.lit()); // lit LED indices, e.g. []
+```
+
+`bootEmulator(hexText)` → `{ step(n), lit(), fault(), cpu }`; `wasm` (raw core),
+`parseHex`, and sensor options (`accel`/`mag`) are exported for advanced use.
+
 Pages: `index.html` (bench: loader + matrix + serial), `doc.html`
 (docs + board/chip support matrices), `about.html` (scope + method).
 One shared sheet: `bench.css` (load it on every page).

@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
-const pkgDir = path.join(here, "..", "pkg-test-handshake");
+const pkgDir = path.join(here, "..", "..", "pkg");
 const mod = await import(path.join(pkgDir, "nrf52833_periph_wasm.js"));
 await mod.default({ module_or_path: readFileSync(path.join(pkgDir, "nrf52833_periph_wasm_bg.wasm")) });
 const wasm = mod;
