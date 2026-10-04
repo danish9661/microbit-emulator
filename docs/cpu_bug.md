@@ -37,3 +37,36 @@ pc/opcode), fix in the core, add a native regression test.
   stacked xPSR.T; silicon stacks the aligned return address).
 - Regression: `cpu::tests::exception_svc_stacks_even_return_pc`
   (verified to fail without the fix: `0x103` vs `0x102`).
+
+## 4. Predicated T1 data-processing clobbered IT-block flags (FIXED 2026-10-04)
+
+- Claim: 16-bit Thumb data-processing executed inside an IT block updated
+  N/Z/C/V, so the NEXT slot's condition tested the clobbered flags instead
+  of the IT-setting instruction's. Silicon (and Unicorn, and GCC's own
+  emission) preserves flags for predicated T1: only the pure flag-setters
+  CMP/CMN/TST set when executed predicated.
+- Repro (live MicroPython v2.1.2 REPL): `print(machine.mem32[0])` raised
+  `TypeError: 'int' object isn't callable` while `print(m[0])` returned
+  `536871936`. The compiler's `ittee ne; addne; movne; lsreq r7,r7,#8;
+  addeq r6,#8` (`2b8e bf19 f104 060c 2701 0a3f 3608`, GAS-verified) walks
+  the trailers array: `cmp r3,#142` equal sets Z=1, both NE slots skip,
+  `lsreq` runs (r7 `0x28e`->`2`) and — old code — cleared Z, so `addeq`
+  skipped and r6 stayed 8 low (struct base, not `nodes[0]`). The loop then
+  compiled the kind word `0x28e` (TOKEN) as a node, called the wrong
+  emitter (`kind+67`), and wrote bytecode `0x6B` (reserved
+  `BASE_BYTE_E+0x0B`) where `0x55` (`LOAD_SUBSCR`) belongs; the VM
+  faithfully pushed small-int `-21`, corrupting the call stack.
+- Found by: R1-provenance audit (`emit_write_bytecode_byte` writer PC
+  `0x36e82` with R2=`0x6B`: correct `movs r2,#85` emitter at `0x3726e`
+  bypassed), single-step register trace to the `ittee` slots, then
+  XPSR capture per slot (`lsreq` executed with Z=1 in, Z=0 out).
+- Fix: `src/cpu/thumb.rs` `exec16` guards every T1 implicit-flag-setting
+  path with `if !cpu.it_pred` (LSL/LSR/ASR-imm, ADD/SUB-imm3,
+  ADDS/SUBS-imm8, ALU arms 0-7/9/12-15 incl. ADC/SBC/RSB; MOVS/ADD-reg/
+  SUB-reg already had it). Pure tests CMP-imm8/reg, high-reg CMP, TST,
+  CMN still set unconditionally. 32-bit (T2, explicit S) untouched.
+- Regression: `cpu::tests::it_pred_shift_preserves` (exact firmware
+  halfword sequence; asserts r7=`2`, r6 adjusted `+8`, Z/C preserved).
+- Why old tests stayed green: no prior test put a flag-setting T1 inside
+  an IT block ahead of a flag-sensitive later slot (the MOVS/ADD-reg
+  guards covered only their own idioms).

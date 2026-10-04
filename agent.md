@@ -4,16 +4,13 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-10-03, P152 MakeCode forensics — gates green this turn)
+## 0. Snapshot (2026-10-04, P158 MicroPython IT-flags fix + arrow E/S/W — gates green this turn)
 
-- HEAD: `7ccae7f` "P148 full-face pass: every SVD register modeled, no stubs left (259 green)".
-- Branch: `master`, in sync with `origin/master`.
-- Suite: **269 single green** + test:wasm 128 ok (incl. `test:mpy-radio`) + handshake all-OK, all re-verified this turn.
-- Working tree: DIRTY (P149 audit fixes + P150 pump wiring uncommitted +
-  P152 diag exports `get_faultmask/get_basepri/get_control` in lib.rs,
-  handshake pkg rebuilt+synced).
-- Gates this turn: cargo 269/269, test:wasm 128 ok,
-  handshake OK. Uncommitted: prior P149/P150 items + P152 diag exports + doc sync.
+- HEAD: `ef5a193` "P149-P157 full-implementation round: smiley renders, no stubs left".
+- Branch: `master`, in sync with `origin/master` (P158 uncommitted until user approval — now approved, committing).
+- Suite: **273 single green** (272 + new `it_pred_shift_preserves`) + test:wasm ok + `run_mpy_full.mjs` full-face green (banner/display/pins/accel, zero faults).
+- P158 (this turn): predicated-T1 IT-flags CPU bug fixed (`thumb.rs` exec16 guards; pure CMP/TST/CMN still set; T2 untouched) + `docs/cpu_bug.md` #4 + STATUS §5/§6.4 corrections (old "firmware-side TypeError" verdict WITHDRAWN — was emulator bug); `print(machine.mem32[0])` → 536871936, heap `13 LOAD_ATTR,80,55` matches host mpy-cross; arrow East/South/West `pxt build` hexes vendored (`demo/firmware/mbcodal-{east,south,west}.hex`) + 6 bench presets, all 9-LED patterns lit pre-fault; rotation stall narrowed to CODAL fiber/event bookkeeping (TIMER1 CC1/CC3 advance, COMPARE1 fires+serviced, scheduler alive); both wasm pkgs rebuilt.
+- Working tree: P158 files (src/cpu/thumb.rs, src/cpu/tests.rs, demo/index.html, demo/pkg wasm, 6 firmware hexes, run_mpy_full.mjs, STATUS.md, docs/cpu_bug.md, agent.md) + gitignored probe scratch `.probe-tmp/` (110M, never commit).
 - CORRECTION to the P145 "Big news" below: the Sept-29 vendored hex's user
   program is NOT the `showLeds` smiley — the compiler's own
   `mc/built/mbcodal-binary.asm` (`_main___P3096`: `movs r0,#100; movs r1,#1;
@@ -242,7 +239,9 @@ Firmware rebuild: `TC=$HOME/.arduino15/packages/STMicroelectronics/tools/xpack-a
   (9/9: 1,3,6,8,15,19,21,22,23) on unmodified NEW; OLD stays dark (no false
   positives). SENSE gap also closed (OUT/DIR writes re-evaluate SENSE;
   GPIOTE poll uses IN-mixed level) + test — silicon-faithful, untriggered
-  here (matrix pins SENSE=0). Gates: cargo 272 + test:wasm 128 green, both
+  here (matrix pins SENSE=0). Gates: cargo 273 + test:wasm green, both
   pkgs rebuilt. Standing dive (P156 firmware race, post-user, phase-
-  sensitive) unchanged by design — faithful emulation. NEXT: rotation/scroll
-  paths on the now-lit matrix; commit only on user approval.
+  sensitive) unchanged by design — faithful emulation. NEXT (P158 done:
+  E/S/W singles lit, rotation sequencing narrowed to fiber/event
+  bookkeeping): waiter-cell semantics for the parked forever fiber +
+  scroll glyph phase-alignment; commit+push approved 2026-10-04.

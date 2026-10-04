@@ -278,6 +278,28 @@ beyond proof-level driving remain future work.
   (banner/prompt/exec/echo); the method-call failures are the
   FIRMWARE's runtime behavior, not an emulator gap — no model change
   per AGENTS.md without CODAL-DAL source match.
+   CORRECTION 2026-10-04 P158 (WITHDRAWS the verdict above — it was an
+   emulator CPU bug, `docs/cpu_bug.md` #4): predicated T1
+   data-processing clobbered IT-block flags (`exec16` had the
+   `it_pred` guard only on MOVS/ADD-reg/SUB-reg). MicroPython's own
+   `ittee ne; ...; lsreq; addeq` trailers walk lost Z at `lsreq`, so
+   `addeq r6,#8` skipped, the loop read the struct header as nodes,
+   compiled TOKEN `0x28e` via the `kind+67` emitter, and wrote bytecode
+   `0x6B` (reserved) instead of `0x55` (`LOAD_SUBSCR`); the VM then
+   faithfully pushed `-21`, hence every `TypeError: 'int' object isn't
+   callable` on direct `LOAD_METHOD`/`CALL_METHOD`/attr-subscript forms
+   while stored forms passed. Fix + native regression
+   `it_pred_shift_preserves` (cargo **273/273**); heap bytecode now
+   `13 LOAD_ATTR, 80, 55` exactly like host `mpy-cross` v1.18 output.
+   Re-proved end to end: direct-call matrix 10/10
+   (`print(machine.mem32[0])` → `536871936`, `print(m[0])`,
+   `print(x[0])`, `print(len([1,2]))`), and full-face
+   `demo/parts/ble_lang/run_mpy_full.mjs` green — banner, display.show
+   matrix lit (6,8,15,19,21,22,23), pin0 toggles P0.02 (1→0→1 verified,
+   absolute-state probe), `accelerometer.get_x()` integer, zero faults.
+   The P135 mixed-subscript stall note and method-call TypeErrors above
+   were the same bug; no firmware-side behavior remains unaccounted on
+   these paths.
    Post-banner pin-poll stall NAMED+F fixed (plan P52): main loops
    `NRF52Pin::getDigitalValue@0x28744` inside
    `LSM303Accelerometer/Magnetometer::requestUpdate()` (`0x266B8`/
@@ -360,6 +382,29 @@ beyond proof-level driving remain future work.
   rule vs GPIO bit-bang rule switch). Real matrix_state() now shows the
   EXACT smiley (9/9) on unmodified NEW; OLD stays dark. SENSE also completed
   (OUT/DIR writes re-evaluate; poll uses IN-mixed level).
+   P158 2026-10-04 (single-direction arrows + presets): `pxt build`
+   programs `basic.showArrow(North|East|South|West)` (`.probe-tmp/mc_*`,
+   same recipe) all render lit 9-LED patterns via persistence-OR, all
+   mutually distinct — North `2,6,7,8,10,12,14,17,22`, East
+   `2,8,10,11,12,13,14,18,22`, South `2,7,10,12,14,16,17,18,22`, West
+   `2,6,10,11,12,13,14,16,22` — first lit at identical t=38996400
+   (deterministic boot+render). Post-render faults 4.5–6.6M steps later
+   (N/W `0x200044b8` RAM-PC; E `0x31f8e` = epilogue `pop {r4-r7,pc}`
+   with bad SP, objdump-verified; S `0x10012` MBR-area) are the same
+   phase-sensitive firmware unwind-fragility class as the smiley dive,
+   faithfully emulated; renders are captured pre-fault, unaffected.
+   Vendored as `demo/firmware/mbcodal-{arrow,east,south,west,scroll,
+   rotation}.hex` + 6 built-in bench presets (`mc_arrow`, `mc_east`,
+   `mc_south`, `mc_west`, `mc_scroll`, `mc_rotation`, all via
+   `bootPresetMakeCodeFile` + Run `bootMakeCodeApp()`).
+   Rotation program (forever N→E→S→W + pause(300)): North holds then a
+   single-pixel transition, user fiber parks (0/60 user-PC windows);
+   stall narrowed with correct SVD offsets (TIMER has no COUNTER reg —
+   0x504 is MODE): TIMER1 1MHz prescaler-4, CC1/CC3 advance rolling
+   (~4ms system ticks), EVENTS_COMPARE[1] fires and is firmware-cleared,
+   scheduler/display ISRs run — timer IRQ delivery works, so the
+   non-wakeup is isolated to CODAL fiber/event bookkeeping (waiter-cell
+   semantics next), not timers. RTC0 never configured (COUNTER 0).
 - Espruino 2v29: boots (needed the CoreSight PID map); console is
   P0.06 bit-bang serial, nothing transmitted in early windows.
 - Bootloader chain (P22–P23 + Sept-12 anchor): entry decoded at BL
@@ -562,6 +607,13 @@ beyond proof-level driving remain future work.
     (not an event wait — wait queue EMPTY, raise-forward `0x2e084`
     never hit); strobe-OR all-zero (truly blank). Pre-scroll
     sequencing confirmed, not a missed wakeup.
+   P158 2026-10-04 PARTIAL-UNPARK: per-direction content proven on the
+   lit matrix (arrow N/E/S/W 9-LED patterns, §5, all pre-fault; scroll
+   hex vendored with preset) — the RENDER path is closed. Still parked:
+   multi-phase SEQUENCING (rotation E/S/W never reached — fiber parks
+   after first pause; TIMER1 compares fire and are serviced, scheduler
+   alive, so wakeup non-delivery is CODAL fiber/event bookkeeping,
+   waiter-cell semantics next) and exact scroll glyph phase-alignment.
 5. **SPIM2/3** — done, firmware-proven twice AND browser-proven
    (P70): extended `stubs_nrf` (START/STOP→STOPPED on SPIM0/2/3, 326B,
    preset base64 byte-identical) prints `STUBS:OK` in-browser in 10s

@@ -88,6 +88,12 @@
           <option value="fetch:roles">C: roles ADV/SCAN (BLER:*)</option>
           <option value="mpy">MicroPython v2.1.2 (built-in, auto-boots)</option>
           <option value="makecode">MakeCode showLeds (built-in, scheduler-idle)</option>
+          <option value="mc_arrow">MakeCode arrow North (built-in)</option>
+          <option value="mc_east">MakeCode arrow East (built-in)</option>
+          <option value="mc_south">MakeCode arrow South (built-in)</option>
+          <option value="mc_west">MakeCode arrow West (built-in)</option>
+          <option value="mc_scroll">MakeCode scroll Hi! + arrow (built-in)</option>
+          <option value="mc_rotation">MakeCode rotation N-E-S-W (built-in)</option>
         </select>
       </div>
       <div class="load-row">
@@ -868,6 +874,12 @@ emu.init();</textarea>
   async function bootPreset(name) {
     if (name === 'mpy') { bootPresetMicroPython(); return; }
     if (name === 'makecode') { bootPresetMakeCode(); return; }
+    if (name === 'mc_arrow') { bootPresetMakeCodeFile('./firmware/mbcodal-arrow.hex', 'mc_arrow'); return; }
+    if (name === 'mc_east') { bootPresetMakeCodeFile('./firmware/mbcodal-east.hex', 'mc_east'); return; }
+    if (name === 'mc_south') { bootPresetMakeCodeFile('./firmware/mbcodal-south.hex', 'mc_south'); return; }
+    if (name === 'mc_west') { bootPresetMakeCodeFile('./firmware/mbcodal-west.hex', 'mc_west'); return; }
+    if (name === 'mc_scroll') { bootPresetMakeCodeFile('./firmware/mbcodal-scroll.hex', 'mc_scroll'); return; }
+    if (name === 'mc_rotation') { bootPresetMakeCodeFile('./firmware/mbcodal-rotation.hex', 'mc_rotation'); return; }
     if (name.startsWith('fetch:')) { await bootPresetFetch(name.slice(6)); return; }
     const b64 = PRESETS[name];
     if (!b64) return;
@@ -917,18 +929,21 @@ emu.init();</textarea>
   // idle; the user program never runs (CODAL init tail post1 0x2504c
   // never returns — wait code 0x3d parks the main fiber, idle @+959
   // steps; see STATUS §5). Matrix stays dark, zero faults.
-  async function bootPresetMakeCode() {
+  async function bootPresetMakeCodeFile(url, kind) {
     status.textContent = 'loading built-in MakeCode…';
     try {
-      const res = await fetch('./firmware/mbcodal-binary.hex');
+      const res = await fetch(url);
       if (!res.ok) throw new Error('http ' + res.status);
       const parsed = parseHex(await res.text());
       if (!parsed) throw new Error('no data records');
-      stageImage('preset:makecode', parsed.img, parsed.uicr);
-      stagedKind = 'makecode';
+      stageImage('preset:' + kind, parsed.img, parsed.uicr);
+      stagedKind = kind;
     } catch (err) {
       status.textContent = 'built-in MakeCode failed to load: ' + err;
     }
+  }
+  async function bootPresetMakeCode() {
+    return bootPresetMakeCodeFile('./firmware/mbcodal-binary.hex', 'makecode');
   }
   document.getElementById('preset').addEventListener('change', (e) => {
     // Keep the selection visible: the select IS the staged indicator
@@ -1054,7 +1069,7 @@ emu.init();</textarea>
     // must too (radio loopback is already in pumpDma).
     if (stagedKind === 'air') { try { wasm.usbd_signal_reset(); } catch (e) {} }
     if (stagedKind === 'mpy') bootMicroPythonApp();
-    if (stagedKind === 'makecode') bootMakeCodeApp();
+    if (stagedKind === 'makecode' || stagedKind === 'mc_arrow' || stagedKind === 'mc_east' || stagedKind === 'mc_south' || stagedKind === 'mc_west' || stagedKind === 'mc_scroll' || stagedKind === 'mc_rotation') bootMakeCodeApp();
   });
   document.getElementById('fw').addEventListener('change', async (e) => {
     const f = e.target.files[0];

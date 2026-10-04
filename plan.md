@@ -3830,3 +3830,26 @@ matrix dark — 7/7, identical to the source-hex park. Stock limits
 re-verified on the shipped pair: `bluetooth` 0 hits in both hexes,
 SVC-82 0 sites in both, MPY radio TX proof green (`test:mpy-radio`).
 No model change; docs (agent log) + commit only.
+
+## 122. P158 MicroPython IT-flags CPU fix + arrow E/S/W demos (2026-10-04)
+
+R1-provenance audit closed the P135 "firmware-side TypeError" verdict:
+predicated T1 data-processing clobbered IT flags (`exec16` guarded only
+MOVS/ADD-reg/SUB-reg). MicroPython's own `ittee ne; ...; lsreq; addeq`
+trailers walk (`2b8e bf19 f104 060c 2701 0a3f 3608`, GAS-verified) lost Z
+at `lsreq`, `addeq r6,#8` skipped, loop read struct header as nodes,
+compiled TOKEN `0x28e` via `kind+67`, emitted `0x6B` not `0x55`
+(`LOAD_SUBSCR`); VM faithfully pushed `-21`. Fix: `it_pred` guards on
+all T1 implicit-flag paths (pure CMP/TST/CMN still set; T2 untouched) +
+native `it_pred_shift_preserves` (cargo 273/273). Heap now
+`13,80,55` like host mpy-cross; direct-call matrix 10/10;
+`run_mpy_full.mjs` green (banner/display/pins/accel, no faults; pin
+probe fixed to absolute P0.02 toggle, accel to fixed pose).
+MakeCode: `pxt build` East/South/West arrow singles, all lit 9-LED
+distinct pre-fault (post-render faults = known unwind-fragility class:
+E `pop {pc}` bad-SP at `0x31f8e` objdump-verified); 6 hexes vendored +
+bench presets. Rotation sequencing still parked: TIMER1 CC1/CC3 roll,
+COMPARE1 fires+serviced, scheduler alive — wakeup non-delivery is
+CODAL fiber/event bookkeeping (waiter-cell semantics next).
+Record: `docs/cpu_bug.md` #4; STATUS §5 MPY verdict WITHDRAWN, §5
+MakeCode + §6.4 partial-unpark; agent.md snapshot synced.

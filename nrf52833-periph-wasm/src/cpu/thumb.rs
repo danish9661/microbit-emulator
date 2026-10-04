@@ -994,15 +994,20 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut dyn Memory, op: u16, pc
         adv(cpu, pc, 2);
         return true;
     }
-    // LSL/LSR/ASR imm, ADD/SUB reg+imm3 (all flag-setting)
+    // LSL/LSR/ASR imm, ADD/SUB reg+imm3 (all flag-setting outside IT;
+    // predicated T1 preserves flags: the IT-setting instruction's flags must
+    // survive the whole block (MicroPython's `ittee ne; ...; lsreq; addeq`
+    // needs Z live for addeq; same rule as MOVS/ADD-reg above, Unicorn agrees).
     if o & 0xF800 == 0x0000 {
         let (rd, rs) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
         let im = (o >> 6) & 0x1F;
         let v = rr(cpu, rs, pc);
         let (r, co) = shift_op(v, 0, im, carry(cpu), false);
         cpu.regs.r[rd] = r;
-        nz(cpu, r);
-        cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+        if !cpu.it_pred {
+            nz(cpu, r);
+            cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+        }
         adv(cpu, pc, 2);
         return true;
     }
@@ -1015,8 +1020,10 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut dyn Memory, op: u16, pc
         let v = rr(cpu, rs, pc);
         let (r, co) = shift_op(v, 1, im, carry(cpu), false);
         cpu.regs.r[rd] = r;
-        nz(cpu, r);
-        cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+        if !cpu.it_pred {
+            nz(cpu, r);
+            cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+        }
         adv(cpu, pc, 2);
         return true;
     }
@@ -1029,8 +1036,10 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut dyn Memory, op: u16, pc
         let v = rr(cpu, rs, pc);
         let (r, co) = shift_op(v, 2, im, carry(cpu), false);
         cpu.regs.r[rd] = r;
-        nz(cpu, r);
-        cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+        if !cpu.it_pred {
+            nz(cpu, r);
+            cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+        }
         adv(cpu, pc, 2);
         return true;
     }
@@ -1061,17 +1070,27 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut dyn Memory, op: u16, pc
         return true;
     }
     if o & 0xFE00 == 0x1C00 {
+        // ADD imm3 T1: predicated preserves flags (same IT rule as above).
         let (rd, rn) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
         let im = (o >> 6) & 7;
-        let r = add_flags(cpu, rr(cpu, rn, pc), im, 0);
+        let a = rr(cpu, rn, pc);
+        let r = a.wrapping_add(im);
+        if !cpu.it_pred {
+            let _ = add_flags(cpu, a, im, 0);
+        }
         cpu.regs.r[rd] = r;
         adv(cpu, pc, 2);
         return true;
     }
     if o & 0xFE00 == 0x1E00 {
+        // SUB imm3 T1 likewise.
         let (rd, rn) = ((o & 7) as usize, ((o >> 3) & 7) as usize);
         let im = (o >> 6) & 7;
-        let r = sub_flags(cpu, rr(cpu, rn, pc), im, 1);
+        let a = rr(cpu, rn, pc);
+        let r = a.wrapping_sub(im);
+        if !cpu.it_pred {
+            let _ = sub_flags(cpu, a, im, 1);
+        }
         cpu.regs.r[rd] = r;
         adv(cpu, pc, 2);
         return true;
@@ -1098,105 +1117,153 @@ pub fn exec16(cpu: &mut Cpu, sys: &WasmSystem, mem: &mut dyn Memory, op: u16, pc
         return true;
     }
     if o & 0xF800 == 0x3000 {
+        // ADDS imm8 T1: predicated preserves flags (same IT rule as above).
+        // CMP (0x2800) is a pure flag-setter and always sets, predicated or not.
         let rd = ((o >> 8) & 7) as usize;
-        let r = add_flags(cpu, rr(cpu, rd, pc), o & 0xFF, 0);
+        let a = rr(cpu, rd, pc);
+        let r = a.wrapping_add(o & 0xFF);
+        if !cpu.it_pred {
+            let _ = add_flags(cpu, a, o & 0xFF, 0);
+        }
         cpu.regs.r[rd] = r;
         adv(cpu, pc, 2);
         return true;
     }
     if o & 0xF800 == 0x3800 {
+        // SUBS imm8 T1 likewise.
         let rd = ((o >> 8) & 7) as usize;
-        let r = sub_flags(cpu, rr(cpu, rd, pc), o & 0xFF, 1);
+        let a = rr(cpu, rd, pc);
+        let r = a.wrapping_sub(o & 0xFF);
+        if !cpu.it_pred {
+            let _ = sub_flags(cpu, a, o & 0xFF, 1);
+        }
         cpu.regs.r[rd] = r;
         adv(cpu, pc, 2);
         return true;
     }
     // ALU ops
+    // ALU ops. T1 predicated preserves flags (same IT rule as shifts above),
+    // except the pure flag-setters TST/CMP/CMN which always set when executed.
     if o & 0xFC00 == 0x4000 {
         let sop = (o >> 6) & 0xF;
         let (rs, rd) = (((o >> 3) & 7) as usize, (o & 7) as usize);
         let a = rr(cpu, rd, pc);
         let b = rr(cpu, rs, pc);
+        // Predicated T1 data-processing preserves N/Z/C/V (IT-block rule).
+        let set = !cpu.it_pred;
         match sop {
             0 => {
                 let r = a & b;
                 cpu.regs.r[rd] = r;
-                nz(cpu, r);
+                if set {
+                    nz(cpu, r);
+                }
             }
             1 => {
                 let r = a ^ b;
                 cpu.regs.r[rd] = r;
-                nz(cpu, r);
+                if set {
+                    nz(cpu, r);
+                }
             }
             2 => {
                 let (r, co) = shift_op(a, 0, b & 0xFF, carry(cpu), true);
                 cpu.regs.r[rd] = r;
-                nz(cpu, r);
-                cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+                if set {
+                    nz(cpu, r);
+                    cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+                }
             }
             3 => {
                 let (r, co) = shift_op(a, 1, b & 0xFF, carry(cpu), true);
                 cpu.regs.r[rd] = r;
-                nz(cpu, r);
-                cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+                if set {
+                    nz(cpu, r);
+                    cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+                }
             }
             4 => {
                 let (r, co) = shift_op(a, 2, b & 0xFF, carry(cpu), true);
                 cpu.regs.r[rd] = r;
-                nz(cpu, r);
-                cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+                if set {
+                    nz(cpu, r);
+                    cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+                }
             }
             5 => {
-                let r = add_flags(cpu, a, b, carry(cpu));
+                let ci = carry(cpu);
+                let r = a.wrapping_add(b).wrapping_add(ci);
+                if set {
+                    let _ = add_flags(cpu, a, b, ci);
+                }
                 cpu.regs.r[rd] = r;
             }
             6 => {
-                let r = sub_flags(cpu, a, b, carry(cpu));
+                let ci = carry(cpu);
+                let r = a.wrapping_sub(b).wrapping_sub(1 - ci);
+                if set {
+                    let _ = sub_flags(cpu, a, b, ci);
+                }
                 cpu.regs.r[rd] = r;
             }
             7 => {
                 let (r, co) = shift_op(a, 3, b & 0xFF, carry(cpu), true);
                 cpu.regs.r[rd] = r;
-                nz(cpu, r);
-                cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+                if set {
+                    nz(cpu, r);
+                    cpu.regs.xpsr = (cpu.regs.xpsr & !0x20000000) | (co << 29);
+                }
             }
             8 => {
                 // TST (GAS: tst r0,r1 = 0x4208): flags = a & b, no writeback.
                 // Was CMP (sub_flags) — caught by nRF PPI firmware 2026-09-11:
                 // tst r0,r1 with r0==r1!=0 must clear Z; CMP set Z and took
-                // the wrong beq branch.
+                // the wrong beq branch. Pure test: always sets, even in IT.
                 nz(cpu, a & b);
             }
             9 => {
-                // RSB (negate): Rd = 0 - Rs, with flags
-                let r = sub_flags(cpu, 0, b, 1);
+                // RSB (negate): Rd = 0 - Rs, with flags (suppressed in IT).
+                let r = 0u32.wrapping_sub(b);
+                if set {
+                    let _ = sub_flags(cpu, 0, b, 1);
+                }
                 cpu.regs.r[rd] = r;
             }
             10 => {
+                // CMP reg: pure test, always sets.
                 sub_flags(cpu, a, b, 1);
             }
             11 => {
+                // CMN: pure test, always sets.
                 add_flags(cpu, a, b, 0);
             }
             12 => {
                 let r = a | b;
                 cpu.regs.r[rd] = r;
-                nz(cpu, r);
+                if set {
+                    nz(cpu, r);
+                }
             }
             13 => {
                 let r = a.wrapping_mul(b);
                 cpu.regs.r[rd] = r;
-                nz(cpu, r);
+                if set {
+                    nz(cpu, r);
+                }
             }
             14 => {
                 let r = a & !b;
                 cpu.regs.r[rd] = r;
-                nz(cpu, r);
+                if set {
+                    nz(cpu, r);
+                }
             }
             _ => {
                 let r = !b;
                 cpu.regs.r[rd] = r;
-                nz(cpu, r);
+                if set {
+                    nz(cpu, r);
+                }
             }
         }
         adv(cpu, pc, 2);

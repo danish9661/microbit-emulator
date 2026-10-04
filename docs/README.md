@@ -62,6 +62,7 @@ not a project goal; the compile path is what we rely on.
 | `fpu15.s` | `vmov.f32 s0, #-0.5` (EEBE 0A00) — the D=0 counterpart of fpu7's s5 form |
 | `fpu16.s` | VMRS ID regs: mvfr0=EEF7, mvfr1=EEF6, mvfr2=EEF5 (via neon-fp-armv8 — fpv4-sp GAS rejects the mnemonic), fpexc=EEF8; vmsr fpexc=EEE8 |
 | `regmatrix.s` | Nonzero-Rd FB/FA forms: smmla/smmls/smmul/usada8/usad8/smlad/smulwb-t/smlawb-t/smlal/qadd8/shadd16 (the Rd-gate audit) |
+| `itblock.s` | IT-block flag preservation: `cmp` + `ittee ne` + skipped `addne/movne` + taken `lsreq` (must not clobber Z) + taken `addeq` (2b8e bf19 f104 060c 2701 0a3f 3608, MicroPython trailers walk) |
 
 Key derivations are written up in AGENTS.md §25 (encoding rules + gotchas).
 

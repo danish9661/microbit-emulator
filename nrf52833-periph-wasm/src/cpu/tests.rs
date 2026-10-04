@@ -1729,6 +1729,37 @@ fn it_pred_add_preserves() {
 }
 
 #[test]
+fn it_pred_shift_preserves() {
+    // MicroPython REPL `machine.mem32[0]`: cmp r3,#142 (equal, Z=1,C=1);
+    // ittee ne (BF19); addne/movne skipped; lsreq r7,r7,#8 (taken) must
+    // preserve Z so addeq r6,#8 (taken) adjusts the trailers pointer.
+    // Halfwords GAS-verified (xpack 14.2.1, armv7e-m): 2b8e bf19 f104
+    // 060c 2701 0a3f 3608 — byte-identical to the firmware sequence.
+    // Old code let predicated lsrs clobber Z -> addeq skipped -> compiler
+    // read the struct header as nodes -> emitted 0x6B instead of 0x55.
+    let _g = lock_boot();
+    let (mut cpu, mut mem) = boot(include_bytes!("../../../blinky/blinky_nrf.bin"));
+    let sys = crate::sys();
+    for (i, w) in [0x2B8Eu16, 0xBF19, 0xF104, 0x060C, 0x2701, 0x0A3F, 0x3608]
+        .iter()
+        .enumerate()
+    {
+        mem.write16(0x20002000 + i as u32 * 2, *w);
+    }
+    cpu.regs.r[3] = 0x8E;
+    cpu.regs.r[4] = 0x20005400;
+    cpu.regs.r[6] = 0x20005420;
+    cpu.regs.r[7] = 0x28E;
+    cpu.regs.r[15] = 0x20002001;
+    cpu.run(sys, &mut mem, 6);
+    assert_eq!(cpu.regs.r[7], 2, "lsr result");
+    assert_eq!(cpu.regs.r[6], 0x20005428, "addeq executed");
+    let x = cpu.regs.xpsr;
+    assert_eq!((x >> 30) & 1, 1, "Z preserved through predicated lsrs");
+    assert_eq!((x >> 29) & 1, 1, "C preserved through predicated lsrs");
+}
+
+#[test]
 fn bare_subreg_sets_flags() {
     // subs r3,r3,r0 (1A1B) unpredicated with equal inputs -> Z=1.
     // Run EXACTLY 1 step: run_snippet's trailing NOPs (movs r0,r0) would
