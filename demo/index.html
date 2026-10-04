@@ -1348,6 +1348,60 @@ emu.init();</textarea>
       }
       wasm.nvmc_complete_erase();
     }
+    // On-air packet builder for loopback: TX RAM holds unwhitened,
+    // CRC-free bytes, but real air carries whitened bytes + trailing
+    // CRC (silicon appends/checks/strips it). Mirror that exactly from
+    // the LIVE config so the model's RX check passes like silicon:
+    // whiten everything iff PCNF1.WHITEEN, append radio_crc LE iff
+    // CRCCNF.LEN != 0. CRC-off/whiten-off firmware gets bytes unchanged
+    // (today's behavior, bit-identical). RAM staging stays CRC-free
+    // (silicon strips address+CRC before the PACKETPTR buffer).
+    function radioCrc(body, poly, init, len) {
+      len = Math.min(3, Math.max(1, len));
+      const mask = len >= 3 ? 0xFFFFFF : ((1 << (8 * len)) - 1) >>> 0;
+      let crc = init & mask;
+      const top = 1 << (8 * len - 1);
+      poly &= mask;
+      for (const b of body) {
+        for (let i = 7; i >= 0; i--) {
+          const bit = (b >> i) & 1, msb = (crc & top) !== 0;
+          crc = (((crc << 1) & mask) | bit) >>> 0;
+          if (msb) crc = (crc ^ poly) >>> 0;
+        }
+      }
+      for (let k = 0; k < 8 * len; k++) {
+        const msb = (crc & top) !== 0;
+        crc = ((crc << 1) & mask) >>> 0;
+        if (msb) crc = (crc ^ poly) >>> 0;
+      }
+      return crc & mask;
+    }
+    function whitenInPlace(buf, iv) {
+      let lfsr = ((iv & 0x3F) | 0x40) & 0xFF;
+      for (let j = 0; j < buf.length; j++) {
+        let o = 0;
+        for (let i = 7; i >= 0; i--) {
+          const ks = ((lfsr >> 6) ^ (lfsr >> 3)) & 1;
+          o |= (((buf[j] >> i) & 1) ^ ks) << i;
+          const nb = (lfsr >> 6) & 1;
+          lfsr = (((lfsr << 1) & 0x7F) | nb) & 0xFF;
+        }
+        buf[j] = o;
+      }
+      return buf;
+    }
+    function airPacket(raw) {
+      const p = [...raw];
+      const crcLen = wasm.periph_read(0x40001534, 4) & 3;
+      if (crcLen !== 0) {
+        const crc = radioCrc(p, wasm.periph_read(0x40001538, 4) >>> 0, wasm.periph_read(0x4000153C, 4) >>> 0, crcLen);
+        for (let i = 0; i < crcLen; i++) p.push((crc >> (8 * i)) & 0xFF);
+      }
+      if (((wasm.periph_read(0x40001518, 4) >>> 25) & 1) !== 0) {
+        whitenInPlace(p, wasm.periph_read(0x40001554, 4) >>> 0);
+      }
+      return p;
+    }
     t = wasm.radio_take_tx();
     if (t.length) {
       // Demo air, two modes. Bridge mode (user enabled BLE air and the
@@ -1357,10 +1411,12 @@ emu.init();</textarea>
       // Loopback mode (default): addressed self-echo via inject_rx_to
       // (DAB[0]-addressed, so the match unit reports DEVMATCH like a
       // real peer address would). window.__airPeer hook retired.
+      // NOTE: loopback delivers each TX twice (here + the replay below);
+      // pre-existing structure, harmless (no count assertions exist).
       const bytes = cpu.mem_read(t[0], t[1]);
       lastAir = bytes;
       if (!bleAir.sendTx(bytes)) {
-        wasm.radio_inject_rx_to(0, bytes);
+        wasm.radio_inject_rx_to(0, airPacket(bytes));
       }
       wasm.radio_complete_tx();
     }
@@ -1373,7 +1429,7 @@ emu.init();</textarea>
       if (frame) {
         wasm.radio_inject_rx([...frame].slice(0, 252));
       } else if (lastAir.length) {
-        wasm.radio_inject_rx([...lastAir].slice(0, 252));
+        wasm.radio_inject_rx(airPacket([...lastAir].slice(0, 252)));
         lastAir = [];
       } else {
         wasm.radio_inject_rx([]);

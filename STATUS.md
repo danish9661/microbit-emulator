@@ -263,6 +263,34 @@ beyond proof-level driving remain future work.
   `microbit_radio_irq_handler` copies `pkt[0]`-gated bytes into its own
   `radio_buf` queue and something in that handoff drops it). No model
   change without a faulting config; reopen with one.
+   CORRECTION P161 (WITHDRAWS the park — root-caused to TWO gaps, both
+   closed): (1) driver-side: nothing ever injected a packet (TX bytes
+   went nowhere; bench loopback now injects faithful air — whitened +
+   valid trailing CRC per live CRCCNF/POLY/INIT, RAM staging CRC-free
+   like silicon strips it); (2) model-side: clearing EVENTS_END also
+   cleared CRCSTATUS (`radio_nrf.rs:651`), but the MPY handler clears
+   END first and reads CRCSTATUS after, so it always saw 0 and skipped
+   the queue copy (silicon: CRCSTATUS is a per-packet latch, not an
+   event flag). Fix + native `end_clear_preserves_crcstatus` (fails
+   pre-fix, passes post-fix; cargo 274/274). `run_mpy_radio.mjs` now
+   asserts the full roundtrip (`send('ping')` → `print(receive())` →
+   `ping`, zero faults). Handler forensics (29-step trace: clears END
+   at `0x2E475`, reads PCNF1/LENGTH/CRCSTATUS, takes the copy branch)
+   match `drv_radio.c` source line-for-line. Determinism follow-up:
+   one `run_mpy_radio` run faulted at a wild PC (`0x20014D34`, then a
+   rerun batch showed `0x10e` once in 7) — root-caused to wall-clock
+   nondeterminism, NOT the RX path: the harness never installed the
+   virtual `Date.now` override, so the sensor part's P0.25 pulse phase
+   (`Date.now()%200`) landed randomly against emulator steps and
+   phase-sensitive firmware faults varied run to run (fault PCs match
+   the documented unwind-fragility class). Fix: virtual wall clock
+   (`vt/64000`, restored on exit) like the matrix probes; 8/8 green
+   after. Other harnesses lack the override (inventoried, left alone —
+   all green, changing their timing risks churn for no gain). Live BLE
+   E2E stability: 4/4 runs × 42/42 over the Bumble bridge (~30s each);
+   wired into release CI (`publish.yml`: pinned `bumble==0.0.231` +
+   `websockets==16.0`, bridge on :18771, E2E step after test suite) so
+   the air path is gated, not just manual.
   P135 REPL grammar map (2026-09-23, fresh pkg, RXDRDY-paced drip,
   0 overruns, zero faults): builtins/slices/operators all execute
   (`len([1,2,3])`→`3`, `str(42)`→`'42'`, `print('hi')`→`hi`,

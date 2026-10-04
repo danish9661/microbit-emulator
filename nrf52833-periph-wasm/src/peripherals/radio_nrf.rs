@@ -648,7 +648,13 @@ impl Peripheral for RadioNrf {
             0x100 => if value == 0 { self.ev_ready = false; }
             0x104 => if value == 0 { self.ev_address = false; }
             0x108 => if value == 0 { self.ev_payload = false; }
-            0x10C => if value == 0 { self.ev_end = false; self.crcstatus = 0; }
+            0x10C => if value == 0 { self.ev_end = false; }
+            // NOTE: clearing EVENTS_END must NOT clear CRCSTATUS. CRCSTATUS
+            // is a per-packet result latch (set by the RX CRC check,
+            // overwritten by the next packet), not an event flag — silicon
+            // keeps it until the next check. Coupling them dropped every
+            // MicroPython radio.receive(): the MPY IRQ handler clears END
+            // first, then reads CRCSTATUS, which always came back 0 here.
             0x110 => if value == 0 { self.ev_disabled = false; }
             0x114 => if value == 0 { self.ev_devmatch = false; }
             0x118 => if value == 0 { self.ev_devmiss = false; }
@@ -1330,6 +1336,38 @@ mod tests {
         assert_eq!(sys.p.read(&sys, 0x40001400, 4), 1, "CRCSTATUS ok");
         assert_eq!(sys.p.read(&sys, 0x40001130, 4), 1, "CRCOK");
         assert_eq!(mem.read8(rxp), 0xAA, "bytes delivered to RAM");
+    }
+    #[test]
+    fn end_clear_preserves_crcstatus() {
+        // MicroPython's radio IRQ handler clears EVENTS_END first, then
+        // reads CRCSTATUS to gate the RX-queue copy. Clearing END must
+        // NOT clear CRCSTATUS (silicon: per-packet result latch, set only
+        // by the RX CRC check). The old coupling dropped every
+        // radio.receive() (CRCSTATUS always read 0 -> copy skipped).
+        // GAS-independent: pure register contract, CRCCNF.LEN=2.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x40001534, 4, 2); // CRCCNF.LEN=2
+        sys.p.write(&sys, 0x40001538, 4, 0x11021);
+        sys.p.write(&sys, 0x4000153C, 4, 0xFFFF);
+        let body = vec![0x05u8, 0x01, 0x00, 0x01, 0x68, 0x69];
+        let crc = radio_crc(&body, 0x11021, 0xFFFF, 2);
+        let mut good = body.clone();
+        good.push((crc & 0xFF) as u8);
+        good.push(((crc >> 8) & 0xFF) as u8);
+        inject_rx(&sys, good);
+        sys.p.write(&sys, 0x40001004, 4, 1); // RXEN
+        sys.p.write(&sys, 0x40001008, 4, 1); // START
+        let _ = take_rx(&sys).expect("rx staged");
+        complete_rx(&sys);
+        assert_eq!(sys.p.read(&sys, 0x40001130, 4), 1, "CRCOK");
+        assert_eq!(sys.p.read(&sys, 0x40001400, 4), 1, "CRCSTATUS set");
+        sys.p.write(&sys, 0x4000110C, 4, 0); // handler clears END first
+        assert_eq!(sys.p.read(&sys, 0x4000110C, 4), 0, "END cleared");
+        assert_eq!(
+            sys.p.read(&sys, 0x40001400, 4),
+            1,
+            "CRCSTATUS survives END clear"
+        );
     }
     #[test]
     fn corrupt_packet_crcerror_path() {

@@ -3897,3 +3897,32 @@ presets wired. New JS demos: `arrow_js_example.mjs` +
 `arrow_ts_example.mts` (firmware-driven North, 1s each) + 9-preset
 `run_mc_matrix.mjs` (15s) — all wired into `test:wasm` as
 test:arrow-js/ts + test:mc-matrix. Screenshots in `.probe-tmp/pw/`.
+
+## 125. P161 MicroPython radio.receive() RX leg completed (2026-10-04)
+
+R1-style audit of the parked RX path found TWO gaps, both closed: (1)
+driver-side — the TX bytes went nowhere (no loopback injection at all;
+bench loopback injected raw pre-CRC bytes which fail the whitened CRC
+check); faithful air now = whitened bytes + valid trailing CRC per live
+CRCCNF/POLY/INIT/DATAWHITEIV (exact ports of radio_crc/whiten_in_place,
+verified CRCOK=1), RAM staging stays CRC-free like silicon strips it.
+(2) model-side — clearing EVENTS_END also cleared CRCSTATUS
+(radio_nrf.rs:651), but drv_radio.c clears END first and reads
+CRCSTATUS after, so the queue copy was always skipped; CRCSTATUS is a
+per-packet latch on silicon, fix removes the coupling only. Handler
+forensics: 29-step IRQ trace (clears END at 0x2E475, reads
+PCNF1/LENGTH/CRCSTATUS, takes copy branch) matches drv_radio.c
+line-for-line; post-fix trace takes the 189-step copy path.
+Proof: `run_mpy_radio.mjs` extended (single-shot loopback, no
+continuous-pump races) — `send('ping')` → `print(receive())` → `ping`,
+zero faults. Bench pumpDma loopback content-fixed the same way
+(CRC-off flows byte-identical). Native `end_clear_preserves_crcstatus`
+(fails pre-fix). Gates: cargo 274/274, test:wasm exit 0 (143 oks).
+Record: STATUS RX park WITHDRAWN; run_mpy_radio header rewritten.
+Follow-up: 1-in-7 flake (wild-PC faults `0x20014D34`/`0x10e`) traced to
+missing virtual wall clock in the harness (P0.25 pulse phase random vs
+emulator steps); installed `vt/64000` override + restore, 8/8 green.
+Other harnesses inventoried without it (all green, left alone).
+Live BLE E2E wired into release CI (publish.yml step after test suite:
+pinned bumble/websockets, bridge :18771, 4/4×42/42 locally) — the air
+path is now gated, closing the last "not in CI" sub-item.

@@ -4,13 +4,14 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-10-04, P160 Playwright browser proof + TS/JS demos — gates green)
+## 0. Snapshot (2026-10-04, full emulator: RX closed, E2E gated, release CI fixed — all green)
 
-- HEAD: `592aa0a` "P158 predicated-T1 IT-flags CPU fix…".
-- Branch: `master`, in sync with `origin/master` (P159 staged-uncommitted per user call; P160 uncommitted until user approval).
-- Suite: **273 single green** + test:wasm ok incl. new test:arrow-js/ts + test:mc-matrix (9 presets) + `run_mpy_full.mjs` full-face green.
+- HEAD: `e797ae1` "CI: build handshake pkg before test:wasm in publish workflow".
+- Branch: `master`, in sync with `origin/master` (user delegated decisions: committing verified work in two clean commits, then push + CI check).
+- Suite: **274 single green** (273 + `end_clear_preserves_crcstatus`) + test:wasm exit 0 (143 oks) + `run_mpy_full.mjs` full-face green.
 - P160 (this turn): served `demo/` over HTTP + Playwright headless proofs, zero page errors — mc_arrow/mc_east 9/9 in 3.1s, rotation N→E→W in sequence (unwind fault is phase-dependent), scroll H→North, smiley stable 9/9, mpy banner 5.1s + `print(1+2)`→`3` + HAPPY screenshot. Bench fixes: matrix persistence 3→5 bits, per-preset accurate status lines (old blanket "never runs" withdrawn for arrow/blink/scroll/rotation). New TS demos (mc_smiley/heart/plot `pxt build`, vendored + presets) + new JS demos (arrow_js_example.mjs, arrow_ts_example.mts, run_mc_matrix.mjs — all wired into `test:wasm`).
-- Working tree: P160 files (demo/index.html persistence+status+3 presets, demo/package.json chain, demo/firmware 3 new hexes, 3 new ble_lang demos, STATUS.md, agent.md, plan.md) + P159 staged set + gitignored `.probe-tmp/` (never commit).
+- P161 (this turn): MPY `radio.receive()` RX leg CLOSED as proven-working — two gaps found and fixed: (1) driver-side, nothing ever injected (bench loopback now injects whitened+CRC-valid air per live config; RAM staging stays CRC-free); (2) model-side, EVENTS_END-clear wrongly cleared CRCSTATUS (`radio_nrf.rs:651`), but the MPY handler clears END first and reads CRCSTATUS after (drv_radio.c ground truth) → always saw 0, skipped the queue copy. Handler forensics (29-step pre-fix skip vs 189-step copy path) match source line-for-line. `run_mpy_radio.mjs` extended: `send('ping')` → `receive()` → `ping`, zero faults. Bench pumpDma loopback content-fixed the same way (CRC-off flows byte-identical).
+- Working tree: P161 files (radio_nrf.rs fix+test, run_mpy_radio.mjs RX leg, demo/index.html loopback, STATUS.md, agent.md, plan.md) + gitignored `.probe-tmp/` (never commit).
 - CORRECTION to the P145 "Big news" below: the Sept-29 vendored hex's user
   program is NOT the `showLeds` smiley — the compiler's own
   `mc/built/mbcodal-binary.asm` (`_main___P3096`: `movs r0,#100; movs r1,#1;
