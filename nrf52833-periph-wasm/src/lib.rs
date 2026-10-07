@@ -268,6 +268,28 @@ pub fn spi_push_miso(peripheral: &str, bytes: &[u8]) {
     system::spi_tap_miso_push(peripheral, bytes);
 }
 
+// ── PWM readback (OpenHW LED cell: duty + frequency per instance) ──
+// Duty is OUT channel 0 in basis points (0..10000); frequency is the
+// programmed HFCLK-derived rate in Hz. Both read 0 when the instance is
+// disabled, unprogrammed, or out of range (0-3 valid).
+#[wasm_bindgen]
+pub fn pwm_get_freq_hz(instance: u32) -> u32 {
+    crate::peripherals::pwm_nrf::freq_hz(sys(), instance as u8)
+}
+
+#[wasm_bindgen]
+pub fn pwm_get_duty(instance: u32) -> u32 {
+    crate::peripherals::pwm_nrf::duty_bp(sys(), instance as u8)
+}
+
+/// Feed one SEQ compare word (OUT channel 0) observed by the host pump
+/// from guest RAM at SEQ.PTR — the waveform bytes stay driver-side, so
+/// duty needs this driver-fed latch (same style as take/complete pairs).
+#[wasm_bindgen]
+pub fn pwm_observe_seq_word(instance: u32, compare: u32) {
+    crate::peripherals::pwm_nrf::observe_seq_word(sys(), instance as u8, compare);
+}
+
 // ── EASYDMA driver API (JS owns the data path: take -> mem move -> complete)
 #[wasm_bindgen]
 pub fn uarte_take_txdma() -> Vec<u32> {

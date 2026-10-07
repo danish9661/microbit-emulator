@@ -4,7 +4,7 @@
 > todo states. Trust this over memory. Details in `STATUS.md` / `plan.md` /
 > `HANDOVER.md` (HANDOVER stale at 535cfcb/203 — this file supersedes for state).
 
-## 0. Snapshot (2026-10-04, P163 slim library-only package, tarball-proven)
+## 0. Snapshot (2026-10-07, P164 fully green: cargo 277 + test:wasm 143)
 
 - HEAD: `4f7cc5e` "RX leg complete: CRCSTATUS fix + loopback air emulation + proofs".
 - Branch: `master`, in sync with `origin/master` (P162 packaging changes uncommitted; user chose "full but clean").

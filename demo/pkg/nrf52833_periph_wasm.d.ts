@@ -544,6 +544,17 @@ export function power_pof_warn(present: boolean): void;
  */
 export function power_take_systemoff(): boolean;
 
+export function pwm_get_duty(instance: number): number;
+
+export function pwm_get_freq_hz(instance: number): number;
+
+/**
+ * Feed one SEQ compare word (OUT channel 0) observed by the host pump
+ * from guest RAM at SEQ.PTR — the waveform bytes stay driver-side, so
+ * duty needs this driver-fed latch (same style as take/complete pairs).
+ */
+export function pwm_observe_seq_word(instance: number, compare: number): void;
+
 export function qdec_step(dir: number): void;
 
 export function qspi_complete_erase(ptr: number, len_code: number): void;
@@ -911,6 +922,9 @@ export interface InitOutput {
     readonly power_notify_sleep_exit: () => void;
     readonly power_pof_warn: (a: number) => void;
     readonly power_take_systemoff: () => number;
+    readonly pwm_get_duty: (a: number) => number;
+    readonly pwm_get_freq_hz: (a: number) => number;
+    readonly pwm_observe_seq_word: (a: number, b: number) => void;
     readonly qdec_step: (a: number) => void;
     readonly qspi_complete_erase: (a: number, b: number) => void;
     readonly qspi_complete_read: () => void;

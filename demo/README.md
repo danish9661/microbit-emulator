@@ -52,7 +52,10 @@ plus RADIO loopback. I2C buses belong to virtual parts (below), not the
 generic pump.
 
 Build + serve (rebuild `pkg/` after Rust changes, then commit it — the
-npm tarball ships the built wasm):
+npm tarball ships the built wasm). Pinned reproducible recipe
+(`npm run build:wasm`, versions in `demo/CHANGELOG.md`): `wasm-pack
+0.14.0` + `wasm-bindgen` crate `0.2.126` (Cargo.lock) + `binaryen
+version_132` wasm-opt (CI) + `node >= 22.6.0`:
 
 ```bash
 ~/.cargo/bin/wasm-pack build nrf52833-periph-wasm --target web --out-dir ../demo/pkg

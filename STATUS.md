@@ -467,6 +467,12 @@ beyond proof-level driving remain future work.
    `exports` gains `./firmware/*`; npm README links the repo + MicroPython
    quickstart. Proof: installed packed tgz in /tmp, booted MicroPython via
    the public entry — 105B banner, zero faults.
+   P164 runner gear: PWM readback trio (`pwm_get_duty/freq_hz/observe_seq_word`,
+   277/277 + node proof 16000 Hz vs P110 firmware), I2C master-read + SAADC
+   recipes in API.md (both executed first), 4 fixed firmwares
+   (`hello/oled/blinky/spim23` in `demo/firmware/`, all proven), bundle
+   frozen at 0.2.0 with `demo/CHANGELOG.md` + bit-identical rebuilds proven
+   (exact `wasm-bindgen =0.2.126` pin).
    P159 2026-10-04 (rotation ROOT-CAUSED — not a sleep stall): a
    `forever`-blink probe (`digitalWritePin` + `pause(300)`, no display)
    toggles P0.02 across 103M steps, so sleeps/wakeups/scheduler work;

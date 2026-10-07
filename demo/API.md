@@ -78,6 +78,57 @@ in bits 6..0), otherwise one master-write byte.
 between START/STOP (see `parts/lsm303.js`); first write byte after START
 is normally the register pointer.
 
+Master-read recipe (pointer-write + repeated START + N-byte read — the
+SSD1306 status-read shape; proven by `blinky/oled_nrf.bin`, which programs
+SHORTS LASTTX_STARTRX so the model chains STARTRX after the TX bytes):
+
+```
+i2c_register_slave("TWIM0", 0x3C)          // before init(): ACKs the address phase
+t = twim_take_txdma("TWIM0")               // -> [0x3C, ptr, len] once staged
+ptrBytes = cpu.mem_read(t[1], t[2])        // e.g. [0x00, 0xAE, ...] init stream
+twim_complete_txdma("TWIM0", ptrBytes)     // fires LASTTX -> SHORTS runs STARTRX
+t = twim_take_rxdma("TWIM0")               // -> [0x3C, ptr, n] once RX staged
+cpu.mem_write(t[1], statusBytes)           // HOST writes the answer into guest RAM
+twim_complete_rxdma("TWIM0", t[2])         // fires ENDRX+LASTRX; guest reads its RAM
+```
+
+Sharp edge: `i2c_push_rx` feeds ONLY the polling path (guest `RXD` reads,
+`0xFF` when empty). The DMA path never touches that queue — the response
+reaches the guest exclusively through `mem_write` between take and
+complete. Pre-filling `i2c_push_rx` and then running take/complete leaves
+the bytes stranded (all in-tree DMA pumps do the `mem_write`).
+
+## PWM readback (LED cell)
+
+`pwm_get_freq_hz(n)` -> programmed waveform rate in Hz (16 MHz HFCLK >>
+PRESCALER over COUNTERTOP, x2 in UpAndDown mode; 0 when disabled,
+COUNTERTOP == 0, or `n` > 3). `pwm_get_duty(n)` -> OUT channel 0 level in
+basis points (0..10000; 0 = always low, 10000 = always high). The waveform
+bytes stay driver-side, so duty needs one driver-fed latch per SEQ word:
+
+```
+pwm_observe_seq_word(n, compareWord)  // after mem_read(SEQ.PTR): 15-bit
+                                      // compare vs COUNTERTOP, bit15 inverts
+```
+
+Unobserved/disabled reads 0; the latch is sticky across STOP/SEQSTART.
+Slots: 0 = 0x4001C000, 1 = 0x40021000, 2 = 0x40022000, 3 = 0x4002D000.
+
+## SAADC injection (host voltage)
+
+Guest arms START+SAMPLE with RESULT.PTR/MAXCNT; after the conversion
+latency the driver writes LE samples into guest RAM, then completes:
+
+```
+t = saadc_take_result()         // -> [ptr, n] once latency elapsed, else []
+cpu.mem_write(t[0], samplesLE)  // HOST writes n int16-LE samples (volts -> counts is host-side)
+saadc_complete_result(t[1])     // fires END+DONE+RESULTDONE; guest reads its RAM
+```
+
+Proven by `blinky/dma_nrf.bin`: injecting `[0xFF, 0x03]` lands `0x03FF`
+in guest RESULT RAM and the firmware prints `ADC:OK`. `saadc_check_limits`
+is only needed when firmware programs LIMIT registers.
+
 ## EASYDMA pump (must run every frame)
 
 Firmware stages a transfer, the driver moves bytes between guest RAM
@@ -296,6 +347,27 @@ Some firmware (MicroPython) requests reboot via AIRCR. Poll
 `qspi_register_flash(name,data)` (external flash image),
 `usbd_signal_reset()`, `usbd_inject_setup(bytes8)`,
 `radio_inject_rx(bytes)`.
+
+## Fixed test firmwares (generic-runner fixtures)
+
+Flat `.bin` images, boot at `0x0` (SP/PC from `0x0`/`0x4`), sources in
+`blinky/*_nrf.s` (xpack GCC, bit-identical rebuild recipe in `docs/README.md`).
+No Arduino core needed — these are the fixed images a runner boots:
+
+```
+demo/firmware/hello_nrf.bin    UART hello: HFCLK + UARTE, TXD-polls "HELLO\n", loops.
+                               Observe: get_uart_output() contains "HELLO".
+demo/firmware/oled_nrf.bin     I2C OLED: TWIM0 ADDR 0x3C, SHORTS LASTTX_STARTRX,
+                               9-byte SSD1306 init TX, 1-byte status RX, prints "OLED:OK".
+                               Serve: twim_take_txdma -> mem_read -> complete;
+                               twim_take_rxdma -> mem_write(status) -> complete.
+demo/firmware/blinky_nrf.bin   GPIO blink: P0.21 (ROW1) OUTSET/OUTCLR 2x + "BOOT"/"BLINK".
+                               Observe: gpio_read_output(0,21) toggles + markers.
+demo/firmware/spim23_nrf.bin   SPI transfer: SPIM2 TX DMA [01 02 03 04] + SPIM3 RX DMA,
+                               prints "S2TX:OK"/"S3RX:OK". No slave needed (no address phase).
+                               Serve: twim_take_txdma("SPIM2") -> mem_read -> complete;
+                               twim_take_rxdma("SPIM3") -> mem_write -> complete.
+```
 
 ## Stability promise (v1)
 

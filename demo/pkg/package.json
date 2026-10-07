@@ -1,7 +1,7 @@
 {
   "name": "nrf52833-periph-wasm",
   "type": "module",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "files": [
     "nrf52833_periph_wasm_bg.wasm",
     "nrf52833_periph_wasm.js",

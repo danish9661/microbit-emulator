@@ -1786,6 +1786,35 @@ export function power_take_systemoff() {
 }
 
 /**
+ * @param {number} instance
+ * @returns {number}
+ */
+export function pwm_get_duty(instance) {
+    const ret = wasm.pwm_get_duty(instance);
+    return ret >>> 0;
+}
+
+/**
+ * @param {number} instance
+ * @returns {number}
+ */
+export function pwm_get_freq_hz(instance) {
+    const ret = wasm.pwm_get_freq_hz(instance);
+    return ret >>> 0;
+}
+
+/**
+ * Feed one SEQ compare word (OUT channel 0) observed by the host pump
+ * from guest RAM at SEQ.PTR — the waveform bytes stay driver-side, so
+ * duty needs this driver-fed latch (same style as take/complete pairs).
+ * @param {number} instance
+ * @param {number} compare
+ */
+export function pwm_observe_seq_word(instance, compare) {
+    wasm.pwm_observe_seq_word(instance, compare);
+}
+
+/**
  * @param {number} dir
  */
 export function qdec_step(dir) {

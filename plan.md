@@ -3961,3 +3961,38 @@ home of all files + MicroPython quickstart. Proof: packed, installed the
 tgz in /tmp, booted MicroPython through the PUBLIC entry — 105B banner
 (`MicroPython v1.18` + `>>>`), zero faults, matching run_mpy_repl.
 
+## 128. P164 OpenHW runner gear: PWM readback + injection recipes + fixtures + frozen bundle (2026-10-07)
+
+PWM model had no duty/freq state (P110 only proved events with TOP=1000;
+waveform bytes stay driver-side). Additive close, no behavior change:
+`pwm_base/with_pwm` routing (all 4 slots) + `freq_hz` (16MHz>>PSC/TOP,
+x2 UpAndDown, 0 when disabled/TOP=0/unknown) + `duty_bp` (OUT0 basis
+points, sticky latch) + `pwm_observe_seq_word` (driver-fed SEQ latch,
+DMA take/complete style — sys() has no RAM handle). lib.rs trio:
+`pwm_get_freq_hz/pwm_get_duty/pwm_observe_seq_word`; 3 new unit tests
+(277/277 green). Rebuilt demo/pkg (.d.ts gains all 3). Proof vs P110
+firmware in node: periph2 TOP=1000/PSC=0/Up -> 16000 Hz, duty 0,
+PER:OK via full 3-phase mirror.
+Recipes in demo/API.md (both executed before documenting): I2C
+repeated-START master-read (take->mem_read->complete->SHORTS chains
+STARTRX->take->mem_write->complete; sharp edge: i2c_push_rx is
+polling-path only, DMA needs mem_write) + SAADC inject (take->mem_write
+LE->complete; 0x03FF lands in guest RAM, ADC:OK via dma_nrf.bin).
+4 fixed firmwares (blinky/*.s + demo/firmware/*.bin, xpack recipe
+validated by bit-identical blinky rebuild): hello (HELLO), oled
+(TWIM0 0x3C 9-byte init + status RX, OLED:OK, served 0xA5 read back
+from guest RAM), blinky (P0.21 toggles + BOOT/BLINK), spim23 (TX
+[1,2,3,4], S2TX:OK/S3RX:OK) — all 4 proven in one node run.
+Freeze: bundle + crate 0.1.0->0.2.0 (demo/pkg/package.json too;
+microbit-emu shell stays workflow-versioned), new demo/CHANGELOG.md
+(tap surface enumerated, every name grep-verified; TIMER/RTC line cut —
+no such export), pinned toolchain in README + changelog, CHANGELOG
+ships in files[] (tarball 15 files / 1.1 MB).
+Reproducibility close-out: first rebuild mismatched (build log showed
+wasm-pack installing wasm-bindgen mid-build — settled on 0.2.126 after);
+since then build2==build3 (no-op), build4==build2 (after the exact pin),
+and a forced full-LTO recompile is bit-identical. Cargo.toml now pins
+wasm-bindgen "=0.2.126" so the drift can't recur; canonical bytes =
+committed demo/pkg at the tag. Duty also verified end-to-end through the
+shipped bundle (observe 250->2500bp, polarity, clamp all hold via JS).
+

@@ -40,7 +40,8 @@
     "firmware/micropython-microbit-v2.1.2.hex",
     "LICENSE",
     "README.md",
-    "API.md"
+    "API.md",
+    "CHANGELOG.md"
   ],
   "scripts": {
     "test:parts": "node parts/smoke.mjs",

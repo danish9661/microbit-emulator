@@ -47,6 +47,12 @@ pub struct PwmNrf {
     seq_refresh: [u32; 2],
     seq_enddelay: [u32; 2],
     pselout: [u32; 4],
+    /// Host-observed SEQ compare word for OUT channel 0, as basis points
+    /// (0..10000). The waveform bytes stay driver-side (see the model
+    /// comment above — sys() has no guest-RAM handle), so the host pump
+    /// feeds each SEQ word via observe_seq_word() after mem_read(SEQ.PTR).
+    /// Sticky: TASKS_STOP / new SEQSTART do not clear it.
+    duty_bp: u32,
 }
 
 impl PwmNrf {
@@ -66,6 +72,7 @@ impl PwmNrf {
             loop_remaining: 0, chaining: false, active_seq: None,
             seq_ptr: [0; 2], seq_cnt: [0; 2], seq_refresh: [0; 2],
             seq_enddelay: [0; 2], pselout: [0xFFFF_FFFF; 4],
+            duty_bp: 0,
         }))
     }
     fn fire(&self, sys: &System, bit: u32) {
@@ -137,6 +144,87 @@ impl PwmNrf {
             }
         }
     }
+}
+
+/// Instance number (0-3) to slot base address. Unknown instances route to
+/// None (callers return 0 — same bad-input convention as gpio_read_dir).
+fn pwm_base(instance: u8) -> Option<u32> {
+    match instance {
+        0 => Some(0x4001_C000),
+        1 => Some(0x4002_1000),
+        2 => Some(0x4002_2000),
+        3 => Some(0x4002_D000),
+        _ => None,
+    }
+}
+
+/// Driver-side observer for one PWM slot (base address): try_borrow_mut
+/// (P108 family — take/complete paths re-enter via read/write while
+/// borrowed; drop instead of panic) + downcast, mirroring with_twim.
+fn with_pwm<R>(sys: &System, base: u32, f: impl FnOnce(&mut PwmNrf) -> R) -> Option<R> {
+    for slot in &sys.p.peripherals {
+        if slot.start == base {
+            let mut b = match slot.peripheral.try_borrow_mut() {
+                Ok(b) => b,
+                Err(_) => return None,
+            };
+            if let Some(p) = b.as_any_mut().downcast_mut::<PwmNrf>() {
+                return Some(f(p));
+            }
+            return None;
+        }
+    }
+    None
+}
+
+/// Waveform frequency in Hz from the config registers: the 16 MHz HFCLK
+/// divided by the prescaler (2^PRESCALER) and the period (COUNTERTOP, x2
+/// in UpAndDown mode). 0 when disabled, COUNTERTOP == 0, or the instance
+/// is unknown. Playback itself runs at the task quantum (no tick()), so
+/// this is the programmed rate, same virtual class as matrix_state.
+pub fn freq_hz(sys: &System, instance: u8) -> u32 {
+    let Some(base) = pwm_base(instance) else { return 0 };
+    with_pwm(sys, base, |p| {
+        if !p.enabled {
+            return 0;
+        }
+        let top = p.countertop & 0x7FFF;
+        if top == 0 {
+            return 0;
+        }
+        let hfclk = 16_000_000u32 >> (p.prescaler & 7);
+        let period = if p.mode & 1 == 1 { top * 2 } else { top };
+        hfclk / period
+    })
+    .unwrap_or(0)
+}
+
+/// Duty cycle of OUT channel 0 in basis points (0..10000: 0 = always low,
+/// 10000 = always high, 5000 = 50.0%). 0 when disabled or when no SEQ
+/// word has been observed yet. Single channel per instance: an LED cell
+/// reads one pin, and OUT0 is the CODAL sound/LED channel.
+pub fn duty_bp(sys: &System, instance: u8) -> u32 {
+    let Some(base) = pwm_base(instance) else { return 0 };
+    with_pwm(sys, base, |p| if p.enabled { p.duty_bp } else { 0 }).unwrap_or(0)
+}
+
+/// Feed one SEQ compare word (OUT channel 0) observed by the host pump
+/// from guest RAM at SEQ.PTR. 15-bit compare against COUNTERTOP, clamped
+/// to 0..10000; bit 15 inverts polarity (1 - duty). No-op on unknown
+/// instances. Same driver-fed style as the EASYDMA take/complete pairs:
+/// the model never touches guest RAM itself.
+pub fn observe_seq_word(sys: &System, instance: u8, compare: u32) {
+    let Some(base) = pwm_base(instance) else { return };
+    with_pwm(sys, base, |p| {
+        let top = p.countertop & 0x7FFF;
+        if top == 0 {
+            p.duty_bp = 0;
+            return;
+        }
+        let cmp = compare & 0x7FFF;
+        let bp = (cmp.min(top) * 10_000 / top).min(10_000);
+        p.duty_bp = if compare & 0x8000 != 0 { 10_000 - bp } else { bp };
+    });
 }
 
 impl Peripheral for PwmNrf {
@@ -304,5 +392,69 @@ mod tests {
         // 2nd run: fresh defaults.
         let p2 = PwmNrf::new("PWM0").unwrap();
         drop(p2);
+    }
+    #[test]
+    fn freq_hz_from_config_registers() {
+        // 16 MHz HFCLK >> PRESCALER over COUNTERTOP (x2 in UpAndDown).
+        // P110 periph2 firmware programs TOP=1000, PSC=0, Up -> 16000 Hz.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x40021500, 4, 1); // PWM1 ENABLE
+        sys.p.write(&sys, 0x40021508, 4, 1000); // COUNTERTOP
+        assert_eq!(super::freq_hz(&sys, 1), 16_000, "16MHz/1000 Up");
+        sys.p.write(&sys, 0x4002150C, 4, 3); // PRESCALER 3
+        assert_eq!(super::freq_hz(&sys, 1), 2_000, "2MHz/1000");
+        sys.p.write(&sys, 0x40021504, 4, 1); // MODE UPDOWN
+        assert_eq!(super::freq_hz(&sys, 1), 1_000, "up-down doubles period");
+        sys.p.write(&sys, 0x40021500, 4, 0); // ENABLE 0
+        assert_eq!(super::freq_hz(&sys, 1), 0, "disabled reads 0");
+        sys.p.write(&sys, 0x40021500, 4, 1);
+        sys.p.write(&sys, 0x40021508, 4, 0); // COUNTERTOP 0
+        assert_eq!(super::freq_hz(&sys, 1), 0, "TOP 0 reads 0");
+        assert_eq!(super::freq_hz(&sys, 0), 0, "PWM0 disabled");
+        assert_eq!(super::freq_hz(&sys, 4), 0, "unknown instance reads 0");
+        assert_eq!(super::freq_hz(&sys, 255), 0, "unknown instance reads 0");
+    }
+    #[test]
+    fn freq_hz_routes_all_four_instances() {
+        // Same config on every slot base reads the same rate back.
+        let sys = test_dummy_system();
+        for (inst, base) in [(0u8, 0x4001_C000u32), (1, 0x4002_1000), (2, 0x4002_2000), (3, 0x4002_D000)] {
+            sys.p.write(&sys, base + 0x500, 4, 1); // ENABLE
+            sys.p.write(&sys, base + 0x508, 4, 500); // COUNTERTOP
+            sys.p.write(&sys, base + 0x50C, 4, 1); // PRESCALER 1 -> 8 MHz
+            assert_eq!(super::freq_hz(&sys, inst), 16_000, "instance routes");
+        }
+    }
+    #[test]
+    fn duty_bp_observe_clamp_polarity() {
+        // Basis points on OUT0: compare/TOP, clamped; bit15 inverts.
+        let sys = test_dummy_system();
+        sys.p.write(&sys, 0x4001C500, 4, 1); // PWM0 ENABLE
+        sys.p.write(&sys, 0x4001C508, 4, 1000); // COUNTERTOP
+        assert_eq!(super::duty_bp(&sys, 0), 0, "unobserved reads 0");
+        super::observe_seq_word(&sys, 0, 500);
+        assert_eq!(super::duty_bp(&sys, 0), 5000, "50.0%");
+        super::observe_seq_word(&sys, 0, 0);
+        assert_eq!(super::duty_bp(&sys, 0), 0, "always low");
+        super::observe_seq_word(&sys, 0, 1000);
+        assert_eq!(super::duty_bp(&sys, 0), 10_000, "always high");
+        super::observe_seq_word(&sys, 0, 1500);
+        assert_eq!(super::duty_bp(&sys, 0), 10_000, "clamped, never wraps");
+        super::observe_seq_word(&sys, 0, 0x8000 | 250);
+        assert_eq!(super::duty_bp(&sys, 0), 7500, "polarity inverts");
+        super::observe_seq_word(&sys, 0, 0x8000);
+        assert_eq!(super::duty_bp(&sys, 0), 10_000, "inverted zero is full");
+        // Sticky across STOP; cleared view while disabled.
+        sys.p.write(&sys, 0x4001C004, 4, 1); // TASKS_STOP
+        assert_eq!(super::duty_bp(&sys, 0), 10_000, "STOP keeps latch");
+        sys.p.write(&sys, 0x4001C500, 4, 0); // ENABLE 0
+        assert_eq!(super::duty_bp(&sys, 0), 0, "disabled reads 0");
+        // TOP 0 + unknown instances: no panic, read 0.
+        sys.p.write(&sys, 0x4001C500, 4, 1);
+        sys.p.write(&sys, 0x4001C508, 4, 0);
+        super::observe_seq_word(&sys, 0, 500);
+        assert_eq!(super::duty_bp(&sys, 0), 0, "TOP 0 reads 0");
+        super::observe_seq_word(&sys, 9, 500);
+        assert_eq!(super::duty_bp(&sys, 9), 0, "unknown instance reads 0");
     }
 }
